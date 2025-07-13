@@ -5,3 +5,4 @@ gspread
 oauth2client
 scikit-learn
 gunicorn
+flask-cors
