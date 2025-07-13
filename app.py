@@ -9,40 +9,34 @@ from sklearn.metrics.pairwise import cosine_similarity
 import re
 from flask_cors import CORS
 
-# Učitaj varijable iz .env
+# Učitaj .env varijable
 load_dotenv()
 
-# Inicijalizuj OpenAI klijent
+# OpenAI klijent
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
-# Inicijalizuj Flask aplikaciju
+# Flask aplikacija
 app = Flask(__name__)
 CORS(app)
-app.secret_key = os.getenv("SECRET_KEY", "tajna_lozinka_za_sesiju")  # za sesije
+app.secret_key = os.getenv("SECRET_KEY", "tajna_lozinka")
 
-# Uputstvo za bota
-system_message = {
-    "role": "system",
-    "content": (
-        "Ti si pomoćnik za matematiku za osnovnu školu (5. do 9. razred). "
-        "Učenici ti postavljaju pitanja na srpskom ili bosanskom jeziku. "
-        "Odgovori na jeziku na kojem je pitanje postavljeno. Ako nisi siguran, koristi bosanski. "
-        "Uvijek koristi ijekavicu, a ne ekavicu. "
-        "Uvijek objasni rješenje jasno, korak po korak. "
-        "Ako je pitanje iz matematike, bez obzira na to koliko je jednostavno (npr. 'jedan plus jedan'), uvijek odgovori jasno i precizno. Ako pitanje nije iz matematike, reci: 'Molim te, postavi matematičko pitanje.' "
-        "Ako nisi siguran u rješenje, reci: 'Za ovaj zadatak se obrati instruktorima na info@matematicari.com' "
-        "Koristi prijateljski i jednostavan ton."
-    )
-}
-
-# Poveži se na Google Sheets
+# Google Sheets konekcija
 SCOPE = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
 CREDS_FILE = "credentials.json"
 creds = ServiceAccountCredentials.from_json_keyfile_name(CREDS_FILE, SCOPE)
 gs_client = gspread.authorize(creds)
-sheet = gs_client.open("matematika-bot").sheet1  # zamijeni ako je drugi naziv
+sheet = gs_client.open("matematika-bot").sheet1
 
-# Zamjene brojeva i razlomaka
+# Prompti po razredima
+prompti_po_razredu = {
+    "5": "Ti si pomoćnik iz matematike za učenike 5. razreda osnovne škole. Odgovaraj jasno, koristeći jednostavan jezik i objašnjavaj svaki korak rješenja. Pomozi učenicima da razumiju zadatke iz oblasti prirodnih brojeva, osnovnih operacija, geometrije i jednostavnih tekstualnih problema.",
+    "6": "Ti si pomoćnik iz matematike za učenike 6. razreda osnovne škole. Odgovaraj detaljno i pedagoški, koristeći primjere koji su primjereni tom uzrastu. Fokusiraj se na razlomke, decimalne brojeve, procenti, geometriju i tekstualne zadatke.",
+    "7": "Ti si pomoćnik iz matematike za učenike 7. razreda osnovne škole. Pomozi im u razumijevanju složenijih zadataka iz algebre, geometrije i funkcija. Objašnjavaj svaki korak detaljno i koristi jasan, primjeren jezik.",
+    "8": "Ti si pomoćnik iz matematike za učenike 8. razreda osnovne škole. Usredotoči se na rješavanje zadataka iz linearnog izraza, sistema jednačina, geometrije i statistike. Koristi primjere i objasni rješenja detaljno.",
+    "9": "Ti si pomoćnik iz matematike za učenike 9. razreda osnovne škole. Pomozi im u složenijim zadacima iz algebre, geometrije, funkcija i statistike. Koristi precizan i razumljiv jezik, i objasni svaki korak rješenja."
+}
+
+# Normalizacija teksta za pretragu
 number_map = {
     "1": "jedan", "2": "dva", "3": "tri", "4": "četiri", "5": "pet",
     "6": "šest", "7": "sedam", "8": "osam", "9": "devet", "0": "nula",
@@ -67,7 +61,7 @@ def latexify_fractions(text):
 
 def find_similar_question(user_question, sheet, threshold=0.85):
     user_question_norm = normalize_text(user_question)
-    existing_rows = sheet.get_all_values()[1:]  # preskoči header
+    existing_rows = sheet.get_all_values()[1:]
     if not existing_rows:
         return None, None
 
@@ -84,11 +78,24 @@ def find_similar_question(user_question, sheet, threshold=0.85):
         return existing_questions[max_index], existing_rows[max_index][1]
     return None, None
 
-# Flask ruta
+# Glavna ruta
 @app.route("/", methods=["GET", "POST"])
 def index():
     if request.method == "POST":
         pitanje = request.form["pitanje"]
+        razred = request.form.get("razred", "5")  # default ako nije odabran
+
+        prompt_za_razred = prompti_po_razredu.get(razred, prompti_po_razredu["5"])
+        system_message = {
+            "role": "system",
+            "content": (
+                prompt_za_razred +
+                " Odgovaraj na jeziku na kojem je pitanje postavljeno. Ako nisi siguran, koristi bosanski. "
+                "Uvijek koristi ijekavicu. Ako pitanje nije iz matematike, reci: 'Molim te, postavi matematičko pitanje.' "
+                "Ako ne znaš tačno rješenje, reci: 'Za ovaj zadatak se obrati instruktorima na info@matematicari.com'."
+            )
+        }
+
         try:
             slicno_pitanje, prethodni_odgovor = find_similar_question(pitanje, sheet)
             if prethodni_odgovor:
@@ -103,12 +110,13 @@ def index():
                 sheet.append_row([pitanje, odgovor])
         except Exception as e:
             odgovor = f"Greška: {str(e)}"
+
         session["odgovor"] = odgovor
         return redirect(url_for("index"))
 
     odgovor = session.pop("odgovor", "")
     return render_template("index.html", odgovor=odgovor)
 
-# Pokreni aplikaciju
+# Pokretanje servera
 if __name__ == "__main__":
     app.run(debug=True, port=5000)
