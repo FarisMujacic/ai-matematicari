@@ -7,6 +7,7 @@ from oauth2client.service_account import ServiceAccountCredentials
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 import re
+from flask_cors import CORS
 
 # Učitaj varijable iz .env
 load_dotenv()
@@ -16,6 +17,7 @@ client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 # Inicijalizuj Flask aplikaciju
 app = Flask(__name__)
+CORS(app)
 app.secret_key = os.getenv("SECRET_KEY", "tajna_lozinka_za_sesiju")  # za sesije
 
 # Uputstvo za bota
