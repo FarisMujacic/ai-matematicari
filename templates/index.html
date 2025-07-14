@@ -20,7 +20,7 @@
             margin: 0;
             padding: 0;
             height: 100%;
-            overflow: hidden;
+            
         }
 
         header {
@@ -129,11 +129,21 @@
 
 
         {% if odgovor %}
-        <div class="output-box">
-            <strong>🔹 Odgovor:</strong>
-            <p>{{ odgovor|safe }}</p>
-        </div>
-        {% endif %}
+<div id="odgovor" class="output-box">
+    <strong>🔹 Odgovor:</strong>
+    <p>{{ odgovor|safe }}</p>
+</div>
+{% endif %}
+
     </main>
+    <script>
+    window.onload = function() {
+        const odgovorBox = document.getElementById("odgovor");
+        if (odgovorBox) {
+            odgovorBox.scrollIntoView({ behavior: "smooth" });
+        }
+    };
+</script>
+
 </body>
 </html>
