@@ -6,6 +6,12 @@
     <title>MAT-BOT</title>
     <script src="https://polyfill.io/v3/polyfill.min.js?features=es6"></script>
     <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+    <script>
+    MathJax = {
+        tex: { inlineMath: [['$', '$'], ['\\(', '\\)']] },
+        svg: { fontCache: 'global' }
+    };
+</script>
     <style>
         body {
             font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
@@ -93,7 +99,7 @@
     </header>
 
     <main>
-       <form method="POST">
+     <form method="POST" enctype="multipart/form-data">
     <label for="razred"><strong>Koji si razred?</strong></label>
     <select name="razred" id="razred" required>
         <option value="">-- Odaberi razred --</option>
@@ -106,12 +112,20 @@
 
     <br><br>
 
-    <label for="pitanje"><strong>Postavi mi matematičko pitanje:</strong></label>
-    <textarea name="pitanje" id="pitanje" required
+    <label for="pitanje"><strong>Postavi mi matematičko pitanje (tekst ili slika):</strong></label>
+    <textarea name="pitanje" id="pitanje"
      placeholder="Ovdje možeš unijeti svoj matematički zadatak ili tekstualni problem i dobiti rješenje korak po korak. Ako nešto nije jasno, slobodno pitaj nastavnika."></textarea>
-    <br>
+
+    <br><br>
+
+    <label for="slika"><strong>Ili učitaj sliku pitanja:</strong></label>
+    <input type="file" name="slika" accept="image/*">
+
+    <br><br>
+
     <button type="submit">📧 Pošalji</button>
 </form>
+
 
 
         {% if odgovor %}
