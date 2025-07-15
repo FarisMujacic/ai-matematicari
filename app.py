@@ -14,15 +14,12 @@ from flask_cors import CORS
 # Učitaj .env varijable
 load_dotenv()
 
-# OpenAI klijent
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
-# Flask aplikacija
 app = Flask(__name__)
 CORS(app)
 app.secret_key = os.getenv("SECRET_KEY", "tajna_lozinka")
 
-# Mathpix API
 MATHPIX_API_ID = os.getenv("MATHPIX_API_ID")
 MATHPIX_API_KEY = os.getenv("MATHPIX_API_KEY")
 
@@ -44,20 +41,18 @@ def extract_text_from_image(file):
     else:
         return f"Mathpix greška: {response.text}"
 
-# Google Sheets konekcija
 SCOPE = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
 CREDS_FILE = "credentials.json"
 creds = ServiceAccountCredentials.from_json_keyfile_name(CREDS_FILE, SCOPE)
 gs_client = gspread.authorize(creds)
 sheet = gs_client.open("matematika-bot").sheet1
 
-# Prompti po razredima
 prompti_po_razredu = {
-    "5": "Ti si pomoćnik iz matematike za učenike 5. razreda osnovne škole. Odgovaraj jasno, koristeći jednostavan jezik i objašnjavaj svaki korak rješenja.",
-    "6": "Ti si pomoćnik iz matematike za učenike 6. razreda osnovne škole. Odgovaraj detaljno i pedagoški, koristeći primjere koji su primjereni tom uzrastu.",
-    "7": "Ti si pomoćnik iz matematike za učenike 7. razreda osnovne škole. Pomozi im u razumijevanju složenijih zadataka iz algebre, geometrije i funkcija.",
-    "8": "Ti si pomoćnik iz matematike za učenike 8. razreda osnovne škole. Usredotoči se na rješavanje zadataka iz linearnog izraza, sistema jednačina, geometrije i statistike.",
-    "9": "Ti si pomoćnik iz matematike za učenike 9. razreda osnovne škole. Pomozi im u složenijim zadacima iz algebre, geometrije, funkcija i statistike."
+    "5": "Ti si pomoćnik iz matematike za učenike 5. razreda osnovne škole...",
+    "6": "Ti si pomoćnik iz matematike za učenike 6. razreda osnovne škole...",
+    "7": "Ti si pomoćnik iz matematike za učenike 7. razreda osnovne škole...",
+    "8": "Ti si pomoćnik iz matematike za učenike 8. razreda osnovne škole...",
+    "9": "Ti si pomoćnik iz matematike za učenike 9. razreda osnovne škole..."
 }
 
 number_map = {
@@ -73,8 +68,7 @@ def normalize_text(text):
         text = re.sub(rf"\b{re.escape(fraction)}\b", word, text)
     for number, word in number_map.items():
         text = re.sub(rf"\b{word}\b", number, text)
-    text = re.sub(r"\s+", " ", text)
-    return text
+    return re.sub(r"\s+", " ", text)
 
 def latexify_fractions(text):
     def zamijeni(match):
@@ -92,12 +86,10 @@ def find_similar_question(user_question, sheet, threshold=0.85):
     existing_questions = [row[0] for row in existing_rows if row]
     normalized_questions = [normalize_text(q) for q in existing_questions]
 
-    # 1. 🔍 TAČNA PODUDARNOST (nema potrošnje CPU-a)
     for i, norm_q in enumerate(normalized_questions):
         if user_question_norm == norm_q:
             return existing_questions[i], existing_rows[i][1]
 
-    # 2. 🔍 SLIČNA PITANJA (ako nema tačne podudarnosti)
     vectorizer = TfidfVectorizer().fit_transform([user_question_norm] + normalized_questions)
     similarities = cosine_similarity(vectorizer[0:1], vectorizer[1:]).flatten()
     max_index = similarities.argmax()
@@ -108,18 +100,19 @@ def find_similar_question(user_question, sheet, threshold=0.85):
 
     return None, None
 
-
 @app.route("/", methods=["GET", "POST"])
 def index():
     if request.method == "POST":
-        razred = request.form.get("razred", "5")
+        if "razred" not in session:
+            session["razred"] = request.form.get("razred", "5")
+        razred = session["razred"]
+
         pitanje = request.form.get("pitanje", "")
         slika = request.files.get("slika")
 
         if slika and slika.filename:
             tekst_iz_slike = extract_text_from_image(slika)
             pitanje += "\n" + tekst_iz_slike
-
 
         prompt_za_razred = prompti_po_razredu.get(razred, prompti_po_razredu["5"])
         system_message = {
@@ -133,25 +126,47 @@ def index():
         }
 
         try:
-            slicno_pitanje, prethodni_odgovor = find_similar_question(pitanje, sheet)
-            if prethodni_odgovor:
-                odgovor = latexify_fractions(prethodni_odgovor)
-            else:
-                response = client.chat.completions.create(
-                    model="gpt-3.5-turbo",
-                    messages=[system_message, {"role": "user", "content": pitanje}]
-                )
-                odgovor = response.choices[0].message.content
-                odgovor = latexify_fractions(odgovor)
-                sheet.append_row([pitanje, odgovor])
+            # Ako nema historije, napravi novu listu
+            history = session.get("history", [])
+
+            # Dodaj prethodni chat kao dijalog (maks 5 poruka)
+            messages = [system_message]
+            for msg in history[-5:]:
+                messages.append({"role": "user", "content": msg["user"]})
+                messages.append({"role": "assistant", "content": msg["bot"]})
+
+            # Dodaj novo pitanje
+            messages.append({"role": "user", "content": pitanje})
+
+            # Odgovor GPT-a
+            response = client.chat.completions.create(
+                model="gpt-3.5-turbo",
+                messages=messages
+            )
+            odgovor = response.choices[0].message.content
+            odgovor = latexify_fractions(odgovor)
+
+            # Spasi pitanje + odgovor u historiju i Sheets
+            history.append({"user": pitanje.strip(), "bot": odgovor.strip()})
+            session["history"] = history
+            sheet.append_row([pitanje, odgovor])
+
         except Exception as e:
             odgovor = f"Greška: {str(e)}"
 
-        session["odgovor"] = odgovor
         return redirect(url_for("index"))
 
-    odgovor = session.pop("odgovor", "")
-    return render_template("index.html", odgovor=odgovor)
+    razred = session.get("razred", "")
+    history = session.get("history", [])
+    return render_template("index.html", history=history, razred=razred)
+
+@app.route("/clear", methods=["POST"])
+def clear():
+    session.clear()
+    return redirect(url_for("index"))
+
+
+
 
 if __name__ == "__main__":
     app.run(debug=True, port=5000)
