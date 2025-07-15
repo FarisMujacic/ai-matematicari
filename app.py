@@ -143,8 +143,13 @@ def index():
                 model="gpt-3.5-turbo",
                 messages=messages
             )
-            odgovor = response.choices[0].message.content
-            odgovor = latexify_fractions(odgovor)
+            raw_odgovor = response.choices[0].message.content
+            formatted_odgovor = f"""
+            <h1>Odgovor:</h1>
+            <p>{latexify_fractions(raw_odgovor)}</p>
+            """
+            odgovor = formatted_odgovor
+
 
             # Spasi pitanje + odgovor u historiju i Sheets
             history.append({"user": pitanje.strip(), "bot": odgovor.strip()})
