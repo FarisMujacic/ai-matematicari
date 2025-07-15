@@ -1,149 +1,247 @@
 <!DOCTYPE html>
 <html lang="bs">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>MAT-BOT</title>
-    <script src="https://polyfill.io/v3/polyfill.min.js?features=es6"></script>
-    <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
-    <script>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>MAT-BOT</title>
+
+  <!-- MathJax -->
+  <script>
     MathJax = {
-        tex: { inlineMath: [['$', '$'], ['\\(', '\\)']] },
-        svg: { fontCache: 'global' }
+      tex: { inlineMath: [["$", "$"], ["\\(", "\\)"]] },
+      svg: { fontCache: "global" }
     };
-</script>
-    <style>
-        body {
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-            background-color: #90bcf0; /* Page */
-            color: #000000;
-            margin: 0;
-            padding: 0;
-            height: 100%;
-            
-        }
+  </script>
+  <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
 
-        header {
-            background-color: #329667; /* Header Background */
-            padding: 1rem;
-            text-align: center;
-            color: white;
-            font-size: 1.8rem;
-            font-weight: bold;
-        }
+  <style>
+    body {
+      font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
+      background-color: #f0f4ff;
+      color: #333;
+      margin: 0;
+      padding: 0;
+    }
 
-        main {
-            max-width: 800px;
-            margin: 2rem auto;
-            background-color: #ffffff;
-            padding: 2rem;
-            border-radius: 10px;
-            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
-        }
+   header {
+  background-color: #3d7d66;
+  color: white;
+  padding: 1rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  position: relative;
+}
 
-       textarea {
-            width: 100%;
-            height: 120px;
-            padding: 1rem;
-            font-size: 1.1rem;
-            border-radius: 10px;
-            border: 2px solid #50e3c2;
-            resize: vertical;
-            outline: none;
-            box-sizing: border-box; /* <<< OVO je ključno za ravnomjernost */
-            box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.05);
+.logo-container {
+  position: absolute;
+  left: 20px;
+}
+
+.logo-container img {
+  height: 70px;
+}
+
+.title-container {
+  font-size: 2rem;
+  font-weight: bold;
 }
 
 
 
-        textarea:focus {
-            border-color: #329667;
+    main {
+      max-width: 800px;
+      margin: 0 auto;
+      padding: 2rem;
+      display: flex;
+      flex-direction: column;
+      gap: 1.5rem;
+      background-color: #ffffff;
+      border-radius: 10px;
+      box-shadow: 0 5px 20px rgba(0, 0, 0, 0.1);
+    }
+
+    form {
+      display: flex;
+      flex-direction: column;
+      gap: 1rem;
+    }
+
+    textarea {
+      width: 100%;
+      height: 120px;
+      padding: 1rem;
+      font-size: 1.1rem;
+      border-radius: 10px;
+      border: 2px solid #50e3c2;
+      resize: vertical;
+      outline: none;
+      box-sizing: border-box;
+      background-color: #f8fafd;
+    }
+
+    textarea:focus {
+      border-color: #3d7d66;
+    }
+
+    button {
+      background-color: #3d7d66;
+      color: white;
+      border: none;
+      padding: 0.8rem 2rem;
+      font-size: 1rem;
+      border-radius: 8px;
+      cursor: pointer;
+      width: fit-content;
+    }
+
+    button:hover {
+      background-color: #2f5c4e;
+    }
+
+    .chat-container {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      overflow-y: auto;
+      padding-bottom: 1rem;
+    }
+
+    .chat-message {
+      display: flex;
+      width: 100%;
+    }
+
+    .chat-bubble {
+        max-width: 75%;
+        padding: 1rem;
+        border-radius: 15px;
+        font-size: 1.1rem;
+        line-height: 1.6;
+        word-wrap: break-word;
+        box-shadow: 0 2px 5px rgba(0, 0, 0, 0.08);
+        transition: all 0.3s ease-in-out;
+        border: 1.5px solid #c4c4c4; /* NOVO: okvir oko poruke */
+        background-color: #ffffff;
         }
 
-        button {
-            margin-top: 1rem;
-            background-color: #329667;
-            color: white;
-            border: none;
-            padding: 0.8rem 2rem;
-            font-size: 1rem;
-            border-radius: 8px;
-            cursor: pointer;
-        }
 
-        button:hover {
-            background-color: #267754;
-        }
+    .user-message {
+      justify-content: flex-end;
+    }
 
-        .output-box {
-            background-color: #e8fff5;
-            border-left: 5px solid #50e3c2;
-            padding: 25px 30px;
-            margin-top: 30px;
-            font-size: 1.3rem;
-            line-height: 1.8;
-            border-radius: 10px;
-            font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
-        }
+    .user .chat-bubble {
+      background-color: #cce6ff;
+      border-top-right-radius: 0;
+    }
 
-        .output-box strong {
-            display: block;
-            margin-bottom: 0.5rem;
-            font-size: 1.1rem;
-        }
-    </style>
+    .bot-message {
+      justify-content: flex-start;
+    }
+
+    .bot .chat-bubble {
+      background-color: #dcf8d7;
+      border-top-left-radius: 0;
+    }
+
+    .typing-indicator {
+      font-style: italic;
+      font-size: 1rem;
+      padding: 0.5rem 1rem;
+      color: #444;
+      background-color: #fff2c2;
+      border-left: 4px solid #ffb84d;
+      border-radius: 6px;
+      margin-bottom: 1rem;
+      max-width: 300px;
+    }
+
+    select,
+    input[type="file"] {
+      padding: 0.6rem;
+      border: 1.5px solid #ccc;
+      border-radius: 8px;
+      background-color: #f8fafd;
+      font-size: 1rem;
+    }
+
+    select:focus,
+    input[type="file"]:focus {
+      border-color: #3d7d66;
+    }
+  </style>
 </head>
 <body>
-    <header>
-        🔹 MAT-BOT
-    </header>
+  <header>
+  <div class="logo-container">
+    <img src="https://s3.amazonaws.com/thinkific-import/307785/cmQxwUYXTjWxCFQJjrA4_MATEMATICAR_3_01_Transparent_png" alt="MATEMATICARI Logo" />
+  </div>
+  <div class="title-container">MAT-BOT</div>
+</header>
 
-    <main>
-     <form method="POST" enctype="multipart/form-data">
-    <label for="razred"><strong>Koji si razred?</strong></label>
-    <select name="razred" id="razred" required>
+
+
+  <main id="main-container">
+    {% if history %}
+    <div class="chat-container" id="chat-container">
+      <div id="typing" class="typing-indicator" style="display: none;">
+        🤖 MAT-BOT piše odgovor...
+      </div>
+
+      {% for message in history %}
+      <div class="chat-message user-message">
+        <div class="chat-bubble user">
+          <p>{{ message.user }}</p>
+        </div>
+      </div>
+      <div class="chat-message bot-message">
+        <div class="chat-bubble bot">
+          <p>{{ message.bot|safe }}</p>
+        </div>
+      </div>
+      {% endfor %}
+    </div>
+    {% endif %}
+
+    <form method="POST" enctype="multipart/form-data" onsubmit="showTyping()">
+      <label for="razred"><strong>Koji si razred?</strong></label>
+      <select name="razred" id="razred" required>
         <option value="">-- Odaberi razred --</option>
-        <option value="5">5. razred</option>
-        <option value="6">6. razred</option>
-        <option value="7">7. razred</option>
-        <option value="8">8. razred</option>
-        <option value="9">9. razred</option>
-    </select>
+        <option value="5" {% if razred == "5" %}selected{% endif %}>5. razred</option>
+        <option value="6" {% if razred == "6" %}selected{% endif %}>6. razred</option>
+        <option value="7" {% if razred == "7" %}selected{% endif %}>7. razred</option>
+        <option value="8" {% if razred == "8" %}selected{% endif %}>8. razred</option>
+        <option value="9" {% if razred == "9" %}selected{% endif %}>9. razred</option>
+      </select>
 
-    <br><br>
+      <label for="pitanje"><strong>Postavi mi matematičko pitanje (tekst ili slika):</strong></label>
+      <textarea name="pitanje" id="pitanje" placeholder="Ovdje možeš unijeti zadatak ili pitanje..."></textarea>
 
-    <label for="pitanje"><strong>Postavi mi matematičko pitanje (tekst ili slika):</strong></label>
-    <textarea name="pitanje" id="pitanje"
-     placeholder="Ovdje možeš unijeti svoj matematički zadatak ili tekstualni problem i dobiti rješenje korak po korak. Ako nešto nije jasno, slobodno pitaj nastavnika."></textarea>
+      <label for="slika"><strong>Ili učitaj sliku pitanja:</strong></label>
+      <input type="file" name="slika" accept="image/*" />
 
-    <br><br>
+      <button type="submit">📧 Pošalji</button>
+    </form>
 
-    <label for="slika"><strong>Ili učitaj sliku pitanja:</strong></label>
-    <input type="file" name="slika" accept="image/*">
+    <form method="POST" action="/clear">
+      <button type="submit" style="background-color: #c94f4f;">🗑️ Očisti konverzaciju</button>
+    </form>
+  </main>
 
-    <br><br>
+  <script>
+    function showTyping() {
+      const typing = document.getElementById("typing");
+      if (typing) typing.style.display = "block";
+    }
 
-    <button type="submit">📧 Pošalji</button>
-</form>
-
-
-
-        {% if odgovor %}
-<div id="odgovor" class="output-box">
-    <strong>🔹 Odgovor:</strong>
-    <p>{{ odgovor|safe }}</p>
-</div>
-{% endif %}
-
-    </main>
-    <script>
-    window.onload = function() {
-        const odgovorBox = document.getElementById("odgovor");
-        if (odgovorBox) {
-            odgovorBox.scrollIntoView({ behavior: "smooth" });
+    window.onload = () => {
+      setTimeout(() => {
+        const chat = document.getElementById("chat-container");
+        if (chat) {
+          chat.scrollIntoView({ behavior: "smooth", block: "end" });
         }
+      }, 150);
     };
-</script>
-
+  </script>
 </body>
 </html>
