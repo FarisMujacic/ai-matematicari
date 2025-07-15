@@ -165,6 +165,11 @@ def clear():
     session.clear()
     return redirect(url_for("index"))
 
+@app.route("/promijeni-razred", methods=["POST"])
+def promijeni_razred():
+    session.pop("razred", None)
+    return redirect(url_for("index"))
+
 
 
 
