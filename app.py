@@ -159,7 +159,8 @@ def index():
         except Exception as e:
             odgovor = f"Greška: {str(e)}"
 
-        return redirect(url_for("index"))
+        return render_template("index.html", history=history, razred=razred)
+
 
     razred = session.get("razred", "")
     history = session.get("history", [])
