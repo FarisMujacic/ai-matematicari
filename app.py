@@ -8,7 +8,7 @@ import re
 import requests
 import base64
 from flask_cors import CORS
-import plotly.graph_objs as go
+
 import numpy as np
 from fractions import Fraction
 
