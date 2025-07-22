@@ -13,6 +13,7 @@
     };
   </script>
   <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+  <script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
 
   <style>
   body {
@@ -319,21 +320,108 @@ body:not(.dark) {
   transform: translateX(30px);
 }
 
+ .dropdown {
+  position: absolute;
+  top: 1rem;
+  right: 3rem;
+  z-index: 1000;
+}
+
+
+    .dropdown-toggle {
+      background-color: #3d7d66;
+      color: white;
+      border: none;
+      padding: 0.6rem 1rem;
+      font-size: 1rem;
+      border-radius: 8px;
+      cursor: pointer;
+    }
+
+    .dropdown-content {
+      display: none;
+      position: absolute;
+      top: 110%;
+      right: 0;
+      background-color: white;
+      min-width: 200px;
+      box-shadow: 0 8px 16px rgba(0,0,0,0.2);
+      border-radius: 8px;
+      padding: 1rem;
+      color: #000;
+    }
+
+    .dropdown-content select,
+    .dropdown-content form,
+    .dropdown-content label,
+    .dropdown-content button,
+    .dropdown-content input[type="text"] {
+      display: block;
+      width: 100%;
+      margin-bottom: 1rem;
+      color: #000;
+    }
+
+    .dropdown-content button {
+      background-color: #3d7d66;
+      color: white;
+      padding: 0.5rem 1rem;
+      border: none;
+      border-radius: 6px;
+      cursor: pointer;
+    }
+
+    .dropdown-content button:hover {
+      background-color: #2f5c4e;
+    }
+
+    .dropdown-content label {
+      color: #000;
+    }
+
+  #main-header {
+    position: fixed;
+    top: 0;
+    width: 100%;
+    z-index: 1000;
+    transition: top 0.3s ease;
+    padding-right: 16px; /* da se dropdown ne stisne uz scrollbar */
+  }
+
+  body {
+    padding-top: 100px; /* da sadržaj ne ide ispod headera */
+      padding-right: 16px; /* ✅ DODAJ OVO */
+  }
   </style>
 </head>
 <body>
-  <header>
-    <div class="toggle-switch toggle-icons">
-  <span class="sun"></span>
-  <label>
-    <input type="checkbox" onchange="toggleDarkMode()" />
-    <span class="toggle-slider"></span>
-  </label>
-  <span class="moon"></span>
-</div>
+  <header id="main-header">
+    
 
     <div class="title-container">MAT-BOT</div>
-   
+   <div class="dropdown">
+      <button class="dropdown-toggle" onclick="toggleDropdown()">☰ Meni</button>
+      <div id="dropdown-menu" class="dropdown-content">
+        <label>🌙 Dark Mode:
+          <input type="checkbox" onchange="toggleDarkMode()" />
+        </label>
+
+        <form method="POST" action="/promijeni-razred" onsubmit="clearChatOnRazredChange()">
+          <label for="razred-menu">🎓 Promijeni razred</label>
+          <select name="razred" id="razred-menu" required>
+            <option value="">-- Odaberi razred --</option>
+            <option value="5">5. razred</option>
+            <option value="6">6. razred</option>
+            <option value="7">7. razred</option>
+            <option value="8">8. razred</option>
+            <option value="9">9. razred</option>
+          </select>
+          <button type="submit">✅ Potvrdi</button>
+        </form>
+
+       
+      </div>
+    </div>
 
   </header>
 
@@ -390,10 +478,12 @@ body:not(.dark) {
       <button type="submit" style="background-color: #c94f4f;">🗑️ Očisti konverzaciju</button>
     </form>
 
-    <form method="POST" action="/promijeni-razred">
-      <button type="submit" style="background-color: #694db8;">🔁 Promijeni razred</button>
-    </form>
-  </main>
+ 
+
+   
+
+   
+
 
   <script>
     function showTyping() {
@@ -414,6 +504,34 @@ body:not(.dark) {
   document.body.classList.toggle("dark");
 }
 
+ function toggleDropdown() {
+      const menu = document.getElementById("dropdown-menu");
+      menu.style.display = menu.style.display === "block" ? "none" : "block";
+    }
+
+    function toggleDarkMode() {
+      document.body.classList.toggle("dark");
+    }
+
+    function clearChatOnRazredChange() {
+      localStorage.clear(); // možeš umjesto toga napraviti redirect na /clear pa onda /promijeni-razred
+    }
+let lastScrollTop = 0;
+  const header = document.getElementById("main-header");
+
+  window.addEventListener("scroll", function () {
+    const scrollTop = window.pageYOffset || document.documentElement.scrollTop;
+
+    if (scrollTop < lastScrollTop) {
+      // scroll up → show header
+      header.style.top = "0";
+    } else {
+      // scroll down → hide header
+      header.style.top = "-100px";
+    }
+
+    lastScrollTop = scrollTop;
+  });
   </script>
 </body>
 </html>
