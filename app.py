@@ -1,4 +1,4 @@
-from flask import Flask, render_template, request, redirect, url_for, session
+from flask import Flask, render_template, request, session
 from openai import OpenAI
 from dotenv import load_dotenv
 import os
@@ -9,10 +9,12 @@ import requests
 import base64
 from flask_cors import CORS
 
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.metrics.pairwise import cosine_similarity
+
 # Učitaj .env varijable
 load_dotenv()
 
-# Inicijalizacija
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 MATHPIX_API_ID = os.getenv("MATHPIX_API_ID")
 MATHPIX_API_KEY = os.getenv("MATHPIX_API_KEY")
@@ -37,7 +39,6 @@ prompti_po_razredu = {
     "9": "Ti si pomoćnik iz matematike za učenike 9. razreda osnovne škole..."
 }
 
-# Funkcija za OCR sa slike
 def extract_text_from_image(file):
     image_data = base64.b64encode(file.read()).decode()
     headers = {
@@ -56,65 +57,73 @@ def extract_text_from_image(file):
     else:
         return f"Mathpix greška: {response.text}"
 
-# Početna ruta
-@app.route('/', methods=['GET', 'POST'])
-def index():
-    if request.method == 'POST':
-        # Sigurno dohvati razred iz forme ili sesije
-        razred = request.form.get('razred') or session.get('razred', '5')
-        session['razred'] = razred
+def latexify_fractions(text):
+    def zamijeni(match):
+        brojilac, imenilac = match.groups()
+        return f"\\(\\frac{{{brojilac}}}{{{imenilac}}}\\)"
+    return re.sub(r'\b(\d{1,4})/(\d{1,4})\b', zamijeni, text)
 
-        pitanje = request.form.get('pitanje', '')
-        slika = request.files.get('slika')
+@app.route("/", methods=["GET", "POST"])
+def index():
+    razred = session.get("razred", request.form.get("razred", "5"))
+    history = session.get("history", [])
+
+    if request.method == "POST":
+        pitanje = request.form.get("pitanje", "")
+        slika = request.files.get("slika")
 
         if slika and slika.filename:
             tekst_iz_slike = extract_text_from_image(slika)
-            pitanje += '\n' + tekst_iz_slike
+            pitanje += "\n" + tekst_iz_slike
 
-        prompt = prompti_po_razredu.get(razred, prompti_po_razredu["5"])
-        system_msg = {
-            'role': 'system',
-            'content': (
-                prompt +
-                " Odgovaraj matematički precizno. "
-                "Ako pitanje nije iz matematike, reci: 'Postavi mi matematičko pitanje.'"
+        prompt_za_razred = prompti_po_razredu.get(razred, prompti_po_razredu["5"])
+        system_message = {
+            "role": "system",
+            "content": (
+                prompt_za_razred +
+                " Odgovaraj na jeziku na kojem je pitanje postavljeno. Ako nisi siguran, koristi bosanski. "
+                "Uvijek koristi ijekavicu. Ako pitanje nije iz matematike, reci: 'Molim te, postavi matematičko pitanje.' "
+                "Ako ne znaš tačno rješenje, reci: 'Za ovaj zadatak se obrati instruktorima na info@matematicari.com'."
             )
         }
 
-        messages = [system_msg, {'role': 'user', 'content': pitanje}]
         try:
-            resp = client.chat.completions.create(
-                model='gpt-4o',  # promijeni u 'gpt-3.5-turbo' ako je potrebno
+            messages = [system_message]
+            for msg in history[-5:]:
+                messages.append({"role": "user", "content": msg["user"]})
+                messages.append({"role": "assistant", "content": msg["bot"]})
+
+            messages.append({"role": "user", "content": pitanje})
+
+            response = client.chat.completions.create(
+                model="gpt-4o",
                 messages=messages
             )
-            odgovor = resp.choices[0].message.content.strip()
+            raw_odgovor = response.choices[0].message.content
+            odgovor = f"<h1>Odgovor:</h1><p>{latexify_fractions(raw_odgovor)}</p>"
+
+            history.append({"user": pitanje.strip(), "bot": odgovor.strip()})
+            session["history"] = history
+            session["razred"] = razred
+            sheet.append_row([pitanje, odgovor])
+
         except Exception as e:
-            odgovor = f"Greška pri odgovoru: {str(e)}"
+            odgovor = f"<p><b>Greška:</b> {str(e)}</p>"
 
-        history = session.get('history', [])
-        history.append({'user': pitanje, 'bot': odgovor})
-        session['history'] = history
-        sheet.append_row([pitanje, odgovor])
+        return render_template("index.html", history=history, razred=razred)
 
-        return redirect(url_for('index'))
+    return render_template("index.html", history=history, razred=razred)
 
-    return render_template('index.html',
-                           history=session.get('history', []),
-                           razred=session.get('razred', ''))
-
-# Očisti konverzaciju
-@app.route('/clear', methods=['POST'])
+@app.route("/clear", methods=["POST"])
 def clear():
     session.clear()
-    return redirect(url_for('index'))
+    return render_template("index.html", history=[], razred="5")
 
-# Promijeni razred
-@app.route('/promijeni-razred', methods=['POST'])
+@app.route("/promijeni-razred", methods=["POST"])
 def promijeni_razred():
-    session.pop('history', None)
-    session.pop('razred', None)
-    return redirect(url_for('index'))
+    session.pop("razred", None)
+    session.pop("history", None)
+    return render_template("index.html", history=[], razred="5")
 
-# Pokreni aplikaciju
-if __name__ == '__main__':
+if __name__ == "__main__":
     app.run(debug=True, port=5000)
