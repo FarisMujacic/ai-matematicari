@@ -65,19 +65,15 @@ def latexify_fractions(text):
 
 @app.route("/", methods=["GET", "POST"])
 def index():
-    # Ako razred nije postavljen i GET je, pokaži samo izbor razreda
-    if "razred" not in session and request.method == "GET":
+    razred = session.get("razred")
+    if not razred and request.method == "POST":
+        razred = request.form.get("razred", "5")
+        session["razred"] = razred
+
+    if not razred:
         return render_template("index.html", history=[], razred=None)
 
-    razred = session.get("razred")
-    history = session.get("history", [])
-
     if request.method == "POST":
-        # Ako razred još nije bio izabran – sada ga pamtimo
-        if not razred:
-            razred = request.form.get("razred", "5")
-            session["razred"] = razred
-
         pitanje = request.form.get("pitanje", "")
         slika = request.files.get("slika")
 
@@ -98,10 +94,7 @@ def index():
 
         try:
             messages = [system_message]
-            for msg in history[-5:]:
-                messages.append({"role": "user", "content": msg["user"]})
-                messages.append({"role": "assistant", "content": msg["bot"]})
-
+            # Ne koristimo prošlu historiju jer session ne radi
             messages.append({"role": "user", "content": pitanje})
 
             response = client.chat.completions.create(
@@ -111,17 +104,15 @@ def index():
             raw_odgovor = response.choices[0].message.content
             odgovor = f"<h1>Odgovor:</h1><p>{latexify_fractions(raw_odgovor)}</p>"
 
-            history.append({"user": pitanje.strip(), "bot": odgovor.strip()})
-            session["history"] = history
             sheet.append_row([pitanje, odgovor])
+            return render_template("index.html", history=[{"user": pitanje, "bot": odgovor}], razred=razred)
 
         except Exception as e:
             odgovor = f"<p><b>Greška:</b> {str(e)}</p>"
+            return render_template("index.html", history=[{"user": pitanje, "bot": odgovor}], razred=razred)
 
-        return render_template("index.html", history=history, razred=razred)
+    return render_template("index.html", history=[], razred=razred)
 
-    # GET zahtjev nakon što je razred već postavljen
-    return render_template("index.html", history=history, razred=razred)
 
 
 @app.route("/clear", methods=["POST"])
