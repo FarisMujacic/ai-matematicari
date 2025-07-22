@@ -65,10 +65,18 @@ def latexify_fractions(text):
 
 @app.route("/", methods=["GET", "POST"])
 def index():
-    razred = session.get("razred", request.form.get("razred", "5"))
+    if "razred" not in session and request.method == "GET":
+        return render_template("index.html", history=[], razred=None)
+
+    razred = session.get("razred")
     history = session.get("history", [])
 
     if request.method == "POST":
+        if not razred:
+            razred = request.form.get("razred", "5")
+            session["razred"] = razred
+            return render_template("index.html", history=[], razred=razred)
+
         pitanje = request.form.get("pitanje", "")
         slika = request.files.get("slika")
 
@@ -104,7 +112,6 @@ def index():
 
             history.append({"user": pitanje.strip(), "bot": odgovor.strip()})
             session["history"] = history
-            session["razred"] = razred
             sheet.append_row([pitanje, odgovor])
 
         except Exception as e:
@@ -113,6 +120,7 @@ def index():
         return render_template("index.html", history=history, razred=razred)
 
     return render_template("index.html", history=history, razred=razred)
+
 
 @app.route("/clear", methods=["POST"])
 def clear():
