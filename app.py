@@ -65,6 +65,7 @@ def latexify_fractions(text):
 
 @app.route("/", methods=["GET", "POST"])
 def index():
+    # Ako razred nije postavljen i GET je, pokaži samo izbor razreda
     if "razred" not in session and request.method == "GET":
         return render_template("index.html", history=[], razred=None)
 
@@ -72,10 +73,10 @@ def index():
     history = session.get("history", [])
 
     if request.method == "POST":
+        # Ako razred još nije bio izabran – sada ga pamtimo
         if not razred:
             razred = request.form.get("razred", "5")
             session["razred"] = razred
-            return render_template("index.html", history=[], razred=razred)
 
         pitanje = request.form.get("pitanje", "")
         slika = request.files.get("slika")
@@ -119,6 +120,7 @@ def index():
 
         return render_template("index.html", history=history, razred=razred)
 
+    # GET zahtjev nakon što je razred već postavljen
     return render_template("index.html", history=history, razred=razred)
 
 
