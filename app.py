@@ -65,13 +65,8 @@ def latexify_fractions(text):
 
 @app.route("/", methods=["GET", "POST"])
 def index():
-    razred = session.get("razred")
-    if not razred and request.method == "POST":
-        razred = request.form.get("razred", "5")
-        session["razred"] = razred
-
-    if not razred:
-        return render_template("index.html", history=[], razred=None)
+    razred = session.get("razred", request.form.get("razred", "5"))
+    history = session.get("history", [])
 
     if request.method == "POST":
         pitanje = request.form.get("pitanje", "")
@@ -94,7 +89,10 @@ def index():
 
         try:
             messages = [system_message]
-            # Ne koristimo prošlu historiju jer session ne radi
+            for msg in history[-5:]:
+                messages.append({"role": "user", "content": msg["user"]})
+                messages.append({"role": "assistant", "content": msg["bot"]})
+
             messages.append({"role": "user", "content": pitanje})
 
             response = client.chat.completions.create(
@@ -104,16 +102,17 @@ def index():
             raw_odgovor = response.choices[0].message.content
             odgovor = f"<h1>Odgovor:</h1><p>{latexify_fractions(raw_odgovor)}</p>"
 
+            history.append({"user": pitanje.strip(), "bot": odgovor.strip()})
+            session["history"] = history
+            session["razred"] = razred
             sheet.append_row([pitanje, odgovor])
-            return render_template("index.html", history=[{"user": pitanje, "bot": odgovor}], razred=razred)
 
         except Exception as e:
             odgovor = f"<p><b>Greška:</b> {str(e)}</p>"
-            return render_template("index.html", history=[{"user": pitanje, "bot": odgovor}], razred=razred)
 
-    return render_template("index.html", history=[], razred=razred)
+        return render_template("index.html", history=history, razred=razred)
 
-
+    return render_template("index.html", history=history, razred=razred)
 
 @app.route("/clear", methods=["POST"])
 def clear():
