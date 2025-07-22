@@ -70,9 +70,11 @@ def evaluate_fraction_expression(expr_text: str) -> Fraction:
 @app.route('/', methods=['GET', 'POST'])
 def index():
     if request.method == 'POST':
-        if 'razred' not in session:
-            session['razred'] = request.form.get('razred', '5')
+        razred = request.form.get('razred') or session.get('razred', '5')
+        session['razred'] = razred
+
         pitanje = request.form.get('pitanje', '')
+
         slika = request.files.get('slika')
 
         # Dodaj tekst iz slike ako postoji
