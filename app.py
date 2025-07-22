@@ -8,7 +8,6 @@ import re
 import requests
 import base64
 from flask_cors import CORS
-from sympy import sympify, sqrt, sin, cos, tan, log, exp
 import plotly.graph_objs as go
 import numpy as np
 from fractions import Fraction
@@ -87,16 +86,7 @@ def index():
         resp = client.chat.completions.create(model='gpt-4o', messages=messages)
         odgovor = resp.choices[0].message.content.strip()
 
-        if re.search(r'\d+\/\d+.*[+\-*/]', pitanje):
-            fracs, expr = extract_fractions_and_expr(pitanje)
-            charts = [plot_fraction(f) for f in fracs]
-            res = evaluate_fraction_expression(expr)
-            charts.append(plot_fraction(res, title=f'=' + str(res)))
-            container = '<div class="fraction-graphs-container">'
-            for c in charts:
-                container += f'<div>{c}</div>'
-            container += '</div>'
-            odgovor = '<p>' + odgovor + '</p>' + container
+        
 
         history = session.get('history', [])
         history.append({'user': pitanje, 'bot': odgovor})
