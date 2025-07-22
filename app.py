@@ -96,7 +96,8 @@ def index():
         sheet.append_row([pitanje, odgovor])
         return redirect(url_for('index'))
 
-    return render_template('index.html', history=session.get('history', []), razred=session.get('razred', ''))
+    return render_template('index.html', history=history, razred=razred)
+
 
 @app.route('/clear', methods=['POST'])
 def clear():
