@@ -8,6 +8,7 @@ import re
 import requests
 import base64
 from flask_cors import CORS
+from io import BytesIO
 
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
@@ -53,9 +54,10 @@ def extract_text_from_image(file):
     }
     response = requests.post("https://api.mathpix.com/v3/text", headers=headers, json=data)
     if response.ok:
-        return response.json().get("text", "")
+        text = response.json().get("text", "")
+        return text.strip(), len(text.strip()) > 20
     else:
-        return f"Mathpix greška: {response.text}"
+        return "", False
 
 def latexify_fractions(text):
     def zamijeni(match):
@@ -71,10 +73,62 @@ def index():
     if request.method == "POST":
         pitanje = request.form.get("pitanje", "")
         slika = request.files.get("slika")
+        pitanje_iz_slike = ""
 
         if slika and slika.filename:
-            tekst_iz_slike = extract_text_from_image(slika)
-            pitanje += "\n" + tekst_iz_slike
+            slika_bytes = BytesIO(slika.read())
+            slika.seek(0)
+
+            tekst_iz_slike, validan_tekst = extract_text_from_image(slika_bytes)
+
+            if validan_tekst:
+                pitanje_iz_slike = tekst_iz_slike
+            else:
+                image_data = base64.b64encode(slika_bytes.getvalue()).decode()
+                image_prompt = {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "Na slici je matematički zadatak. Molim te objasni i riješi ga korak po korak."},
+                        {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{image_data}"}}
+                    ]
+                }
+
+                prompt_za_razred = prompti_po_razredu.get(razred, prompti_po_razredu["5"])
+                system_message = {
+                    "role": "system",
+                    "content": (
+                        prompt_za_razred +
+                        " Odgovaraj na jeziku na kojem je pitanje postavljeno. Ako nisi siguran, koristi bosanski. "
+                        "Uvijek koristi ijekavicu. Ako pitanje nije iz matematike, reci: 'Molim te, postavi matematičko pitanje.' "
+                        "Ako ne znaš tačno rješenje, reci: 'Za ovaj zadatak se obrati instruktorima na info@matematicari.com'."
+                    )
+                }
+                messages = [system_message]
+                for msg in history[-5:]:
+                    messages.append({"role": "user", "content": msg["user"]})
+                    messages.append({"role": "assistant", "content": msg["bot"]})
+                messages.append(image_prompt)
+
+                try:
+                    response = client.chat.completions.create(
+                        model="gpt-4o",
+                        messages=messages
+                    )
+                    raw_odgovor = response.choices[0].message.content
+                    odgovor = f"<h1>Odgovor:</h1><p>{latexify_fractions(raw_odgovor)}</p>"
+
+                    history.append({"user": "[SLIKA]", "bot": odgovor.strip()})
+                    session["history"] = history
+                    session["razred"] = razred
+                    sheet.append_row(["[SLIKA]", odgovor])
+
+                except Exception as e:
+                    odgovor = f"<p><b>Greška:</b> {str(e)}</p>"
+
+                return render_template("index.html", history=history, razred=razred)
+
+        if pitanje_iz_slike:
+            pitanje += "\n" + pitanje_iz_slike
 
         prompt_za_razred = prompti_po_razredu.get(razred, prompti_po_razredu["5"])
         system_message = {
