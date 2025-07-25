@@ -69,7 +69,7 @@ def latexify_fractions(text):
 
 @app.route("/", methods=["GET", "POST"])
 def index():
-    razred = session.get("razred", request.form.get("razred", "5"))
+    razred = session.get("razred") or request.form.get("razred")
     history = session.get("history", [])
 
     if request.method == "POST":
@@ -117,7 +117,7 @@ def index():
                         messages=messages
                     )
                     raw_odgovor = response.choices[0].message.content
-                    odgovor = f"<h1>Odgovor:</h1><p>{latexify_fractions(raw_odgovor)}</p>"
+                    odgovor = f"<p>{latexify_fractions(raw_odgovor)}</p>"
 
                     history.append({"user": "[SLIKA]", "bot": odgovor.strip()})
                     session["history"] = history
@@ -156,7 +156,7 @@ def index():
                 messages=messages
             )
             raw_odgovor = response.choices[0].message.content
-            odgovor = f"<h1>Odgovor:</h1><p>{latexify_fractions(raw_odgovor)}</p>"
+            odgovor = f"<p>{latexify_fractions(raw_odgovor)}</p>"
 
             history.append({"user": pitanje.strip(), "bot": odgovor.strip()})
             session["history"] = history
