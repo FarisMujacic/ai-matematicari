@@ -6,3 +6,7 @@ oauth2client
 scikit-learn
 gunicorn
 flask-cors
+requests
+matplotlib
+sympy
+numpy
