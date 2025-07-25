@@ -74,6 +74,8 @@ def latexify_fractions(text):
 @app.route("/", methods=["GET", "POST"])
 def index():
     razred = session.get("razred") or request.form.get("razred")
+    print("razred u session:", session.get("razred"))
+
     history = session.get("history", [])
 
     if request.method == "POST":
