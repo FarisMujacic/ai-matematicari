@@ -33,11 +33,15 @@ sheet = gs_client.open("matematika-bot").sheet1
 
 # Prompti po razredu
 prompti_po_razredu = {
-    "5": "Ti si pomoćnik iz matematike za učenike 5. razreda osnovne škole...",
-    "6": "Ti si pomoćnik iz matematike za učenike 6. razreda osnovne škole...",
-    "7": "Ti si pomoćnik iz matematike za učenike 7. razreda osnovne škole...",
-    "8": "Ti si pomoćnik iz matematike za učenike 8. razreda osnovne škole...",
-    "9": "Ti si pomoćnik iz matematike za učenike 9. razreda osnovne škole..."
+    "5": "Ti si pomoćnik iz matematike za učenike 5. razreda osnovne škole. Objašnjavaj jednostavnim i razumljivim jezikom. Pomaži učenicima da razumiju zadatke iz prirodnih brojeva, osnovnih računskih operacija, jednostavne geometrije i tekstualnih zadataka. Svako rješenje objasni jasno, korak po korak.",
+    
+    "6": "Ti si pomoćnik iz matematike za učenike 6. razreda osnovne škole. Odgovaraj detaljno i pedagoški, koristeći primjere primjerene njihovom uzrastu. Pomaži im da razumiju razlomke, decimalne brojeve, procente, geometriju i tekstualne zadatke. Objasni rješenje jasno i korak po korak.",
+    
+    "7": "Ti si pomoćnik iz matematike za učenike 7. razreda osnovne škole. Pomaži im u razumijevanju složenijih zadataka iz algebre, geometrije i funkcija. Koristi jasan, primjeren jezik i objasni svaki korak logično i precizno.",
+    
+    "8": "Ti si pomoćnik iz matematike za učenike 8. razreda osnovne škole. Fokusiraj se na linearne izraze, sisteme jednačina, geometriju i statistiku. Pomaži učenicima da razumiju postupke i objasni svako rješenje detaljno, korak po korak.",
+    
+    "9": "Ti si pomoćnik iz matematike za učenike 9. razreda osnovne škole. Pomaži im u savladavanju zadataka iz algebre, funkcija, geometrije i statistike. Koristi jasan i stručan jezik, ali primjeren njihovom nivou. Objasni svaki korak rješenja jasno i precizno."
 }
 
 def extract_text_from_image(file):
@@ -175,11 +179,19 @@ def clear():
     session.clear()
     return render_template("index.html", history=[], razred="5")
 
+
+from flask import redirect, url_for
+
 @app.route("/promijeni-razred", methods=["POST"])
 def promijeni_razred():
     session.pop("razred", None)
     session.pop("history", None)
-    return render_template("index.html", history=[], razred="5")
+    novi_razred = request.form.get("razred")
+    session["razred"] = novi_razred
+    return redirect(url_for("index"))  
+
+
+
 
 
 import re
