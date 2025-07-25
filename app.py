@@ -9,9 +9,9 @@ import requests
 import base64
 from flask_cors import CORS
 from io import BytesIO
-
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
+
 
 # Učitaj .env varijable
 load_dotenv()
@@ -64,6 +64,8 @@ def latexify_fractions(text):
         brojilac, imenilac = match.groups()
         return f"\\(\\frac{{{brojilac}}}{{{imenilac}}}\\)"
     return re.sub(r'\b(\d{1,4})/(\d{1,4})\b', zamijeni, text)
+
+
 
 @app.route("/", methods=["GET", "POST"])
 def index():
@@ -178,6 +180,127 @@ def promijeni_razred():
     session.pop("razred", None)
     session.pop("history", None)
     return render_template("index.html", history=[], razred="5")
+
+
+import re
+import io
+import math
+import base64
+import matplotlib
+matplotlib.use('Agg')
+import matplotlib.pyplot as plt
+from flask import render_template, request
+from sympy import gcd
+
+@app.route("/proba", methods=["GET", "POST"])
+def proba():
+    rezultat = ""
+    img_data = ""
+
+    if request.method == "POST":
+        unos = request.form.get("razlomak", "")
+        match = re.match(r"\s*(\d+)\s*/\s*(\d+)\s*", unos)
+
+        if match:
+            a = int(match.group(1))
+            b = int(match.group(2))
+
+            if b == 0:
+                rezultat = "<p><b>Greška:</b> Imenilac ne može biti 0.</p>"
+            else:
+                nzd = int(gcd(a, b))
+                a_s = a // nzd
+                b_s = b // nzd
+
+                fig, axs = plt.subplots(1, 2, figsize=(6, 3))
+                fig.subplots_adjust(wspace=0.5)
+
+                # 🔶 Lijeva strana (a/b)
+                axs[0].set_title(f"{a}/{b}", fontsize=16, color="red")
+                if b <= 10:
+                    for i in range(b):
+                        face = "yellow" if i < a else "white"
+                        rect = plt.Rectangle((i, 0), 1, 1,
+                                             facecolor=face,
+                                             edgecolor="red", linewidth=2)
+                        axs[0].add_patch(rect)
+                    axs[0].set_xlim(0, b)
+                    axs[0].set_ylim(0, 1)
+                else:
+                    cols_b = math.ceil(math.sqrt(b))
+                rows_b = math.ceil(b / cols_b)
+
+                cols_b = math.ceil(math.sqrt(b))
+                rows_b = math.ceil(b / cols_b)
+
+                for i in range(b):
+                    col = i % cols_b
+                    row = i // cols_b
+                    face = "yellow" if i < a else "white"
+                    rect = plt.Rectangle((col, -row), 1, 1,
+                                        facecolor=face,
+                                        edgecolor="red", linewidth=2)
+                    axs[0].add_patch(rect)
+
+                axs[0].set_xlim(0, cols_b)
+                axs[0].set_ylim(-rows_b, 0)
+                axs[0].set_aspect("equal")
+                axs[0].axis("off")
+
+
+
+                # 🔷 Desna strana (a_s/b_s)
+                axs[1].set_title(f"{a_s}/{b_s}", fontsize=16, color="red")
+                if b_s <= 10:
+                    for i in range(b_s):
+                        face = "yellow" if i < a_s else "white"
+                        rect = plt.Rectangle((i, 0), 1, 1,
+                                             facecolor=face,
+                                             edgecolor="red", linewidth=2)
+                        axs[1].add_patch(rect)
+                    axs[1].set_xlim(0, b_s)
+                    axs[1].set_ylim(0, 1)
+                else:
+                    cols_s = math.ceil(math.sqrt(b_s))
+                    rows_s = math.ceil(b_s / cols_s)
+                    for i in range(b_s):
+                        col = i % cols_s
+                        row = i // cols_s
+                        face = "yellow" if i < a_s else "white"
+                        rect = plt.Rectangle((col, -row), 1, 1,
+                                             facecolor=face,
+                                             edgecolor="red", linewidth=2)
+                        axs[1].add_patch(rect)
+                    axs[1].set_xlim(0, cols_s)
+                    axs[1].set_ylim(-rows_s, 0)
+                axs[1].set_aspect("equal")
+                axs[1].axis("off")
+
+                # 📷 Konverzija u base64 sliku
+                buffer = io.BytesIO()
+                plt.savefig(buffer, format='png', bbox_inches='tight')
+                buffer.seek(0)
+                img_data = base64.b64encode(buffer.read()).decode('utf-8')
+                buffer.close()
+                plt.close(fig)
+
+                rezultat = (
+                    f"<h3>✂️ Skraćivanje razlomka {a}/{b}:</h3>"
+                    f"<p>✅ NZD: {nzd}<br>"
+                    f"{a} ÷ {nzd} = {a_s}, {b} ÷ {nzd} = {b_s}<br>"
+                    f"<b>👉 Rezultat: {a_s}/{b_s}</b></p>"
+                )
+        else:
+            rezultat = "<p><b>Greška:</b> Unesi razlomak u formatu npr. 9/15.</p>"
+
+    return render_template("proba.html", rezultat=rezultat, img_data=img_data)
+
+
+
+
+ 
+
+
 
 if __name__ == "__main__":
     app.run(debug=True, port=5000)
