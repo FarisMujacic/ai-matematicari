@@ -14,6 +14,8 @@
   </script>
   <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
   <script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
+<!-- Desmos Graphing Calculator API -->
+<script src="https://www.desmos.com/api/v1.11/calculator.js?apiKey=dcb31709b452b1cf9dc26972add0fda6"></script>
 
   <style>
   body {
@@ -592,9 +594,62 @@ html { scroll-behavior: smooth; } /* fallback ako skrola cijela stranica */
   
 </script>
 
-   
+   <script>
+  function initDesmos() {
+    // Nađi sve kontejnere kojima još nije inicijaliziran Desmos
+    document.querySelectorAll('.desmos-calculator[data-latex]:not([data-init])')
+      .forEach(function (el) {
+        try {
+          var calc = Desmos.GraphingCalculator(el, { expressions: false });
+          var latex = el.getAttribute('data-latex');
+          if (latex) {
+            calc.setExpression({ id: 'expr-1', latex: latex });
+          }
+          var bounds = el.getAttribute('data-bounds');
+          if (bounds) {
+            try { calc.setMathBounds(JSON.parse(bounds)); } catch (e) {}
+          }
+          el.setAttribute('data-init', '1');
+        } catch (e) {
+          console.error('Desmos init error', e);
+        }
+      });
+  }
+
+  // Pošto renderuješ server-side i stranica se reloada nakon POST-a,
+  // dovoljno je pokrenuti inicijalizaciju na DOMContentLoaded.
+  document.addEventListener('DOMContentLoaded', initDesmos);
+</script>
+
 
    
+<script>
+  function initDesmos() {
+    var nodes = document.querySelectorAll('.desmos-calculator[data-latex]:not([data-init])');
+    console.log('Desmos targets:', nodes.length, nodes);
+
+    nodes.forEach(function (el) {
+      try {
+        var calc = Desmos.GraphingCalculator(el, { expressions: false });
+        var latex = el.getAttribute('data-latex') || '';
+        if (latex) calc.setExpression({ id: 'expr-1', latex: latex });
+
+        var bounds = el.getAttribute('data-bounds');
+        if (bounds) {
+          try { calc.setMathBounds(JSON.parse(bounds)); } catch (e) { console.warn('Bad bounds JSON', e); }
+        }
+        el.setAttribute('data-init', '1');
+      } catch (e) {
+        console.error('Desmos init error', e);
+      }
+    });
+  }
+
+  // Pozovi i na DOMContentLoaded i na load (sigurnije)
+  document.addEventListener('DOMContentLoaded', initDesmos);
+  window.addEventListener('load', initDesmos);
+</script>
+
 
 
   
