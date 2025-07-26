@@ -12,6 +12,8 @@ from io import BytesIO
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 import json
+import html  # za HTML-escape u data-latex
+
 
 
 # Učitaj .env varijable
@@ -69,7 +71,98 @@ def latexify_fractions(text):
         brojilac, imenilac = match.groups()
         return f"\\(\\frac{{{brojilac}}}{{{imenilac}}}\\)"
     return re.sub(r'\b(\d{1,4})/(\d{1,4})\b', zamijeni, text)
+# --- Desmos helperi ---
 
+# --- Desmos helperi (CIJELI BLOK ZAMIJENJEN) ---
+
+GRAPH_BOUNDS_DEFAULT = {"left": -10, "right": 10, "top": 10, "bottom": -10}
+
+# mapiranje funkcija u Desmos LaTeX
+FUNC_MAP = {
+    'sin': r'\sin', 'cos': r'\cos', 'tan': r'\tan', 'tg': r'\tan',
+    'cot': r'\cot', 'ctg': r'\cot', 'sec': r'\sec', 'csc': r'\csc',
+    'arcsin': r'\arcsin', 'arccos': r'\arccos', 'arctan': r'\arctan',
+    'ln': r'\ln', 'log': r'\log', 'exp': r'\exp'
+}
+FUNC_RX = r'(?<!\\)\b(arcsin|arccos|arctan|sin|cos|tan|tg|cot|ctg|sec|csc|ln|log|exp)\b'
+
+def normalize_for_desmos(latex: str) -> str:
+    """Pretvori 'y=sinx', 'y=sin x', 'y=lnx', 'y=sqrt x' u validan Desmos LaTeX."""
+    s = (latex or '').strip()
+
+    # osiguraj "y=" na početku
+    if not re.match(r'^\s*y\s*=', s, flags=re.I):
+        s = 'y=' + s
+
+    # sqrt(...) ili sqrt x -> \sqrt{...}
+    s = re.sub(r'(?<!\\)\bsqrt\s*\(\s*([^)]+)\s*\)', r'\\sqrt{\1}', s, flags=re.I)
+    s = re.sub(r'(?<!\\)\bsqrt\s+([A-Za-z0-9x^+\-*/]+)', r'\\sqrt{\1}', s, flags=re.I)
+    s = re.sub(r'√\s*([A-Za-z0-9x^+\-*/]+)', r'\\sqrt{\1}', s)
+
+    # 1) ako je već sin(x) bez backslasha -> dodaj backslash
+    s = re.sub(FUNC_RX + r'(?=\()', lambda m: FUNC_MAP[m.group(1).lower()], s, flags=re.I)
+
+    # 2) slučajevi bez zagrada: "sin x", "sinx", "lnx", "log x", "cos2x" (osnovno)
+    def _fn_arg(m):
+        name = m.group(1).lower()
+        arg = (m.group(2) or 'x').strip()
+        return f"{FUNC_MAP[name]}({arg})"
+
+    # sin x   / ln x
+    s = re.sub(FUNC_RX + r'\s+([A-Za-z0-9]*x(?:\^\d+)?)\b', _fn_arg, s, flags=re.I)
+    # sinx    / lnx
+    s = re.sub(FUNC_RX + r'([A-Za-z0-9]*x(?:\^\d+)?)\b', _fn_arg, s, flags=re.I)
+
+    # zamijeni tg/ctg koji su možda već backslashovani
+    s = s.replace(r'\tg', r'\tan').replace(r'\ctg', r'\cot')
+
+    # počisti višak razmaka
+    s = re.sub(r'\s+', ' ', s).strip()
+    return s
+
+def _extract_latex_for_graph(text):
+    """Iz teksta nađi najjednostavniji oblik: y=..., f(x)=..., ili izraz sa x nakon 'nacrtaj/graf'."""
+    if not text:
+        return None
+    t = text.strip()
+
+    m = re.search(r'\b(y\s*=\s*[^;\n\r]+)', t, flags=re.I)
+    if m:
+        return m.group(1)  # NE briši razmake
+
+    m = re.search(r'\bf\s*\(\s*x\s*\)\s*=\s*([^;\n\r]+)', t, flags=re.I)
+    if m:
+        return 'y=' + m.group(1)
+
+    if re.search(r'\b(graf|grafik|nacrtaj|nacrtati|plot)\b', t, flags=re.I):
+        m = re.search(r'([\-+*/\d.\s]*x(?:\^\d+)?[^\n\r;]*)', t)
+        if m:
+            expr = m.group(1).strip()
+            return f'y={expr}' if not expr.startswith('y=') else expr
+
+    return None
+
+def _strip_tags(html_text: str) -> str:
+    return re.sub(r'<[^>]+>', ' ', html_text or '')
+
+def maybe_add_desmos_graph(bot_odgovor, korisnikov_upit, bounds=None):
+    """Ako prepoznamo funkciju, dodaj <div class="desmos-calculator" ...> u odgovor."""
+    # izvuci kandidat iz upita ili iz "plain" varijante bot_odgovor-a
+    latex = _extract_latex_for_graph(korisnikov_upit) or _extract_latex_for_graph(_strip_tags(bot_odgovor))
+    if not latex:
+        return bot_odgovor
+
+    # normalizuj u validan Desmos LaTeX (npr. 'y=sinx' -> 'y=\sin(x)')
+    latex = normalize_for_desmos(latex)
+
+    b = bounds or GRAPH_BOUNDS_DEFAULT
+    div = (
+        f'<div class="desmos-calculator" '
+        f'data-latex="{html.escape(latex, quote=True)}" '
+        f"data-bounds='{json.dumps(b)}' "
+        f'style=\"width:100%;height:420px;margin-top:10px;\"></div>'
+    )
+    return bot_odgovor + '<br><strong>Graf funkcije:</strong> ' + div
 
 
 @app.route("/", methods=["GET", "POST"])
@@ -111,7 +204,7 @@ def index():
                         " Odgovaraj na jeziku na kojem je pitanje postavljeno. Ako nisi siguran, koristi bosanski. "
                         "Uvijek koristi ijekavicu. Ako pitanje nije iz matematike, reci: 'Molim te, postavi matematičko pitanje.' "
                         "Ako ne znaš tačno rješenje, reci: 'Za ovaj zadatak se obrati instruktorima na info@matematicari.com'."
-                    )
+                                            )
                 }
                 messages = [system_message]
                 for msg in history[-5:]:
@@ -126,6 +219,9 @@ def index():
                     )
                     raw_odgovor = response.choices[0].message.content
                     odgovor = f"<p>{latexify_fractions(raw_odgovor)}</p>"
+                    odgovor = maybe_add_desmos_graph(odgovor, (pitanje or "") + "\n" + (pitanje_iz_slike or ""))
+# ⬆️ DODAJ OVU LINIJU
+
 
                     history.append({"user": "[SLIKA]", "bot": odgovor.strip()})
                     session["history"] = history
@@ -165,6 +261,9 @@ def index():
             )
             raw_odgovor = response.choices[0].message.content
             odgovor = f"<p>{latexify_fractions(raw_odgovor)}</p>"
+            odgovor = maybe_add_desmos_graph(odgovor, pitanje)
+# ⬆️ DODAJ OVU LINIJU
+
 
             history.append({"user": pitanje.strip(), "bot": odgovor.strip()})
             session["history"] = history
@@ -180,8 +279,10 @@ def index():
 
 @app.route("/clear", methods=["POST"])
 def clear():
-    session.clear()
-    return render_template("index.html", history=[], razred="5")
+    # OBRIŠI SAMO HISTORIJU — ZADRŽI IZABRANI RAZRED
+    session.pop("history", None)
+    return redirect(url_for("index"))
+
 
 
 from flask import redirect, url_for
@@ -203,126 +304,6 @@ def get_history_from_request():
             return []
     return []
 
-
-
-
-import re
-import io
-import math
-import base64
-import matplotlib
-matplotlib.use('Agg')
-import matplotlib.pyplot as plt
-from flask import render_template, request
-from sympy import gcd
-
-@app.route("/proba", methods=["GET", "POST"])
-def proba():
-    rezultat = ""
-    img_data = ""
-
-    if request.method == "POST":
-        unos = request.form.get("razlomak", "")
-        match = re.match(r"\s*(\d+)\s*/\s*(\d+)\s*", unos)
-
-        if match:
-            a = int(match.group(1))
-            b = int(match.group(2))
-
-            if b == 0:
-                rezultat = "<p><b>Greška:</b> Imenilac ne može biti 0.</p>"
-            else:
-                nzd = int(gcd(a, b))
-                a_s = a // nzd
-                b_s = b // nzd
-
-                fig, axs = plt.subplots(1, 2, figsize=(6, 3))
-                fig.subplots_adjust(wspace=0.5)
-
-                # 🔶 Lijeva strana (a/b)
-                axs[0].set_title(f"{a}/{b}", fontsize=16, color="red")
-                if b <= 10:
-                    for i in range(b):
-                        face = "yellow" if i < a else "white"
-                        rect = plt.Rectangle((i, 0), 1, 1,
-                                             facecolor=face,
-                                             edgecolor="red", linewidth=2)
-                        axs[0].add_patch(rect)
-                    axs[0].set_xlim(0, b)
-                    axs[0].set_ylim(0, 1)
-                else:
-                    cols_b = math.ceil(math.sqrt(b))
-                rows_b = math.ceil(b / cols_b)
-
-                cols_b = math.ceil(math.sqrt(b))
-                rows_b = math.ceil(b / cols_b)
-
-                for i in range(b):
-                    col = i % cols_b
-                    row = i // cols_b
-                    face = "yellow" if i < a else "white"
-                    rect = plt.Rectangle((col, -row), 1, 1,
-                                        facecolor=face,
-                                        edgecolor="red", linewidth=2)
-                    axs[0].add_patch(rect)
-
-                axs[0].set_xlim(0, cols_b)
-                axs[0].set_ylim(-rows_b, 0)
-                axs[0].set_aspect("equal")
-                axs[0].axis("off")
-
-
-
-                # 🔷 Desna strana (a_s/b_s)
-                axs[1].set_title(f"{a_s}/{b_s}", fontsize=16, color="red")
-                if b_s <= 10:
-                    for i in range(b_s):
-                        face = "yellow" if i < a_s else "white"
-                        rect = plt.Rectangle((i, 0), 1, 1,
-                                             facecolor=face,
-                                             edgecolor="red", linewidth=2)
-                        axs[1].add_patch(rect)
-                    axs[1].set_xlim(0, b_s)
-                    axs[1].set_ylim(0, 1)
-                else:
-                    cols_s = math.ceil(math.sqrt(b_s))
-                    rows_s = math.ceil(b_s / cols_s)
-                    for i in range(b_s):
-                        col = i % cols_s
-                        row = i // cols_s
-                        face = "yellow" if i < a_s else "white"
-                        rect = plt.Rectangle((col, -row), 1, 1,
-                                             facecolor=face,
-                                             edgecolor="red", linewidth=2)
-                        axs[1].add_patch(rect)
-                    axs[1].set_xlim(0, cols_s)
-                    axs[1].set_ylim(-rows_s, 0)
-                axs[1].set_aspect("equal")
-                axs[1].axis("off")
-
-                # 📷 Konverzija u base64 sliku
-                buffer = io.BytesIO()
-                plt.savefig(buffer, format='png', bbox_inches='tight')
-                buffer.seek(0)
-                img_data = base64.b64encode(buffer.read()).decode('utf-8')
-                buffer.close()
-                plt.close(fig)
-
-                rezultat = (
-                    f"<h3>✂️ Skraćivanje razlomka {a}/{b}:</h3>"
-                    f"<p>✅ NZD: {nzd}<br>"
-                    f"{a} ÷ {nzd} = {a_s}, {b} ÷ {nzd} = {b_s}<br>"
-                    f"<b>👉 Rezultat: {a_s}/{b_s}</b></p>"
-                )
-        else:
-            rezultat = "<p><b>Greška:</b> Unesi razlomak u formatu npr. 9/15.</p>"
-
-    return render_template("proba.html", rezultat=rezultat, img_data=img_data)
-
-
-
-
- 
 
 
 
