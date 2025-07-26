@@ -11,6 +11,7 @@ from flask_cors import CORS
 from io import BytesIO
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
+import json
 
 
 # Učitaj .env varijable
@@ -76,7 +77,8 @@ def index():
     razred = session.get("razred") or request.form.get("razred")
     print("razred u session:", session.get("razred"))
 
-    history = session.get("history", [])
+    history = get_history_from_request() or session.get("history", [])
+
 
     if request.method == "POST":
         pitanje = request.form.get("pitanje", "")
@@ -192,6 +194,14 @@ def promijeni_razred():
     session["razred"] = novi_razred
     return redirect(url_for("index"))  
 
+def get_history_from_request():
+    history_json = request.form.get("history_json", "")
+    if history_json:
+        try:
+            return json.loads(history_json)
+        except Exception:
+            return []
+    return []
 
 
 
