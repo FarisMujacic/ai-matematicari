@@ -406,7 +406,9 @@ body:not(.dark) {
           <input type="checkbox" onchange="toggleDarkMode()" />
         </label>
 
-        <form method="POST" action="/promijeni-razred" onsubmit="clearChatOnRazredChange()">
+        <form id="ask-form" method="POST" enctype="multipart/form-data" onsubmit="showTyping()">
+        <input type="hidden" name="history_json" id="history_json_main" value='{{ history|tojson|safe }}'>
+
           <label for="razred-menu">🎓 Promijeni razred</label>
           <select name="razred" id="razred-menu" required>
             <option value="">-- Odaberi razred --</option>
@@ -456,6 +458,7 @@ body:not(.dark) {
 </div>
 
     <form method="POST" enctype="multipart/form-data" onsubmit="showTyping()">
+        <input type="hidden" name="history_json" id="history_json_main" value='{{ history|tojson|safe }}'>
       <div id="razred-wrapper" {% if razred %}style="display: none;"{% endif %}>
         <label for="razred"><strong>Koji si razred?</strong></label>
         <select name="razred" id="razred" required>
@@ -477,64 +480,91 @@ body:not(.dark) {
       <button type="submit">📧 Pošalji</button>
     </form>
 
-    <form method="POST" action="/clear">
-      <button type="submit" style="background-color: #c94f4f;">🗑️ Očisti konverzaciju</button>
-    </form>
+    <form id="clear-form" method="POST" action="/clear">
+  <button type="submit" style="background-color: #c94f4f;">🗑️ Očisti konverzaciju</button>
+</form>
+
 
  
+<script>
+(function () {
+  const CID_KEY = 'matbot_cid';
+  if (!localStorage.getItem(CID_KEY)) {
+    const cid = (window.crypto && crypto.randomUUID) ? crypto.randomUUID() : (Date.now() + '_' + Math.random());
+    localStorage.setItem(CID_KEY, cid);
+  }
+  const cid = localStorage.getItem(CID_KEY);
+  const HIST_KEY = 'matbot_history_' + cid;
+
+  const serverHistory = {{ history|tojson|safe }};
+  const hiddenMain  = document.getElementById('history_json_main');
+  const hiddenGrade = document.getElementById('history_json_grade');
+
+  // Server -> localStorage -> hidden
+  if (Array.isArray(serverHistory) && serverHistory.length) {
+    const s = JSON.stringify(serverHistory);
+    localStorage.setItem(HIST_KEY, s);
+    if (hiddenMain)  hiddenMain.value  = s;
+    if (hiddenGrade) hiddenGrade.value = s;
+  } else {
+    const saved = localStorage.getItem(HIST_KEY) || '[]';
+    if (hiddenMain)  hiddenMain.value  = saved;
+    if (hiddenGrade) hiddenGrade.value = saved;
+  }
+
+  // Glavna forma (pitanje)
+  const askForm = document.getElementById('ask-form');
+  if (askForm) {
+    askForm.addEventListener('submit', function () {
+      const current = localStorage.getItem(HIST_KEY) || '[]';
+      if (hiddenMain) hiddenMain.value = current;
+    });
+  }
+
+  // Clear forma
+  const clearForm = document.getElementById('clear-form');
+  if (clearForm) {
+    clearForm.addEventListener('submit', function () {
+      localStorage.removeItem(HIST_KEY);
+    });
+  }
+
+  // Funkcije koje pozivaš iz HTML‑a
+  window.showTyping = function () {
+    const el = document.getElementById('typing');
+    if (el) el.style.display = 'block';
+  };
+
+  window.toggleDropdown = function () {
+    const dd = document.getElementById('dropdown-menu');
+    if (!dd) return;
+    dd.style.display = (dd.style.display === 'block') ? 'none' : 'block';
+  };
+
+  window.toggleDarkMode = function () {
+    document.body.classList.toggle('dark');
+    localStorage.setItem('matbot_dark', document.body.classList.contains('dark') ? '1' : '0');
+  };
+
+  window.clearChatOnRazredChange = function () {
+    localStorage.removeItem(HIST_KEY);
+    if (hiddenMain)  hiddenMain.value  = '[]';
+    if (hiddenGrade) hiddenGrade.value = '[]';
+    return true; // dozvoli submit
+  };
+
+  // Primijeni dark mode iz localStorage
+  if (localStorage.getItem('matbot_dark') === '1') {
+    document.body.classList.add('dark');
+  }
+})();
+</script>
 
    
 
    
 
 
-  <script>
-    function showTyping() {
-      const typing = document.getElementById("typing");
-      if (typing) typing.style.display = "block";
-    }
-
-    window.onload = () => {
-      setTimeout(() => {
-        const chat = document.getElementById("chat-container");
-        if (chat) {
-          chat.scrollIntoView({ behavior: "smooth", block: "end" });
-        }
-      }, 150);
-    };
-
-    function toggleDarkMode() {
-  document.body.classList.toggle("dark");
-}
-
- function toggleDropdown() {
-      const menu = document.getElementById("dropdown-menu");
-      menu.style.display = menu.style.display === "block" ? "none" : "block";
-    }
-
-    function toggleDarkMode() {
-      document.body.classList.toggle("dark");
-    }
-
-    function clearChatOnRazredChange() {
-      localStorage.clear(); // možeš umjesto toga napraviti redirect na /clear pa onda /promijeni-razred
-    }
-let lastScrollTop = 0;
-  const header = document.getElementById("main-header");
-
-  window.addEventListener("scroll", function () {
-    const scrollTop = window.pageYOffset || document.documentElement.scrollTop;
-
-    if (scrollTop < lastScrollTop) {
-      // scroll up → show header
-      header.style.top = "0";
-    } else {
-      // scroll down → hide header
-      header.style.top = "-100px";
-    }
-
-    lastScrollTop = scrollTop;
-  });
-  </script>
+  
 </body>
 </html>
