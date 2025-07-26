@@ -186,6 +186,13 @@ def clear():
 
 from flask import redirect, url_for
 
+@app.route("/promijeni-razred", methods=["POST"])
+def promijeni_razred():
+    session.pop("razred", None)
+    session.pop("history", None)
+    novi_razred = request.form.get("razred")
+    session["razred"] = novi_razred
+    return redirect(url_for("index"))  
 
 def get_history_from_request():
     history_json = request.form.get("history_json", "")
