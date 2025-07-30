@@ -14,8 +14,8 @@
   </script>
   <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
   <script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
-<!-- Desmos Graphing Calculator API -->
-<script src="https://www.desmos.com/api/v1.11/calculator.js?apiKey=dcb31709b452b1cf9dc26972add0fda6"></script>
+
+
 
   <style>
   body {
@@ -402,6 +402,14 @@ body:not(.dark) {
 html { scroll-behavior: smooth; } /* fallback ako skrola cijela stranica */
 
 
+.jsxgraph {
+  width: 100%;
+  height: 300px;
+  margin-top: 1rem;
+  border: 1px solid #ccc;
+}
+
+
   </style>
 </head>
 <body>
@@ -418,9 +426,7 @@ html { scroll-behavior: smooth; } /* fallback ako skrola cijela stranica */
 
       
 
-        <a href="/proba" target="_blank" style="text-decoration: none; display: block; padding: 8px;">
-    📊 Testiraj grafove
-</a>
+        
        
       </div>
     </div>
@@ -441,6 +447,8 @@ html { scroll-behavior: smooth; } /* fallback ako skrola cijela stranica */
 
   <div class="chat-message bot-message">
     <div class="formatted-bot-response">
+
+
       {{ message.bot|safe }}
     </div>
   </div>
@@ -455,7 +463,8 @@ html { scroll-behavior: smooth; } /* fallback ako skrola cijela stranica */
   🤖 MAT-BOT piše odgovor
 </div>
 
-    <form method="POST" enctype="multipart/form-data" onsubmit="showTyping()">
+    <form id="ask-form" method="POST" enctype="multipart/form-data" onsubmit="showTyping()">
+
         <input type="hidden" name="history_json" id="history_json_main" value='{{ history|tojson|safe }}'>
       <div id="razred-wrapper" {% if razred %}style="display: none;"{% endif %}>
         <label for="razred"><strong>Koji si razred?</strong></label>
@@ -512,14 +521,19 @@ html { scroll-behavior: smooth; } /* fallback ako skrola cijela stranica */
     if (hiddenGrade) hiddenGrade.value = saved;
   }
 
-  // Glavna forma (pitanje)
-  const askForm = document.getElementById('ask-form');
-  if (askForm) {
-    askForm.addEventListener('submit', function () {
-      const current = localStorage.getItem(HIST_KEY) || '[]';
-      if (hiddenMain) hiddenMain.value = current;
-    });
-  }
+ const askForm = document.getElementById('ask-form');
+if (askForm) {
+  askForm.addEventListener('submit', function () {
+    // Ažuriraj localStorage
+    const current = localStorage.getItem(HIST_KEY) || '[]';
+    if (hiddenMain) hiddenMain.value = current;
+
+    // Scrollaj na dno
+    const end = document.getElementById('chat-end');
+    if (end) end.scrollIntoView({ behavior: 'auto', block: 'end' });
+  });
+}
+
 
   // Clear forma
   const clearForm = document.getElementById('clear-form');
@@ -584,73 +598,11 @@ html { scroll-behavior: smooth; } /* fallback ako skrola cijela stranica */
   document.addEventListener('DOMContentLoaded', scrollToBottom);
 
   // Prije slanja poruke, samo da (ako je dugo) ostane fokus na dnu
-  const askForm = document.getElementById('ask-form');
-  if (askForm) {
-    askForm.addEventListener('submit', function () {
-      const end = document.getElementById('chat-end');
-      if (end) end.scrollIntoView({ behavior: 'auto', block: 'end' });
-    });
-  }
+  
   
 </script>
 
-   <script>
-  function initDesmos() {
-    // Nađi sve kontejnere kojima još nije inicijaliziran Desmos
-    document.querySelectorAll('.desmos-calculator[data-latex]:not([data-init])')
-      .forEach(function (el) {
-        try {
-          var calc = Desmos.GraphingCalculator(el, { expressions: false });
-          var latex = el.getAttribute('data-latex');
-          if (latex) {
-            calc.setExpression({ id: 'expr-1', latex: latex });
-          }
-          var bounds = el.getAttribute('data-bounds');
-          if (bounds) {
-            try { calc.setMathBounds(JSON.parse(bounds)); } catch (e) {}
-          }
-          el.setAttribute('data-init', '1');
-        } catch (e) {
-          console.error('Desmos init error', e);
-        }
-      });
-  }
-
-  // Pošto renderuješ server-side i stranica se reloada nakon POST-a,
-  // dovoljno je pokrenuti inicijalizaciju na DOMContentLoaded.
-  document.addEventListener('DOMContentLoaded', initDesmos);
-</script>
-
-
-   
-<script>
-  function initDesmos() {
-    var nodes = document.querySelectorAll('.desmos-calculator[data-latex]:not([data-init])');
-    console.log('Desmos targets:', nodes.length, nodes);
-
-    nodes.forEach(function (el) {
-      try {
-        var calc = Desmos.GraphingCalculator(el, { expressions: false });
-        var latex = el.getAttribute('data-latex') || '';
-        if (latex) calc.setExpression({ id: 'expr-1', latex: latex });
-
-        var bounds = el.getAttribute('data-bounds');
-        if (bounds) {
-          try { calc.setMathBounds(JSON.parse(bounds)); } catch (e) { console.warn('Bad bounds JSON', e); }
-        }
-        el.setAttribute('data-init', '1');
-      } catch (e) {
-        console.error('Desmos init error', e);
-      }
-    });
-  }
-
-  // Pozovi i na DOMContentLoaded i na load (sigurnije)
-  document.addEventListener('DOMContentLoaded', initDesmos);
-  window.addEventListener('load', initDesmos);
-</script>
-
-
+  
 
   
 </body>
