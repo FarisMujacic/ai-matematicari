@@ -463,7 +463,8 @@ html { scroll-behavior: smooth; } /* fallback ako skrola cijela stranica */
   🤖 MAT-BOT piše odgovor
 </div>
 
-    <form id="ask-form" method="POST" enctype="multipart/form-data" onsubmit="showTyping()">
+    <form id="ask-form" method="POST" enctype="multipart/form-data" onsubmit="return handleFormSubmit(event)">
+
 
         <input type="hidden" name="history_json" id="history_json_main" value='{{ history|tojson|safe }}'>
       <div id="razred-wrapper" {% if razred %}style="display: none;"{% endif %}>
@@ -488,7 +489,8 @@ html { scroll-behavior: smooth; } /* fallback ako skrola cijela stranica */
       <button type="submit">📧 Pošalji</button>
     </form>
 
-    <form id="clear-form" method="POST" action="/clear">
+    <form id="clear-form" method="POST" action="/clear" onsubmit="return shouldClearHistory()">
+  <input type="hidden" name="confirm_clear" value="1" />
   <button type="submit" style="background-color: #c94f4f;">🗑️ Očisti konverzaciju</button>
 </form>
 
@@ -521,22 +523,54 @@ html { scroll-behavior: smooth; } /* fallback ako skrola cijela stranica */
     if (hiddenGrade) hiddenGrade.value = saved;
   }
 
- const askForm = document.getElementById('ask-form');
+const askForm = document.getElementById('ask-form');
 if (askForm) {
-  askForm.addEventListener('submit', function () {
-    // Ažuriraj localStorage
-    const current = localStorage.getItem(HIST_KEY) || '[]';
-    if (hiddenMain) hiddenMain.value = current;
+  askForm.addEventListener('submit', function (e) {
+  const textarea = askForm.querySelector('textarea');
+  const fileInput = askForm.querySelector('input[type="file"]');
+  const end = document.getElementById('chat-end');
 
-    // Scrollaj na dno
-    const end = document.getElementById('chat-end');
-    if (end) end.scrollIntoView({ behavior: 'auto', block: 'end' });
-  });
+  if ((!textarea || !textarea.value.trim()) && (!fileInput || !fileInput.value)) {
+    alert("Unesi matematičko pitanje ili učitaj sliku.");
+    e.preventDefault();
+    return;
+  }
+
+  // ✅ Prikaži animaciju
+  showTyping();
+
+  // ✅ Scrollaj na dno
+  if (end) end.scrollIntoView({ behavior: 'auto', block: 'end' });
+
+  // ✅ Postavi historiju
+  const current = localStorage.getItem(HIST_KEY) || '[]';
+  if (hiddenMain) hiddenMain.value = current;
+
+  // ✅ UMJETNO ODLOŽI SUBMIT (da se animacija stigne prikazati)
+  setTimeout(() => {
+    askForm.submit();  // ručno pokrećeš pravi submit
+  }, 300);  // 300ms dovoljno da korisnik vidi animaciju
+
+  // ❗ Blokiraj trenutni submit jer ga šalješ ručno
+  e.preventDefault();
+});
+
 }
 
 
+const clearButton = clearForm.querySelector('button');
+if (clearButton) {
+  const hist = JSON.parse(localStorage.getItem(HIST_KEY) || '[]');
+  if (!hist.length) {
+    clearButton.disabled = true;
+    clearButton.textContent = "🗑️ Nema šta očistiti";
+    clearButton.style.opacity = 0.6;
+    clearButton.style.cursor = "not-allowed";
+  }
+}
+
   // Clear forma
-  const clearForm = document.getElementById('clear-form');
+   clearForm = document.getElementById('clear-form');
   if (clearForm) {
     clearForm.addEventListener('submit', function () {
       localStorage.removeItem(HIST_KEY);
@@ -548,6 +582,20 @@ if (askForm) {
     const el = document.getElementById('typing');
     if (el) el.style.display = 'block';
   };
+
+  askForm = document.getElementById('ask-form');
+if (askForm) {
+  askForm.addEventListener('submit', function (e) {
+    const textarea = askForm.querySelector('textarea');
+    const fileInput = askForm.querySelector('input[type="file"]');
+
+    if ((!textarea || !textarea.value.trim()) && (!fileInput || !fileInput.value)) {
+      alert("Unesi matematičko pitanje ili učitaj sliku.");
+      e.preventDefault(); // spriječi slanje forme
+    }
+  });
+}
+
 
   window.toggleDropdown = function () {
     const dd = document.getElementById('dropdown-menu');
@@ -594,16 +642,39 @@ if (askForm) {
     history.scrollRestoration = 'manual'; // mi upravljamo skrolom
   }
 
-  window.addEventListener('load', scrollToBottom);
-  document.addEventListener('DOMContentLoaded', scrollToBottom);
+  window.addEventListener('load', () => setTimeout(scrollToBottom, 100));
+  document.addEventListener('DOMContentLoaded', () => setTimeout(scrollToBottom, 100));
+
 
   // Prije slanja poruke, samo da (ako je dugo) ostane fokus na dnu
   
+  window.shouldClearHistory = function () {
+  const hist = JSON.parse(localStorage.getItem(HIST_KEY) || '[]');
+  if (!hist.length) {
+    alert("Nema ništa za obrisati.");
+    return false; // blokiraj submit
+  }
+  return true;
+};
+
+</script>
+
+  
+<script>
+  // Automatski scroll na dno kada postoji historija
+  window.onload = function () {
+    const el = document.getElementById('chat-end');
+    if (el) {
+      el.scrollIntoView({ behavior: 'smooth' });
+    }
+  };
+
   
 </script>
 
   
-
-  
 </body>
+
+
+
 </html>
