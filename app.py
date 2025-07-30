@@ -71,98 +71,6 @@ def latexify_fractions(text):
         brojilac, imenilac = match.groups()
         return f"\\(\\frac{{{brojilac}}}{{{imenilac}}}\\)"
     return re.sub(r'\b(\d{1,4})/(\d{1,4})\b', zamijeni, text)
-# --- Desmos helperi ---
-
-# --- Desmos helperi (CIJELI BLOK ZAMIJENJEN) ---
-
-GRAPH_BOUNDS_DEFAULT = {"left": -10, "right": 10, "top": 10, "bottom": -10}
-
-# mapiranje funkcija u Desmos LaTeX
-FUNC_MAP = {
-    'sin': r'\sin', 'cos': r'\cos', 'tan': r'\tan', 'tg': r'\tan',
-    'cot': r'\cot', 'ctg': r'\cot', 'sec': r'\sec', 'csc': r'\csc',
-    'arcsin': r'\arcsin', 'arccos': r'\arccos', 'arctan': r'\arctan',
-    'ln': r'\ln', 'log': r'\log', 'exp': r'\exp'
-}
-FUNC_RX = r'(?<!\\)\b(arcsin|arccos|arctan|sin|cos|tan|tg|cot|ctg|sec|csc|ln|log|exp)\b'
-
-def normalize_for_desmos(latex: str) -> str:
-    """Pretvori 'y=sinx', 'y=sin x', 'y=lnx', 'y=sqrt x' u validan Desmos LaTeX."""
-    s = (latex or '').strip()
-
-    # osiguraj "y=" na početku
-    if not re.match(r'^\s*y\s*=', s, flags=re.I):
-        s = 'y=' + s
-
-    # sqrt(...) ili sqrt x -> \sqrt{...}
-    s = re.sub(r'(?<!\\)\bsqrt\s*\(\s*([^)]+)\s*\)', r'\\sqrt{\1}', s, flags=re.I)
-    s = re.sub(r'(?<!\\)\bsqrt\s+([A-Za-z0-9x^+\-*/]+)', r'\\sqrt{\1}', s, flags=re.I)
-    s = re.sub(r'√\s*([A-Za-z0-9x^+\-*/]+)', r'\\sqrt{\1}', s)
-
-    # 1) ako je već sin(x) bez backslasha -> dodaj backslash
-    s = re.sub(FUNC_RX + r'(?=\()', lambda m: FUNC_MAP[m.group(1).lower()], s, flags=re.I)
-
-    # 2) slučajevi bez zagrada: "sin x", "sinx", "lnx", "log x", "cos2x" (osnovno)
-    def _fn_arg(m):
-        name = m.group(1).lower()
-        arg = (m.group(2) or 'x').strip()
-        return f"{FUNC_MAP[name]}({arg})"
-
-    # sin x   / ln x
-    s = re.sub(FUNC_RX + r'\s+([A-Za-z0-9]*x(?:\^\d+)?)\b', _fn_arg, s, flags=re.I)
-    # sinx    / lnx
-    s = re.sub(FUNC_RX + r'([A-Za-z0-9]*x(?:\^\d+)?)\b', _fn_arg, s, flags=re.I)
-
-    # zamijeni tg/ctg koji su možda već backslashovani
-    s = s.replace(r'\tg', r'\tan').replace(r'\ctg', r'\cot')
-
-    # počisti višak razmaka
-    s = re.sub(r'\s+', ' ', s).strip()
-    return s
-
-def _extract_latex_for_graph(text):
-    """Iz teksta nađi najjednostavniji oblik: y=..., f(x)=..., ili izraz sa x nakon 'nacrtaj/graf'."""
-    if not text:
-        return None
-    t = text.strip()
-
-    m = re.search(r'\b(y\s*=\s*[^;\n\r]+)', t, flags=re.I)
-    if m:
-        return m.group(1)  # NE briši razmake
-
-    m = re.search(r'\bf\s*\(\s*x\s*\)\s*=\s*([^;\n\r]+)', t, flags=re.I)
-    if m:
-        return 'y=' + m.group(1)
-
-    if re.search(r'\b(graf|grafik|nacrtaj|nacrtati|plot)\b', t, flags=re.I):
-        m = re.search(r'([\-+*/\d.\s]*x(?:\^\d+)?[^\n\r;]*)', t)
-        if m:
-            expr = m.group(1).strip()
-            return f'y={expr}' if not expr.startswith('y=') else expr
-
-    return None
-
-def _strip_tags(html_text: str) -> str:
-    return re.sub(r'<[^>]+>', ' ', html_text or '')
-
-def maybe_add_desmos_graph(bot_odgovor, korisnikov_upit, bounds=None):
-    """Ako prepoznamo funkciju, dodaj <div class="desmos-calculator" ...> u odgovor."""
-    # izvuci kandidat iz upita ili iz "plain" varijante bot_odgovor-a
-    latex = _extract_latex_for_graph(korisnikov_upit) or _extract_latex_for_graph(_strip_tags(bot_odgovor))
-    if not latex:
-        return bot_odgovor
-
-    # normalizuj u validan Desmos LaTeX (npr. 'y=sinx' -> 'y=\sin(x)')
-    latex = normalize_for_desmos(latex)
-
-    b = bounds or GRAPH_BOUNDS_DEFAULT
-    div = (
-        f'<div class="desmos-calculator" '
-        f'data-latex="{html.escape(latex, quote=True)}" '
-        f"data-bounds='{json.dumps(b)}' "
-        f'style=\"width:100%;height:420px;margin-top:10px;\"></div>'
-    )
-    return bot_odgovor + '<br><strong>Graf funkcije:</strong> ' + div
 
 
 @app.route("/", methods=["GET", "POST"])
@@ -219,7 +127,9 @@ def index():
                     )
                     raw_odgovor = response.choices[0].message.content
                     odgovor = f"<p>{latexify_fractions(raw_odgovor)}</p>"
-                    odgovor = maybe_add_desmos_graph(odgovor, (pitanje or "") + "\n" + (pitanje_iz_slike or ""))
+                   
+
+                    
 # ⬆️ DODAJ OVU LINIJU
 
 
@@ -261,11 +171,16 @@ def index():
             )
             raw_odgovor = response.choices[0].message.content
             odgovor = f"<p>{latexify_fractions(raw_odgovor)}</p>"
-            odgovor = maybe_add_desmos_graph(odgovor, pitanje)
-# ⬆️ DODAJ OVU LINIJU
+           
 
+          
 
-            history.append({"user": pitanje.strip(), "bot": odgovor.strip()})
+            history.append({
+                "user": pitanje.strip(),
+                "bot": odgovor.strip(),
+                
+            })
+
             session["history"] = history
             session["razred"] = razred
             sheet.append_row([pitanje, odgovor])
@@ -276,6 +191,10 @@ def index():
         return render_template("index.html", history=history, razred=razred)
 
     return render_template("index.html", history=history, razred=razred)
+
+
+
+
 
 @app.route("/clear", methods=["POST"])
 def clear():
