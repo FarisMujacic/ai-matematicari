@@ -78,7 +78,7 @@ def index():
     razred = session.get("razred") or request.form.get("razred")
     print("razred u session:", session.get("razred"))
 
-    history = get_history_from_request() or session.get("history", [])
+    history = session.get("history", [])
 
 
     if request.method == "POST":
@@ -198,9 +198,12 @@ def index():
 
 @app.route("/clear", methods=["POST"])
 def clear():
-    # OBRIŠI SAMO HISTORIJU — ZADRŽI IZABRANI RAZRED
-    session.pop("history", None)
-    return redirect(url_for("index"))
+    if request.form.get("confirm_clear") == "1":
+        session.pop("history", None)
+        session.pop("razred", None)  # ako koristiš razred u sesiji
+    return redirect("/")
+
+
 
 
 
