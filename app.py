@@ -72,9 +72,39 @@ def latexify_fractions(text):
         return f"\\(\\frac{{{brojilac}}}{{{imenilac}}}\\)"
     return re.sub(r'\b(\d{1,4})/(\d{1,4})\b', zamijeni, text)
 
+def extract_plot_expression(text, razred=None, history=None):
+    try:
+        system_message = {
+            "role": "system",
+            "content": "Tvoja uloga je da iz korisničkog pitanja detektuješ da li sadrži funkciju koju treba nacrtati. Ako postoji funkcija, odgovori samo u obliku 'y = ...'. Ako ne postoji funkcija, odgovori 'None'."
+        }
+        messages = [system_message]
+        if history:
+            for msg in history[-5:]:
+                messages.append({"role": "user", "content": msg["user"]})
+                messages.append({"role": "assistant", "content": msg["bot"]})
+        messages.append({"role": "user", "content": text})
+
+        response = client.chat.completions.create(
+            model="gpt-4o",
+            messages=messages
+        )
+        raw = response.choices[0].message.content.strip()
+        if raw.lower() == "none":
+            return None
+        if raw.startswith("y=") or raw.startswith("y ="):
+            return raw.replace(" ", "")
+    except Exception as e:
+        print("GPT nije prepoznao funkciju za crtanje:", e)
+    return None
+
+
+
+
 
 @app.route("/", methods=["GET", "POST"])
 def index():
+    plot_expression_added = False
     razred = session.get("razred") or request.form.get("razred")
     print("razred u session:", session.get("razred"))
 
@@ -127,8 +157,33 @@ def index():
                     )
                     raw_odgovor = response.choices[0].message.content
                     odgovor = f"<p>{latexify_fractions(raw_odgovor)}</p>"
-                   
 
+                    # Dodaj plot-request ako korisnik traži crtanje
+                    if not plot_expression_added:
+                        expression = extract_plot_expression(pitanje, razred=razred, history=history)
+                        if expression:
+                            odgovor += f'<div class="plot-request" data-expression="{html.escape(expression)}"></div>'
+                            print("DETJEKTOVAN IZRAZ ZA CRTANJE:", expression)
+                            plot_expression_added = True
+
+
+                    # Dodaj u historiju
+                    history.append({
+                        "user": pitanje.strip(),
+                        "bot": odgovor.strip(),
+                    })
+
+                    session["history"] = history
+                    session["razred"] = razred
+                    sheet.append_row([pitanje, odgovor])
+
+
+                    
+
+
+
+                    
+                
                     
 # ⬆️ DODAJ OVU LINIJU
 
@@ -171,7 +226,14 @@ def index():
             )
             raw_odgovor = response.choices[0].message.content
             odgovor = f"<p>{latexify_fractions(raw_odgovor)}</p>"
-           
+           # Dodaj plot-request ako korisnik traži crtanje
+            if not plot_expression_added:
+                expression = extract_plot_expression(pitanje, razred=razred, history=history)
+                if expression:
+                    odgovor += f'<div class="plot-request" data-expression="{html.escape(expression)}"></div>'
+                    print("DETJEKTOVAN IZRAZ ZA CRTANJE:", expression)
+                    plot_expression_added = True
+
 
           
 
