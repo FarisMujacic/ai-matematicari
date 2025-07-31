@@ -185,6 +185,18 @@
       max-width: 300px;
       text-align: left;
     }
+.typing-indicator::after {
+  content: '...';
+  animation: dots 1s steps(3, end) infinite;
+}
+
+@keyframes dots {
+  0%   { content: ''; }
+  33%  { content: '.'; }
+  66%  { content: '..'; }
+  100% { content: '...'; }
+}
+
 
     body.dark {
       background-color: #121212;
@@ -446,7 +458,7 @@ html { scroll-behavior: smooth; } /* fallback ako skrola cijela stranica */
 
 
   <div class="chat-message bot-message">
-    <div class="formatted-bot-response">
+    <div class="formatted-bot-response" id="last-answer">
 
 
       {{ message.bot|safe }}
@@ -454,14 +466,17 @@ html { scroll-behavior: smooth; } /* fallback ako skrola cijela stranica */
   </div>
 </div>
 {% endfor %}
-</div>
-
-    {% endif %}
-
 <!-- animacija ide ovdje: ispod poruka -->
 <div id="typing" class="typing-indicator" style="display: none;">
   🤖 MAT-BOT piše odgovor
 </div>
+
+</div>
+
+    {% endif %}
+
+
+
 
     <form id="ask-form" method="POST" enctype="multipart/form-data" onsubmit="return handleFormSubmit(event)">
 
@@ -496,183 +511,117 @@ html { scroll-behavior: smooth; } /* fallback ako skrola cijela stranica */
 
 
 
- 
 <script>
-(function () {
-  const CID_KEY = 'matbot_cid';
-  if (!localStorage.getItem(CID_KEY)) {
-    const cid = (window.crypto && crypto.randomUUID) ? crypto.randomUUID() : (Date.now() + '_' + Math.random());
-    localStorage.setItem(CID_KEY, cid);
+function toggleDropdown() {
+  const dd = document.getElementById('dropdown-menu');
+  if (!dd) return;
+  dd.style.display = (dd.style.display === 'block') ? 'none' : 'block';
+}
+
+function toggleDarkMode() {
+  document.body.classList.toggle('dark');
+  localStorage.setItem('matbot_dark', document.body.classList.contains('dark') ? '1' : '0');
+}
+
+if (localStorage.getItem('matbot_dark') === '1') {
+  document.body.classList.add('dark');
+}
+
+function showTyping() {
+  const el = document.getElementById('typing');
+  if (el) {
+    el.style.display = 'block';
+    el.scrollIntoView({ behavior: 'smooth', block: 'center' });
   }
-  const cid = localStorage.getItem(CID_KEY);
+}
+
+function scrollToLastBotResponse() {
+  const allBotAnswers = document.querySelectorAll('.chat-message.bot-message .formatted-bot-response');
+  if (allBotAnswers.length) {
+    const last = allBotAnswers[allBotAnswers.length - 1];
+    if (last) {
+      last.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }
+  }
+}
+
+function shouldClearHistory() {
+  const hist = JSON.parse(localStorage.getItem('matbot_history_' + getCID()) || '[]');
+  if (!hist.length) {
+    alert("Nema ništa za obrisati.");
+    return false;
+  }
+  return true;
+}
+
+function getCID() {
+  const key = 'matbot_cid';
+  if (!localStorage.getItem(key)) {
+    const cid = (crypto.randomUUID) ? crypto.randomUUID() : (Date.now() + '_' + Math.random());
+    localStorage.setItem(key, cid);
+  }
+  return localStorage.getItem(key);
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+  const askForm = document.getElementById('ask-form');
+  const clearForm = document.getElementById('clear-form');
+  const cid = getCID();
   const HIST_KEY = 'matbot_history_' + cid;
-
-  const serverHistory = {{ history|tojson|safe }};
-  const hiddenMain  = document.getElementById('history_json_main');
+  const hiddenMain = document.getElementById('history_json_main');
   const hiddenGrade = document.getElementById('history_json_grade');
+  const serverHistory = {{ history|tojson|safe }};
 
-  // Server -> localStorage -> hidden
   if (Array.isArray(serverHistory) && serverHistory.length) {
     const s = JSON.stringify(serverHistory);
     localStorage.setItem(HIST_KEY, s);
-    if (hiddenMain)  hiddenMain.value  = s;
+    if (hiddenMain) hiddenMain.value = s;
     if (hiddenGrade) hiddenGrade.value = s;
   } else {
     const saved = localStorage.getItem(HIST_KEY) || '[]';
-    if (hiddenMain)  hiddenMain.value  = saved;
+    if (hiddenMain) hiddenMain.value = saved;
     if (hiddenGrade) hiddenGrade.value = saved;
   }
 
-const askForm = document.getElementById('ask-form');
-if (askForm) {
-  askForm.addEventListener('submit', function (e) {
-  const textarea = askForm.querySelector('textarea');
-  const fileInput = askForm.querySelector('input[type="file"]');
-  const end = document.getElementById('chat-end');
+  if (askForm) {
+    askForm.addEventListener('submit', function (e) {
+      const textarea = askForm.querySelector('textarea');
+      const fileInput = askForm.querySelector('input[type="file"]');
+      if ((!textarea || !textarea.value.trim()) && (!fileInput || !fileInput.value)) {
+        alert("Unesi matematičko pitanje ili učitaj sliku.");
+        e.preventDefault();
+        return;
+      }
 
-  if ((!textarea || !textarea.value.trim()) && (!fileInput || !fileInput.value)) {
-    alert("Unesi matematičko pitanje ili učitaj sliku.");
-    e.preventDefault();
-    return;
+      showTyping();
+
+      const current = localStorage.getItem(HIST_KEY) || '[]';
+      if (hiddenMain) hiddenMain.value = current;
+
+      e.preventDefault();
+      setTimeout(() => {
+        askForm.submit();
+      }, 400);
+    });
   }
 
-  // ✅ Prikaži animaciju
-  showTyping();
-
-  // ✅ Scrollaj na dno
-  if (end) end.scrollIntoView({ behavior: 'auto', block: 'end' });
-
-  // ✅ Postavi historiju
-  const current = localStorage.getItem(HIST_KEY) || '[]';
-  if (hiddenMain) hiddenMain.value = current;
-
-  // ✅ UMJETNO ODLOŽI SUBMIT (da se animacija stigne prikazati)
-  setTimeout(() => {
-    askForm.submit();  // ručno pokrećeš pravi submit
-  }, 300);  // 300ms dovoljno da korisnik vidi animaciju
-
-  // ❗ Blokiraj trenutni submit jer ga šalješ ručno
-  e.preventDefault();
-});
-
-}
-
-
-const clearButton = clearForm.querySelector('button');
-if (clearButton) {
-  const hist = JSON.parse(localStorage.getItem(HIST_KEY) || '[]');
-  if (!hist.length) {
-    clearButton.disabled = true;
-    clearButton.textContent = "🗑️ Nema šta očistiti";
-    clearButton.style.opacity = 0.6;
-    clearButton.style.cursor = "not-allowed";
-  }
-}
-
-  // Clear forma
-   clearForm = document.getElementById('clear-form');
   if (clearForm) {
     clearForm.addEventListener('submit', function () {
       localStorage.removeItem(HIST_KEY);
     });
   }
+});
 
-  // Funkcije koje pozivaš iz HTML‑a
-  window.showTyping = function () {
-    const el = document.getElementById('typing');
-    if (el) el.style.display = 'block';
-  };
-
-  askForm = document.getElementById('ask-form');
-if (askForm) {
-  askForm.addEventListener('submit', function (e) {
-    const textarea = askForm.querySelector('textarea');
-    const fileInput = askForm.querySelector('input[type="file"]');
-
-    if ((!textarea || !textarea.value.trim()) && (!fileInput || !fileInput.value)) {
-      alert("Unesi matematičko pitanje ili učitaj sliku.");
-      e.preventDefault(); // spriječi slanje forme
-    }
-  });
-}
-
-
-  window.toggleDropdown = function () {
-    const dd = document.getElementById('dropdown-menu');
-    if (!dd) return;
-    dd.style.display = (dd.style.display === 'block') ? 'none' : 'block';
-  };
-
-  window.toggleDarkMode = function () {
-    document.body.classList.toggle('dark');
-    localStorage.setItem('matbot_dark', document.body.classList.contains('dark') ? '1' : '0');
-  };
-
-  window.clearChatOnRazredChange = function () {
-    localStorage.removeItem(HIST_KEY);
-    if (hiddenMain)  hiddenMain.value  = '[]';
-    if (hiddenGrade) hiddenGrade.value = '[]';
-    return true; // dozvoli submit
-  };
-
-  // Primijeni dark mode iz localStorage
-  if (localStorage.getItem('matbot_dark') === '1') {
-    document.body.classList.add('dark');
-  }
-})();
-
-
- function scrollToBottom() {
-    const chat = document.getElementById('chat-container');
-    const end  = document.getElementById('chat-end');
-
-    // Ako je chat-container skrolabilan, spusti njega
-    if (chat) chat.scrollTop = chat.scrollHeight;
-
-    // U svakom slučaju probaj dovesti sidro u vidno polje
-    if (end) end.scrollIntoView({ behavior: 'auto', block: 'end' });
-
-    // Fallback: skrolaj cijelu stranicu
-    if (!chat && !end) {
-      window.scrollTo({ top: document.body.scrollHeight, behavior: 'auto' });
-    }
-  }
-
-  if ('scrollRestoration' in history) {
-    history.scrollRestoration = 'manual'; // mi upravljamo skrolom
-  }
-
-  window.addEventListener('load', () => setTimeout(scrollToBottom, 100));
-  document.addEventListener('DOMContentLoaded', () => setTimeout(scrollToBottom, 100));
-
-
-  // Prije slanja poruke, samo da (ako je dugo) ostane fokus na dnu
-  
-  window.shouldClearHistory = function () {
-  const hist = JSON.parse(localStorage.getItem(HIST_KEY) || '[]');
-  if (!hist.length) {
-    alert("Nema ništa za obrisati.");
-    return false; // blokiraj submit
-  }
-  return true;
+// Ovdje koristi onload da se pomjeri tek kad je sve prikazano
+window.onload = function () {
+  setTimeout(() => {
+    scrollToLastBotResponse();
+  }, 200); // dovoljan delay za scroll centriranje
 };
-
 </script>
 
-  
-<script>
-  // Automatski scroll na dno kada postoji historija
-  window.onload = function () {
-    const el = document.getElementById('chat-end');
-    if (el) {
-      el.scrollIntoView({ behavior: 'smooth' });
-    }
-  };
 
-  
-</script>
 
-  
 </body>
 
 
