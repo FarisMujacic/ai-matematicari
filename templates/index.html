@@ -13,7 +13,8 @@
     };
   </script>
   <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
-  <script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
+  <script src="https://cdn.plot.ly/plotly-2.27.1.min.js"></script>
+
 
 
 
@@ -510,7 +511,6 @@ html { scroll-behavior: smooth; } /* fallback ako skrola cijela stranica */
 </form>
 
 
-
 <script>
 function toggleDropdown() {
   const dd = document.getElementById('dropdown-menu');
@@ -612,12 +612,88 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 });
 
-// Ovdje koristi onload da se pomjeri tek kad je sve prikazano
 window.onload = function () {
   setTimeout(() => {
     scrollToLastBotResponse();
-  }, 200); // dovoljan delay za scroll centriranje
+  }, 200);
 };
+
+// 🔧 STABILNO parsiranje izraza
+function transformExpression(expr) {
+  return expr
+    .replace(/\s+/g, '')                                 // Ukloni razmake
+    .replace(/([0-9])([a-zA-Z])/g, '$1*$2')              // 5x → 5*x
+    .replace(/([a-zA-Z])([a-zA-Z])/g, '$1*$2')           // xy → x*y
+    .replace(/([a-zA-Z])(\d)/g, '$1*$2')                 // x2 → x*2
+    .replace(/(\))(\()/g, '$1*$2')                       // )( → )*(
+    .replace(/(\))([a-zA-Z])/g, '$1*$2')                 // )x → )*x
+    .replace(/([a-zA-Z])(\()/g, '$1*$2')                 // x( → x*(
+    .replace(/(\d+|\w+)\^(\d+|\w+)/g, 'Math.pow($1,$2)') // x^2 → Math.pow(x,2)
+    .replace(/(?<!\.)\b(sin|cos|tan|exp|log|sqrt|abs)\b/g, 'Math.$1')
+    .replace(/\bln\b/g, 'Math.log');
+}
+
+function drawPlot(expression, container) {
+  const parsed = transformExpression(expression);
+  const x = [], y = [];
+
+  let f;
+  try {
+    f = new Function('x', `return ${parsed}`);
+  } catch (e) {
+    console.error("Greška u funkciji:", e);
+    return;
+  }
+
+  for (let i = -10; i <= 10; i += 0.1) {
+    try {
+      const res = f(i);
+      x.push(i);
+      y.push(isFinite(res) ? res : null);
+    } catch {
+      x.push(i);
+      y.push(null);
+    }
+  }
+
+  const data = [{
+    x: x,
+    y: y,
+    mode: 'lines',
+    line: { color: '#0077cc', width: 3 },
+    name: expression
+  }];
+
+  const layout = {
+    title: `Graf funkcije: y = ${expression}`,
+    xaxis: { title: 'x' },
+    yaxis: { title: 'y' },
+    margin: { t: 40 },
+    plot_bgcolor: '#fff',
+    paper_bgcolor: '#fff'
+  };
+
+  const graphDiv = document.createElement("div");
+  graphDiv.style = "width:100%; max-width:700px; height:400px; margin-top:1rem;";
+  container.appendChild(graphDiv);
+
+  Plotly.newPlot(graphDiv, data, layout);
+}
+
+// 📌 Pronađi sve grafove i nacrtaj
+const plots = document.querySelectorAll('.plot-request');
+plots.forEach(plotDiv => {
+  let expression = plotDiv.getAttribute("data-expression");
+  const parent = plotDiv.closest(".formatted-bot-response");
+  if (!expression || !parent) return;
+
+  if (expression.trim().startsWith("y=")) {
+    expression = expression.replace(/^y\s*=\s*/i, "").trim();
+  }
+
+  drawPlot(expression, parent);
+  plotDiv.remove(); // očisti placeholder
+});
 </script>
 
 
