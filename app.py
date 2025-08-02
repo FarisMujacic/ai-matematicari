@@ -112,7 +112,8 @@ def index():
     razred = session.get("razred") or request.form.get("razred")
     print("razred u session:", session.get("razred"))
 
-    history = session.get("history", [])
+    history = get_history_from_request()
+
 
 
     if request.method == "POST":
