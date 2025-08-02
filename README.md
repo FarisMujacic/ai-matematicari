@@ -16,7 +16,7 @@ MAT-BOT je web aplikacija koja koristi OpenAI, Mathpix i druge AI servise za pom
 
 ## 📁 Struktura projekta
 
-.
+
 ├── app.py # Flask backend
 ├── list_models.py # Lista dostupnih modela
 ├── requirements.txt # Python zavisnosti
