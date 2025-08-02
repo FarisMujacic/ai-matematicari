@@ -24,7 +24,11 @@ MATHPIX_API_ID = os.getenv("MATHPIX_API_ID")
 MATHPIX_API_KEY = os.getenv("MATHPIX_API_KEY")
 
 app = Flask(__name__)
-CORS(app)
+app.config.update(
+    SESSION_COOKIE_SAMESITE=None,
+    SESSION_COOKIE_SECURE=True
+)
+CORS(app, supports_credentials=True)
 app.secret_key = os.getenv("SECRET_KEY", "tajna_lozinka")
 
 # Google Sheets autorizacija
