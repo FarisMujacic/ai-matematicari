@@ -42,12 +42,12 @@ MATHPIX_API_KEY=ovdje_unesi_svoj_mathpix_kljuc
 SECRET_KEY=tajna_lozinka
 ### 4. Pokreni aplikaciju
 
-##🌐 Korištenje
+## 🌐 Korištenje
 1)Otvori aplikaciju u browseru.
 2)Unesi matematički zadatak tekstualno ili kao sliku.
 3)MAT-BOT će analizirati zadatak i prikazati rješenje sa objašnjenjem, grafom i latex prikazom.
 
-##🛠️ Tehnologije
+## 🛠️ Tehnologije
 Python + Flask
 OpenAI API (GPT-4)
 Mathpix OCR API
@@ -55,7 +55,7 @@ Plotly / JSXGraph za grafove
 HTML + JavaScript + MathJax
 
 
-##👤 Autor:
+## 👤 Autor:
 Faris Mujacić
 
 
