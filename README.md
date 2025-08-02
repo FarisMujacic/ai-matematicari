@@ -56,6 +56,6 @@ HTML + JavaScript + MathJax
 
 
 ## 👤 Autor:
-Faris Mujacić
+Faris Mujačić
 
 
