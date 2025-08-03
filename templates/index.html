@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>MAT-BOT</title>
 
-  <!-- MathJax -->
+
   <script>
     MathJax = {
       tex: { inlineMath: [["$", "$"], ["\\(", "\\)"]] },
@@ -155,7 +155,6 @@
   border-radius: 10px;
   align-self: flex-end;
 
-  /* KLJUČNO: ispravke */
   max-width: 60%;
   display: flex;
   align-items: center;
@@ -260,7 +259,7 @@ body:not(.dark) .formatted-bot-response.user-style {
   }
 }
 
-/* Color variables */
+
 body.dark {
   --bubble-bg: #263238;
   --bubble-text: #eee;
@@ -270,7 +269,6 @@ body:not(.dark) {
   --bubble-text: #1a1a1a;
 }
 
-/* Toggle switch with emoji icons */
 .toggle-switch {
   position: absolute;
   right: 20px;
@@ -400,19 +398,19 @@ body:not(.dark) {
     width: 100%;
     z-index: 1000;
     transition: top 0.3s ease;
-    padding-right: 16px; /* da se dropdown ne stisne uz scrollbar */
+    padding-right: 16px; 
   }
 
   body {
-    padding-top: 100px; /* da sadržaj ne ide ispod headera */
-      padding-right: 16px; /* ✅ DODAJ OVO */
+    padding-top: 100px; 
+      padding-right: 16px; 
   }
 
 
 
 #chat-container { max-height: none; overflow: visible; }
 
-html { scroll-behavior: smooth; } /* fallback ako skrola cijela stranica */
+html { scroll-behavior: smooth; } 
 
 
 .jsxgraph {
@@ -467,7 +465,6 @@ html { scroll-behavior: smooth; } /* fallback ako skrola cijela stranica */
   </div>
 </div>
 {% endfor %}
-<!-- animacija ide ovdje: ispod poruka -->
 <div id="typing" class="typing-indicator" style="display: none;">
   🤖 MAT-BOT piše odgovor
 </div>
@@ -618,17 +615,17 @@ window.onload = function () {
   }, 200);
 };
 
-// 🔧 STABILNO parsiranje izraza
+
 function transformExpression(expr) {
   return expr
-    .replace(/\s+/g, '')                                 // Ukloni razmake
-    .replace(/([0-9])([a-zA-Z])/g, '$1*$2')              // 5x → 5*x
-    .replace(/([a-zA-Z])([a-zA-Z])/g, '$1*$2')           // xy → x*y
-    .replace(/([a-zA-Z])(\d)/g, '$1*$2')                 // x2 → x*2
-    .replace(/(\))(\()/g, '$1*$2')                       // )( → )*(
-    .replace(/(\))([a-zA-Z])/g, '$1*$2')                 // )x → )*x
-    .replace(/([a-zA-Z])(\()/g, '$1*$2')                 // x( → x*(
-    .replace(/(\d+|\w+)\^(\d+|\w+)/g, 'Math.pow($1,$2)') // x^2 → Math.pow(x,2)
+    .replace(/\s+/g, '')                                
+    .replace(/([0-9])([a-zA-Z])/g, '$1*$2')              
+    .replace(/([a-zA-Z])([a-zA-Z])/g, '$1*$2')        
+    .replace(/([a-zA-Z])(\d)/g, '$1*$2')                
+    .replace(/(\))(\()/g, '$1*$2')                       
+    .replace(/(\))([a-zA-Z])/g, '$1*$2')                
+    .replace(/([a-zA-Z])(\()/g, '$1*$2')                
+    .replace(/(\d+|\w+)\^(\d+|\w+)/g, 'Math.pow($1,$2)') 
     .replace(/(?<!\.)\b(sin|cos|tan|exp|log|sqrt|abs)\b/g, 'Math.$1')
     .replace(/\bln\b/g, 'Math.log');
 }
@@ -680,7 +677,7 @@ function drawPlot(expression, container) {
   Plotly.newPlot(graphDiv, data, layout);
 }
 
-// 📌 Pronađi sve grafove i nacrtaj
+
 const plots = document.querySelectorAll('.plot-request');
 plots.forEach(plotDiv => {
   let expression = plotDiv.getAttribute("data-expression");
@@ -692,7 +689,7 @@ plots.forEach(plotDiv => {
   }
 
   drawPlot(expression, parent);
-  plotDiv.remove(); // očisti placeholder
+  plotDiv.remove(); 
 });
 </script>
 
