@@ -12,7 +12,7 @@ from io import BytesIO
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 import json
-import html  # za HTML-escape u data-latex
+import html  
 
 
 
@@ -31,7 +31,7 @@ app.config.update(
 CORS(app, supports_credentials=True)
 app.secret_key = os.getenv("SECRET_KEY", "tajna_lozinka")
 
-# Google Sheets autorizacija
+# Google Sheets 
 SCOPE = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
 CREDS_FILE = "credentials.json"
 creds = ServiceAccountCredentials.from_json_keyfile_name(CREDS_FILE, SCOPE)
@@ -183,16 +183,6 @@ def index():
                     sheet.append_row([pitanje, odgovor])
 
 
-                    
-
-
-
-                    
-                
-                    
-# ⬆️ DODAJ OVU LINIJU
-
-
                     history.append({"user": "[SLIKA]", "bot": odgovor.strip()})
                     session["history"] = history
                     session["razred"] = razred
@@ -231,7 +221,6 @@ def index():
             )
             raw_odgovor = response.choices[0].message.content
             odgovor = f"<p>{latexify_fractions(raw_odgovor)}</p>"
-           # Dodaj plot-request ako korisnik traži crtanje
             if not plot_expression_added:
                 expression = extract_plot_expression(pitanje, razred=razred, history=history)
                 if expression:
@@ -261,17 +250,12 @@ def index():
 
 
 
-
-
 @app.route("/clear", methods=["POST"])
 def clear():
     if request.form.get("confirm_clear") == "1":
         session.pop("history", None)
-        session.pop("razred", None)  # ako koristiš razred u sesiji
+        session.pop("razred", None)
     return redirect("/")
-
-
-
 
 
 from flask import redirect, url_for
@@ -298,3 +282,4 @@ def get_history_from_request():
 
 if __name__ == "__main__":
     app.run(debug=True, port=5000)
+
