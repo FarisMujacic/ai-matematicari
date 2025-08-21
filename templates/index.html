@@ -694,6 +694,37 @@ plots.forEach(plotDiv => {
   drawPlot(expression, parent);
   plotDiv.remove(); 
 });
+
+
+// Pomoćna funkcija za brisanje historije na serveru
+  function clearChat() {
+    // sendBeacon je najpouzdaniji za "close/tab unload" u iframe-u
+    const data = new Blob(['confirm_clear=1'], { type: 'application/x-www-form-urlencoded' });
+    navigator.sendBeacon('/clear', data);
+  }
+
+  // 1) Ako je reload — odmah očisti chat
+  (function () {
+    try {
+      const nav = performance.getEntriesByType && performance.getEntriesByType('navigation')[0];
+      const isReload = nav ? nav.type === 'reload' : (performance.navigation && performance.navigation.type === 1);
+      if (isReload) {
+        // Ako hoćeš da bude odmah “svjež” prikaz, možeš prvo očistiti pa reloadati
+        fetch('/clear', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+          body: 'confirm_clear=1',
+          credentials: 'include'
+        }).finally(() => { /* ništa, već smo na reload stranici */ });
+      }
+    } catch (_) {}
+  })();
+
+  // 2) Na zatvaranje taba/iframa — očisti historiju
+  window.addEventListener('pagehide', clearChat);          // najpouzdaniji signal u mobilnim/iOS
+  window.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'hidden') clearChat();
+  });
 </script>
 
 
