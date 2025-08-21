@@ -725,6 +725,21 @@ plots.forEach(plotDiv => {
   window.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'hidden') clearChat();
   });
+
+  // Očisti server-side historiju na prvom ulazu u ovaj iframe (po tabu/sesiji).
+  (function () {
+    const KEY = "matbot_init_cleared";
+    if (!sessionStorage.getItem(KEY)) {
+      fetch("/clear", {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: "confirm_clear=1",
+        credentials: "include"  // važno: da pošalje session cookie
+      }).finally(() => {
+        sessionStorage.setItem(KEY, "1");
+      });
+    }
+  })();
 </script>
 
 
