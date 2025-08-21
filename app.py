@@ -171,8 +171,10 @@ def get_history_from_request():
     return []
 
 
+
 @app.route("/", methods=["GET", "POST"])
 def index():
+ 
     plot_expression_added = False
     razred = session.get("razred") or request.form.get("razred")
     print("razred u session:", session.get("razred"))
@@ -360,6 +362,13 @@ def strip_ascii_graph_blocks(text: str) -> str:
                   text, flags=re.IGNORECASE)
     # Dodatno: prođi sve fence-ove i filtriraj heuristikom
     return fence_re.sub(repl, text)
+@app.after_request
+def add_no_cache_headers(resp):
+    resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+    resp.headers["Pragma"] = "no-cache"
+    resp.headers["Expires"] = "0"
+    return resp
+
 
 
 if __name__ == "__main__":
