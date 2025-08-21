@@ -334,6 +334,27 @@ def promijeni_razred():
     session["razred"] = novi_razred
     return redirect(url_for("index"))
 
+
+from datetime import timedelta
+
+# konfiguracija kolačića/sesije (opcionalno, ali korisno)
+app.config.update(
+    SESSION_COOKIE_NAME="matbot_session_v2",  # izbjegni kolizije
+    PERMANENT_SESSION_LIFETIME=timedelta(hours=12),
+    SEND_FILE_MAX_AGE_DEFAULT=0,
+    ETAG_DISABLED=True,
+)
+
+@app.after_request
+def add_no_cache_headers(resp):
+    resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0, private"
+    resp.headers["Pragma"] = "no-cache"
+    resp.headers["Expires"] = "0"
+    # vrlo bitno za CDN/proxy: sadržaj zavisi od session cookie-a
+    resp.headers["Vary"] = "Cookie"
+    return resp
+
+
 def strip_ascii_graph_blocks(text: str) -> str:
     """
     Uklanja code-blockove koji izgledaju kao ASCII graf (osi, zvjezdice, crtice…),
