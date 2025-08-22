@@ -71,7 +71,6 @@
   #darkToggle{ display:none; }
   #darkToggle:checked + .toggle-slider{ background:#4caf50; }
   #darkToggle:checked + .toggle-slider::before{ transform: translateX(32px); }
-  .toggle-label { font-weight:600; }
 
   main{ max-width: 900px; margin: 0 auto; padding: 16px; }
   .card{
@@ -211,6 +210,7 @@
 <script>
 let __matbotSubmitting = false;
 
+/* Dropdown & Dark */
 function toggleDropdown(e){ e.preventDefault(); document.getElementById('menuWrap').classList.toggle('open'); }
 function initDarkToggle(){
   const cb = document.getElementById('darkToggle');
@@ -222,10 +222,12 @@ function initDarkToggle(){
   });
 }
 
+/* Typing & scroll */
 function showTyping(){ const el = document.getElementById('typing'); if(!el) return; el.style.display='block'; scrollToBottom(); }
 function hideTyping(){ const el = document.getElementById('typing'); if(el) el.style.display='none'; }
 function scrollToBottom(){ const chat=document.getElementById('chat-container'); if(chat) chat.scrollTop = chat.scrollHeight; }
 
+/* to-bottom button */
 (function setupScrollButton(){
   const chat = document.getElementById('chat-container');
   const btn = document.getElementById('to-bottom');
@@ -238,6 +240,7 @@ function scrollToBottom(){ const chat=document.getElementById('chat-container');
   setTimeout(toggleBtn, 200);
 })();
 
+/* Local history helpers */
 function getCID(){
   const key='matbot_cid';
   if(!localStorage.getItem(key)){
@@ -260,61 +263,121 @@ function getTrimmedHistoryForSubmit(HIST_KEY){
   return JSON.stringify(last5);
 }
 
+/* === Klijentska kompresija slike (ako > 2.5MB) === */
+function fileToImage(file){
+  return new Promise((resolve,reject)=>{
+    const fr=new FileReader();
+    fr.onload=()=>{ const img=new Image(); img.onload=()=>resolve(img); img.onerror=reject; img.src=fr.result; };
+    fr.onerror=reject;
+    fr.readAsDataURL(file);
+  });
+}
+function dataURLToBlob(dataURL){
+  const [hdr, b64]=dataURL.split(',');
+  const mime=(hdr.match(/:(.*?);/)||[])[1]||'image/jpeg';
+  const bin=atob(b64); const arr=new Uint8Array(bin.length);
+  for(let i=0;i<bin.length;i++) arr[i]=bin.charCodeAt(i);
+  return new Blob([arr], {type:mime});
+}
+async function compressImage(file, maxDim=1600, quality=0.82){
+  const img = await fileToImage(file);
+  let {width:w, height:h} = img;
+  const scale = Math.min(1, maxDim/Math.max(w,h));
+  const cw = Math.max(1, Math.round(w*scale));
+  const ch = Math.max(1, Math.round(h*scale));
+  const canvas=document.createElement('canvas');
+  canvas.width=cw; canvas.height=ch;
+  const ctx=canvas.getContext('2d');
+  ctx.drawImage(img,0,0,cw,ch);
+  const dataURL = canvas.toDataURL('image/jpeg', quality);
+  return dataURLToBlob(dataURL);
+}
+
 document.addEventListener('DOMContentLoaded', () => {
   initDarkToggle();
 
   const askForm = document.getElementById('ask-form');
   const clearForm = document.getElementById('clear-form');
   const hiddenMain = document.getElementById('history_json_main');
+  const fileInput = document.getElementById('slika');
+  const fileNameSpan = document.getElementById('file-name');
+  const textarea = document.getElementById('pitanje');
+  const razredSel = document.getElementById('razred');
 
   const cid = getCID();
   const HIST_KEY = 'matbot_history_' + cid;
   const serverHistory = {{ history|tojson|safe }};
 
-  // === KLJUČNO: ako server nema historiju → obriši localStorage i pošalji [] ===
   if (Array.isArray(serverHistory) && serverHistory.length) {
     const last5 = serverHistory.slice(-5);
     localStorage.setItem(HIST_KEY, JSON.stringify(last5));
     if (hiddenMain) hiddenMain.value = JSON.stringify(last5);
   } else {
-    resetHistory(HIST_KEY, hiddenMain); // <-- ovdje brišemo stare poruke
+    resetHistory(HIST_KEY, hiddenMain);
+  }
+
+  if (fileInput && fileNameSpan){
+    fileInput.addEventListener('change', ()=>{ fileNameSpan.textContent = fileInput.files.length ? fileInput.files[0].name : ""; });
   }
 
   if (askForm){
-    askForm.addEventListener('submit', (e)=>{
-      const textarea = askForm.querySelector('textarea');
-      const fileInput = document.getElementById('slika');
-      if ((!textarea || !textarea.value.trim()) && (!fileInput || !fileInput.files.length)){
-        alert("Unesi matematičko pitanje ili učitaj sliku.");
-        e.preventDefault(); return;
-      }
-      if (hiddenMain) hiddenMain.value = getTrimmedHistoryForSubmit(HIST_KEY);
-      showTyping();
-      __matbotSubmitting = true;
+    askForm.addEventListener('submit', async (e)=>{
       e.preventDefault();
-      setTimeout(()=>askForm.submit(), 150);
+
+      const hasText = textarea && textarea.value.trim().length>0;
+      const hasFile = fileInput && fileInput.files && fileInput.files[0];
+
+      if (!hasText && !hasFile){
+        alert("Unesi matematičko pitanje ili učitaj sliku.");
+        return;
+      }
+
+      // upiši trim historije
+      if (hiddenMain) hiddenMain.value = getTrimmedHistoryForSubmit(HIST_KEY);
+
+      showTyping();
+
+      // Ako NEMA slike -> klasični submit (brže i jednostavnije)
+      if (!hasFile){
+        askForm.submit();
+        return;
+      }
+
+      // Ima sliku -> napravimo FormData ručno i (po potrebi) kompresujemo
+      const file = fileInput.files[0];
+      let blob = file;
+      if (file.size > 2.5 * 1024 * 1024){  // prag za kompresiju
+        try { blob = await compressImage(file, 1600, 0.82); }
+        catch(_) { /* ako kompresija propadne, šaljemo original */ }
+      }
+
+      const fd = new FormData();
+      fd.append('history_json', hiddenMain.value || '[]');
+      if (razredSel && razredSel.value) fd.append('razred', razredSel.value);
+      if (textarea && textarea.value)   fd.append('pitanje', textarea.value);
+      fd.append('slika', blob, 'upload.jpg');
+
+      try{
+        const res = await fetch('/', { method:'POST', body: fd, credentials:'include' });
+        const htmlText = await res.text();
+        document.open(); document.write(htmlText); document.close();
+      }catch(err){
+        hideTyping();
+        alert("Greška pri slanju. Molim pokušaj ponovo.");
+      }
     });
   }
 
-  // Clear form: obriši localStorage PRIJE slanja na server
   if (clearForm){
     clearForm.addEventListener('submit', ()=>{
       resetHistory(HIST_KEY, hiddenMain);
-    });
-  }
-
-  const fileInput = document.getElementById('slika');
-  const fileNameSpan = document.getElementById('file-name');
-  if (fileInput && fileNameSpan){
-    fileInput.addEventListener('change', ()=>{
-      fileNameSpan.textContent = fileInput.files.length ? fileInput.files[0].name : "";
     });
   }
 });
 
 window.onload = ()=> setTimeout(scrollToBottom, 150);
 
-/* Plot funkcije */
+/* Plot */
 function transformExpression(expr){
   return expr.replace(/\s+/g,'')
     .replace(/([0-9])([a-zA-Z])/g,'$1*$2')
