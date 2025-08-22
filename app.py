@@ -5,7 +5,7 @@ import os
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 import re
-import requests
+# import requests   # --- OCR DISABLED --- (nije više potrebno)
 import base64
 from flask_cors import CORS
 from io import BytesIO
@@ -18,13 +18,15 @@ import html
 load_dotenv()
 
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-MATHPIX_API_ID = os.getenv("MATHPIX_API_ID")
-MATHPIX_API_KEY = os.getenv("MATHPIX_API_KEY")
+
+# --- OCR DISABLED ---
+# MATHPIX_API_ID = os.getenv("MATHPIX_API_ID")
+# MATHPIX_API_KEY = os.getenv("MATHPIX_API_KEY")
 
 # ===================== Model konstante (sigurni defaulti + ENV override) =====================
-MODEL_TEXT = os.getenv("OPENAI_MODEL_TEXT", "gpt-4o-mini")   # tekstualni zadaci i OCR -> tekst
-MODEL_VISION = os.getenv("OPENAI_MODEL_VISION", "gpt-4o")    # direktan vision za geometriju/slike-u-slici
-MODEL_IMAGE_CLASSIFIER = os.getenv("OPENAI_MODEL_IMAGE_CLASSIFIER", MODEL_VISION)
+MODEL_TEXT = os.getenv("OPENAI_MODEL_TEXT", "gpt-4o-mini")   # tekstualni zadaci
+MODEL_VISION = os.getenv("OPENAI_MODEL_VISION", "gpt-4o")    # direktan vision za slike
+# MODEL_IMAGE_CLASSIFIER = os.getenv("OPENAI_MODEL_IMAGE_CLASSIFIER", MODEL_VISION)  # --- OCR/CLS optional ---
 # =================================================================================================
 
 app = Flask(__name__)
@@ -55,25 +57,26 @@ prompti_po_razredu = {
     "9": "Ti si pomoćnik iz matematike za učenike 9. razreda osnovne škole. Pomaži im u savladavanju zadataka iz algebre, funkcija, geometrije i statistike. Koristi jasan i stručan jezik, ali primjeren njihovom nivou. Objasni svaki korak rješenja jasno i precizno."
 }
 
-def extract_text_from_image(file):
-    image_data_b64 = base64.b64encode(file.read()).decode()
-    headers = {
-        "app_id": MATHPIX_API_ID,
-        "app_key": MATHPIX_API_KEY,
-        "Content-type": "application/json"
-    }
-    data = {
-        "src": f"data:image/jpg;base64,{image_data_b64}",
-        "formats": ["text"],
-        "ocr": ["math", "text"]
-    }
-    response = requests.post("https://api.mathpix.com/v3/text", headers=headers, json=data)
-    if response.ok:
-        text = (response.json().get("text") or "").strip()
-        confidence_hint = len(text) >= 20
-        return text, confidence_hint
-    else:
-        return "", False
+# --- OCR DISABLED ---
+# def extract_text_from_image(file):
+#     image_data_b64 = base64.b64encode(file.read()).decode()
+#     headers = {
+#         "app_id": MATHPIX_API_ID,
+#         "app_key": MATHPIX_API_KEY,
+#         "Content-type": "application/json"
+#     }
+#     data = {
+#         "src": f"data:image/jpg;base64,{image_data_b64}",
+#         "formats": ["text"],
+#         "ocr": ["math", "text"]
+#     }
+#     response = requests.post("https://api.mathpix.com/v3/text", headers=headers, json=data, timeout=40)
+#     if response.ok:
+#         text = (response.json().get("text") or "").strip()
+#         confidence_hint = len(text) >= 20
+#         return text, confidence_hint
+#     else:
+#         return "", False
 
 def latexify_fractions(text):
     def zamijeni(match):
@@ -161,123 +164,81 @@ def get_history_from_request():
         print("history_json parse fail:", e)
         return []
 
-# ===================== KLASIFIKACIJA I ROUTING ZA SLIKE =====================
-def classify_image_for_flow(image_bytes: bytes) -> dict:
-    b64 = base64.b64encode(image_bytes).decode()
-    messages = [
-        {
-            "role": "system",
-            "content": (
-                "Task: Determine routing for a math-helper app.\n"
-                "Answer ONLY as compact JSON with keys: has_geometry (true/false), "
-                "has_embedded_images (true/false), reason (short string)."
-            )
-        },
-        {
-            "role": "user",
-            "content": [
-                {"type": "text", "text": "Classify this image for routing."},
-                {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b64}"}}
-            ]
-        }
-    ]
-    try:
-        resp = client.chat.completions.create(model=MODEL_IMAGE_CLASSIFIER, messages=messages)
-        raw = resp.choices[0].message.content.strip()
-        try:
-            result = json.loads(raw)
-        except Exception:
-            raw = re.sub(r"^```json|```$", "", raw.strip(), flags=re.IGNORECASE | re.MULTILINE)
-            result = json.loads(raw)
-        return {
-            "has_geometry": bool(result.get("has_geometry", False)),
-            "has_embedded_images": bool(result.get("has_embedded_images", False)),
-            "reason": result.get("reason", "")
-        }
-    except Exception as e:
-        print("Image classification failed:", e)
-        return {"has_geometry": True, "has_embedded_images": True, "reason": "fallback_on_error"}
+# ===================== (OPCIONALNO) KLASIFIKACIJA SLIKE — ONEMOGUĆENO radi brzine =====================
+# def classify_image_for_flow(image_bytes: bytes) -> dict:
+#     b64 = base64.b64encode(image_bytes).decode()
+#     messages = [
+#         {
+#             "role": "system",
+#             "content": (
+#                 "Task: Determine routing for a math-helper app.\n"
+#                 "Answer ONLY as compact JSON with keys: has_geometry (true/false), "
+#                 "has_embedded_images (true/false), reason (short string)."
+#             )
+#         },
+#         {
+#             "role": "user",
+#             "content": [
+#                 {"type": "text", "text": "Classify this image for routing."},
+#                 {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b64}"}}
+#             ]
+#         }
+#     ]
+#     try:
+#         resp = client.chat.completions.create(model=MODEL_IMAGE_CLASSIFIER, messages=messages)
+#         raw = resp.choices[0].message.content.strip()
+#         try:
+#             result = json.loads(raw)
+#         except Exception:
+#             raw = re.sub(r"^```json|```$", "", raw.strip(), flags=re.IGNORECASE | re.MULTILINE)
+#             result = json.loads(raw)
+#         return {
+#             "has_geometry": bool(result.get("has_geometry", False)),
+#             "has_embedded_images": bool(result.get("has_embedded_images", False)),
+#             "reason": result.get("reason", "")
+#         }
+#     except Exception as e:
+#         print("Image classification failed:", e)
+#         return {"has_geometry": True, "has_embedded_images": True, "reason": "fallback_on_error"}
 
 def route_image_flow(slika_bytes: bytes, razred: str, history):
     """
     Vraća: (odgovor_html, used_path, used_model)
+    OCR je potpuno isključen. Slika ide direktno na vision model.
     """
-    klass = classify_image_for_flow(slika_bytes)
-    print("Image classification:", klass)
-
-    if klass["has_geometry"] or klass["has_embedded_images"]:
-        image_b64 = base64.b64encode(slika_bytes).decode()
-        image_prompt = {
-            "role": "user",
-            "content": [
-                {"type": "text", "text": "Na slici je matematički zadatak. Objasni i riješi ga korak po korak."},
-                {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{image_b64}"}}
-            ]
-        }
-
-        prompt_za_razred = prompti_po_razredu.get(razred, prompti_po_razredu["5"])
-        system_message = {
-            "role": "system",
-            "content": (
-                prompt_za_razred +
-                " Odgovaraj na jeziku pitanja; ako nisi siguran, koristi bosanski (ijekavica). "
-                "Ne miješaj jezike i ne koristi engleske riječi u objašnjenjima. "
-                "Ako nije matematika, reci: 'Molim te, postavi matematičko pitanje.' "
-                "Ako ne znaš tačno rješenje, reci: 'Za ovaj zadatak se obrati instruktorima na info@matematicari.com'."
-            )
-        }
-        messages = [system_message]
-        for msg in history[-5:]:
-            messages.append({"role": "user", "content": msg["user"]})
-            messages.append({"role": "assistant", "content": msg["bot"]})
-        messages.append(image_prompt)
-
-        resp = client.chat.completions.create(model=MODEL_VISION, messages=messages)
-        raw = resp.choices[0].message.content
-        raw = strip_ascii_graph_blocks(raw)
-        return f"<p>{latexify_fractions(raw)}</p>", "vision_direct", MODEL_VISION
-
-    # OCR put
-    ocr_text, good = extract_text_from_image(BytesIO(slika_bytes))
-    if good and ocr_text:
-        prompt_za_razred = prompti_po_razredu.get(razred, prompti_po_razredu["5"])
-        system_message = {
-            "role": "system",
-            "content": (
-                prompt_za_razred +
-                " Odgovaraj na jeziku pitanja; ako nisi siguran, koristi bosanski (ijekavica). "
-                "Ne miješaj jezike i ne koristi engleske riječi u objašnjenjima. "
-                "Ako nije matematika, reci: 'Molim te, postavi matematičko pitanje.' "
-                "Ako ne znaš tačno rješenje, reci: 'Za ovaj zadatak se obrati instruktorima na info@matematicari.com'. "
-                "Ne prikazuj ASCII grafove osim ako su izričito traženi."
-            )
-        }
-        messages = [system_message]
-        for msg in history[-5:]:
-            messages.append({"role": "user", "content": msg["user"]})
-            messages.append({"role": "assistant", "content": msg["bot"]})
-        messages.append({"role": "user", "content": ocr_text})
-
-        resp = client.chat.completions.create(model=MODEL_TEXT, messages=messages)
-        raw = resp.choices[0].message.content
-        raw = strip_ascii_graph_blocks(raw)
-        return f"<p>{latexify_fractions(raw)}</p>", "ocr_to_text", MODEL_TEXT
-
-    # fallback na vision
+    # Direktno vision rješenje (brže i bez vanjskog OCR poziva)
     image_b64 = base64.b64encode(slika_bytes).decode()
-    resp = client.chat.completions.create(
-        model=MODEL_VISION,
-        messages=[{
-            "role": "user",
-            "content": [
-                {"type": "text", "text": "Na slici je matematički zadatak. Objasni i riješi ga korak po korak."},
-                {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{image_b64}"}}
-            ]
-        }]
-    )
+
+    prompt_za_razred = prompti_po_razredu.get(razred, prompti_po_razredu["5"])
+    system_message = {
+        "role": "system",
+        "content": (
+            prompt_za_razred +
+            " Odgovaraj na jeziku pitanja; ako nisi siguran, koristi bosanski (ijekavica). "
+            "Ne miješaj jezike i ne koristi engleske riječi u objašnjenjima. "
+            "Ako nije matematika, reci: 'Molim te, postavi matematičko pitanje.' "
+            "Ako ne znaš tačno rješenje, reci: 'Za ovaj zadatak se obrati instruktorima na info@matematicari.com'. "
+            "Ne prikazuj ASCII grafove osim ako su izričito traženi."
+        )
+    }
+
+    messages = [system_message]
+    for msg in history[-5:]:
+        messages.append({"role": "user", "content": msg["user"]})
+        messages.append({"role": "assistant", "content": msg["bot"]})
+    messages.append({
+        "role": "user",
+        "content": [
+            {"type": "text", "text": "Na slici je matematički zadatak. Objasni i riješi ga korak po korak."},
+            {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{image_b64}"}}
+        ]
+    })
+
+    resp = client.chat.completions.create(model=MODEL_VISION, messages=messages)
     raw = resp.choices[0].message.content
     raw = strip_ascii_graph_blocks(raw)
     return f"<p>{latexify_fractions(raw)}</p>", "vision_direct", MODEL_VISION
+
 # =============================================================================
 
 @app.route("/", methods=["GET", "POST"])
@@ -290,7 +251,7 @@ def index():
     if request.method == "POST":
         pitanje = request.form.get("pitanje", "")
         slika = request.files.get("slika")
-        pitanje_iz_slike = ""
+        # pitanje_iz_slike = ""  # više ne koristimo OCR
 
         # ---------- IMAGE BRANCH ----------
         if slika and slika.filename:
@@ -386,7 +347,7 @@ def index():
 
     return render_template("index.html", history=history, razred=razred)
 
-# ---- Error handler za prevelik upload (npr. kada Thinkific/proxy odbije) ----
+# ---- Error handler za prevelik upload ----
 @app.errorhandler(413)
 def too_large(e):
     msg = f"<p><b>Greška:</b> Fajl je prevelik (limit {MAX_MB} MB). Smanji rezoluciju slike i pokušaj ponovo.</p>"
@@ -439,8 +400,6 @@ def strip_ascii_graph_blocks(text: str) -> str:
                   lambda m: "" if "```" in m.group(0) else m.group(0),
                   text, flags=re.IGNORECASE)
     return fence_re.sub(repl, text)
-
-# (drugi after_request izbačen – jedan je dovoljan)
 
 if __name__ == "__main__":
     app.run(debug=True, port=5000)
