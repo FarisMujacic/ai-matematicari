@@ -12,79 +12,231 @@
   <script src="https://cdn.plot.ly/plotly-2.27.1.min.js"></script>
 
   <style>
-  /* (isti stil kao ranije koji smo ti poslali – skraćeno zbog prostora)
-     Ostavljam ključne dijelove: user bubble bez zelenog ruba, sticky typing, centriranje itd. */
-  :root{--accent-bot:#4caf50;--accent-user:#05afc5;--bubble-bg:#eaf7e8;--bubble-text:#1a1a1a;--page-bg:#f0f4ff;--card-bg:#fff;}
-  body{font-family:"Segoe UI",Tahoma,Geneva,Verdana,sans-serif;background:var(--page-bg);color:#333;margin:0;padding:100px 0 0}
-  header{background:#3d7d66;color:#fff;padding:1rem;display:flex;align-items:center;justify-content:center;position:fixed;top:0;left:0;right:0;z-index:1000}
-  main{max-width:800px;margin:0 auto;padding:2rem;display:flex;flex-direction:column;gap:1.5rem;background:var(--card-bg);border-radius:10px;box-shadow:0 5px 20px rgba(0,0,0,.08)}
-  .chat-message{display:flex;width:100%;word-break:break-word}.user-message{justify-content:flex-end}.bot-message{justify-content:flex-start}
-  .formatted-bot-response,.formatted-bot-response.user-style{padding:.9rem 1.1rem;border-radius:14px;font-size:1rem;line-height:1.75;box-shadow:0 1px 4px rgba(0,0,0,.05);white-space:pre-wrap;max-width:75%;background:var(--bubble-bg);color:var(--bubble-text)}
-  .formatted-bot-response{border-left:4px solid var(--accent-bot);margin:.35rem 0}
-  .formatted-bot-response.user-style{background:#c8ebf0;border-right:4px solid var(--accent-user);border-left:0!important;margin:.35rem 0 .35rem auto;max-width:60%}
-  #chat-container{display:flex;flex-direction:column;gap:.75rem;max-height:60vh;overflow-y:auto;scroll-behavior:smooth;padding-bottom:.5rem}
-  .typing-indicator{position:sticky;bottom:0;align-self:flex-start;font-style:italic;font-size:1rem;padding:.5rem .75rem;color:#444;background:#fff2c2;border-left:4px solid #ffb84d;border-radius:8px;margin:.25rem 0 0;max-width:320px;display:none;z-index:2}
-  .typing-indicator::after{content:'...';animation:dots 1s steps(3,end) infinite}@keyframes dots{0%{content:''}33%{content:'.'}66%{content:'..'}100%{content:'...'}}
-  textarea{width:100%;min-height:120px;padding:1rem;font-size:1.1rem;border-radius:12px;border:2px solid #50e3c2;background:#f8fafd;outline:none;resize:vertical}
-  textarea:focus{border-color:#3d7d66;box-shadow:0 4px 14px rgba(0,0,0,.08)}
+  :root{
+    --page-bg: linear-gradient(180deg, #eef5ff 0%, #f7fbff 100%);
+    --card-bg: rgba(255,255,255,0.92);
+    --card-border: rgba(0,0,0,0.06);
+    --text: #1a1a1a;
+
+    --accent-bot:#4caf50;
+    --accent-user:#05afc5;
+
+    --bubble-bg:#eaf7e8;
+    --bubble-text:#1a1a1a;
+
+    --btn-bg:#3d7d66;
+    --btn-bg-hover:#2f5c4e;
+    --danger:#c94f4f;
+    --muted:#6b7a86;
+  }
+  body.dark{
+    --page-bg: linear-gradient(180deg, #0d1416 0%, #0a0f11 100%);
+    --card-bg: rgba(27,35,39,0.90);
+    --card-border: rgba(255,255,255,0.08);
+    --text: #e9f1f3;
+
+    --bubble-bg:#263238;
+    --bubble-text:#eef6f8;
+
+    --btn-bg:#2f5c4e;
+    --btn-bg-hover:#274a40;
+    --muted:#9fb0b9;
+  }
+
+  *{box-sizing:border-box}
+  html,body{height:100%}
+  body{font-family:"Segoe UI", Tahoma, Geneva, Verdana, sans-serif;background:var(--page-bg);color:var(--text);margin:0;padding:100px 0 32px}
+
+  header{
+    position:fixed; top:0; left:0; right:0; z-index:1000;
+    background:#3d7d66; color:#fff; padding:0.9rem 1rem;
+    display:flex; align-items:center; justify-content:center;
+  }
+  .title-container{ font-size:1.85rem; font-weight:700; letter-spacing:.5px; }
+  .dropdown{ position:absolute; right:1rem; top:.6rem; }
+  .dropdown-toggle{ background: var(--btn-bg); color:#fff; border:none; padding:.55rem .9rem; font-size:1rem; border-radius:10px; cursor:pointer; }
+  .dropdown-toggle:hover{ background: var(--btn-bg-hover); }
+  .dropdown-content{
+    display:none; position:absolute; top:115%; right:0; min-width:240px;
+    background:var(--card-bg); color:var(--text); border:1px solid var(--card-border);
+    box-shadow:0 12px 30px rgba(0,0,0,.12); border-radius:12px; padding:1rem; backdrop-filter: blur(8px);
+  }
+  .dropdown.open .dropdown-content{ display:block; }
+  .toggle-row{ display:flex; align-items:center; justify-content:space-between; gap:.75rem; }
+  .toggle-slider{ position:relative; width:64px; height:32px; background:#cfd8dc; border-radius:32px; cursor:pointer; transition:background .25s; }
+  .toggle-slider::before{
+    content:""; position:absolute; top:3px; left:3px; width:26px; height:26px; background:#fff; border-radius:50%;
+    box-shadow:0 2px 6px rgba(0,0,0,.25); transition:transform .25s;
+  }
+  #darkToggle{ display:none; }
+  #darkToggle:checked + .toggle-slider{ background:#4caf50; }
+  #darkToggle:checked + .toggle-slider::before{ transform: translateX(32px); }
+  .toggle-label { font-weight:600; }
+
+  main{ max-width: 900px; margin: 0 auto; padding: 16px; }
+  .card{
+    background: var(--card-bg); border:1px solid var(--card-border);
+    border-radius:16px; padding: 1.25rem;
+    box-shadow: 0 8px 30px rgba(0,0,0,.08); backdrop-filter: blur(10px);
+  }
+  .stack{ display:flex; flex-direction:column; gap:1.25rem; }
+
+  #chat-container{
+    display:flex; flex-direction:column; gap:.75rem;
+    max-height:60vh; overflow-y:auto; scroll-behavior:smooth; padding:.25rem .25rem .5rem;
+    border-radius:12px;
+  }
+  .qa-pair{ display:flex; flex-direction:column; gap:.4rem; margin-bottom:.3rem; }
+  .chat-message{ display:flex; width:100%; word-break:break-word; }
+  .user-message{ justify-content:flex-end; }
+  .bot-message{ justify-content:flex-start; }
+  .bubble, .bubble.user{
+    padding:.9rem 1.1rem; border-radius:14px; font-size:1rem; line-height:1.75;
+    box-shadow:0 1px 4px rgba(0,0,0,.05); white-space:pre-wrap; background:var(--bubble-bg); color:var(--bubble-text);
+    max-width:75%; animation:fadeIn .25s ease;
+  }
+  .bubble{ border-left:4px solid var(--accent-bot); margin:.35rem 0; }
+  .bubble.user{ background:#c8ebf0; border-right:4px solid var(--accent-user); border-left:0!important; margin:.35rem 0 .35rem auto; max-width:60%; }
+
+  .typing-indicator{
+    position:sticky; bottom:0; align-self:flex-start;
+    font-style:italic; font-size:1rem; padding:.5rem .75rem; color:#444; background:#fff2c2;
+    border-left:4px solid #ffb84d; border-radius:8px; margin:.15rem 0 0; max-width:320px; display:none; z-index:2;
+  }
+  .typing-indicator::after{ content:'...'; animation:dots 1s steps(3,end) infinite; }
+  @keyframes dots{0%{content:''}33%{content:'.'}66%{content:'..'}100%{content:'...'}}
+  @keyframes fadeIn{ from{opacity:0; transform:translateY(6px);} to{opacity:1; transform:translateY(0);} }
+
+  form{ display:flex; flex-direction:column; gap:1rem; } 
+  form, textarea, select { autocomplete: off; }
+  label{ font-weight:600; }
+  select{ padding:.5rem .6rem; border-radius:8px; border:1px solid var(--card-border); background:#fff; }
+  textarea{
+    width:100%; min-height:140px; padding:1rem; font-size:1.08rem; border-radius:12px;
+    border:2px solid #50e3c2; background:#f8fafd; outline:none; resize:vertical;
+    box-shadow:0 2px 8px rgba(0,0,0,.04);
+  }
+  textarea:focus{ border-color:#3d7d66; box-shadow:0 4px 14px rgba(0,0,0,.08); }
+
+  .file-row{ display:flex; align-items:center; gap:.75rem; flex-wrap:wrap; }
+  .file-input{ display:none; }
+  .btn{ background: var(--btn-bg); color:#fff; border:none; padding:.85rem 1.1rem; font-size:1rem; border-radius:10px; cursor:pointer; width:fit-content; transition: transform .05s ease, background .15s ease; }
+  .btn:hover{ background: var(--btn-bg-hover); }
+  .btn:active{ transform: translateY(1px); }
+  .btn.secondary{ background: transparent; color: var(--btn-bg); border: 2px solid var(--btn-bg); }
+  .btn.danger{ background: var(--danger); }
+  .file-name{ font-size:.95rem; color: var(--muted); min-height: 1.2em; }
+
+  .actions{ display:flex; gap:.8rem; flex-wrap:wrap; }
+  .actions .btn{ margin:0; }
+
+  #to-bottom{ position: fixed; right: 18px; bottom: 22px; z-index: 1001; display:none; padding:.6rem .8rem; border-radius:12px; font-weight:600; background: var(--btn-bg); color:#fff; border:none; cursor:pointer; box-shadow:0 6px 18px rgba(0,0,0,.18); }
+  #to-bottom:hover{ background: var(--btn-bg-hover); }
   </style>
 </head>
 <body>
-  <header><div class="title-container">MAT-BOT</div></header>
+  <header id="main-header">
+    <div class="title-container">MAT-BOT</div>
+    <div class="dropdown" id="menuWrap">
+      <button class="dropdown-toggle" onclick="toggleDropdown(event)">☰ Meni</button>
+      <div class="dropdown-content">
+        <div class="toggle-row">
+          <span class="toggle-label">🌙 Dark Mode</span>
+          <label style="display:flex;align-items:center;gap:.5rem;">
+            <input type="checkbox" id="darkToggle">
+            <span class="toggle-slider"></span>
+          </label>
+        </div>
+      </div>
+    </div>
+  </header>
 
-  <main>
-    <div id="chat-container">
-      {% if history %}
+  <main class="stack">
+    {% if history and history|length > 0 %}
+    <div class="card">
+      <div id="chat-container">
         {% for message in history %}
         <div class="qa-pair">
-          <div class="chat-message user-message"><div class="formatted-bot-response user-style"><p>{{ message.user }}</p></div></div>
-          <div class="chat-message bot-message"><div class="formatted-bot-response">{{ message.bot|safe }}</div></div>
+          <div class="chat-message user-message"><div class="bubble user"><p>{{ message.user }}</p></div></div>
+          <div class="chat-message bot-message"><div class="bubble">{{ message.bot|safe }}</div></div>
         </div>
         {% endfor %}
-      {% endif %}
-      <div id="typing" class="typing-indicator">🤖 MAT-BOT piše odgovor</div>
-    </div>
-
-    <form id="ask-form" method="POST" enctype="multipart/form-data">
-      <input type="hidden" name="history_json" id="history_json_main" value='{{ history|tojson|safe }}'>
-      <div id="razred-wrapper" {% if razred %}style="display: none;"{% endif %}>
-        <label for="razred"><strong>Koji si razred?</strong></label>
-        <select name="razred" id="razred" required>
-          <option value="">-- Odaberi razred --</option>
-          <option value="5" {% if razred == "5" %}selected{% endif %}>5. razred</option>
-          <option value="6" {% if razred == "6" %}selected{% endif %}>6. razred</option>
-          <option value="7" {% if razred == "7" %}selected{% endif %}>7. razred</option>
-          <option value="8" {% if razred == "8" %}selected{% endif %}>8. razred</option>
-          <option value="9" {% if razred == "9" %}selected{% endif %}>9. razred</option>
-        </select>
+        <div id="typing" class="typing-indicator">🤖 MAT-BOT piše odgovor</div>
       </div>
+    </div>
+    {% else %}
+      <div id="typing" class="typing-indicator" style="display:none; margin:0 auto;">🤖 MAT-BOT piše odgovor</div>
+    {% endif %}
 
-      <label for="pitanje"><strong>Postavi mi matematičko pitanje (tekst ili slika):</strong></label>
-      <textarea name="pitanje" id="pitanje" placeholder="Ovdje možeš unijeti zadatak ili pitanje..." autofocus></textarea>
+    <div class="card">
+      <form id="ask-form" method="POST" enctype="multipart/form-data" autocomplete="off">
+        <input type="hidden" name="history_json" id="history_json_main" value='{{ history|tojson|safe }}'>
 
-      <label for="slika"><strong>Ili učitaj sliku pitanja:</strong></label>
-      <input type="file" name="slika" accept="image/*" />
+        <div id="razred-wrapper" {% if razred %}style="display: none;"{% endif %}>
+          <label for="razred">Koji si razred?</label>
+          <select name="razred" id="razred" required>
+            <option value="">-- Odaberi razred --</option>
+            <option value="5" {% if razred == "5" %}selected{% endif %}>5. razred</option>
+            <option value="6" {% if razred == "6" %}selected{% endif %}>6. razred</option>
+            <option value="7" {% if razred == "7" %}selected{% endif %}>7. razred</option>
+            <option value="8" {% if razred == "8" %}selected{% endif %}>8. razred</option>
+            <option value="9" {% if razred == "9" %}selected{% endif %}>9. razred</option>
+          </select>
+        </div>
 
-      <button type="submit">📧 Pošalji</button>
-    </form>
+        <label for="pitanje">Postavi mi matematičko pitanje (tekst ili slika):</label>
+        <textarea name="pitanje" id="pitanje" placeholder="Ovdje možeš unijeti zadatak ili pitanje..." autofocus autocomplete="off"></textarea>
 
-    <form id="clear-form" method="POST" action="/clear">
-      <input type="hidden" name="confirm_clear" value="1" />
-      <button type="submit" style="background-color:#c94f4f;">🗑️ Očisti konverzaciju</button>
-    </form>
+        <label for="slika">Ili učitaj sliku pitanja:</label>
+        <div class="file-row">
+          <input class="file-input" id="slika" type="file" name="slika" accept="image/*" />
+          <label for="slika" class="btn secondary">📎 Izaberi fajl</label>
+          <span id="file-name" class="file-name"></span>
+        </div>
+
+        <div class="actions">
+          <button type="submit" class="btn">✉️ Pošalji</button>
+          <button type="submit" form="clear-form" class="btn danger">🗑️ Očisti konverzaciju</button>
+        </div>
+      </form>
+
+      <form id="clear-form" method="POST" action="/clear" autocomplete="off">
+        <input type="hidden" name="confirm_clear" value="1" />
+      </form>
+    </div>
   </main>
+
+  <button id="to-bottom" onclick="scrollToBottom()">⬇ Do dna</button>
 
 <script>
 let __matbotSubmitting = false;
 
-function showTyping(){
-  const el = document.getElementById('typing');
-  if(!el) return;
-  el.style.display='block';
-  const chat=document.getElementById('chat-container');
-  if(chat) chat.scrollTop = chat.scrollHeight;
+function toggleDropdown(e){ e.preventDefault(); document.getElementById('menuWrap').classList.toggle('open'); }
+function initDarkToggle(){
+  const cb = document.getElementById('darkToggle');
+  const saved = localStorage.getItem('matbot_dark') === '1';
+  if (saved){ document.body.classList.add('dark'); cb.checked = true; }
+  cb.addEventListener('change', ()=>{
+    document.body.classList.toggle('dark', cb.checked);
+    localStorage.setItem('matbot_dark', cb.checked ? '1' : '0');
+  });
 }
+
+function showTyping(){ const el = document.getElementById('typing'); if(!el) return; el.style.display='block'; scrollToBottom(); }
+function hideTyping(){ const el = document.getElementById('typing'); if(el) el.style.display='none'; }
 function scrollToBottom(){ const chat=document.getElementById('chat-container'); if(chat) chat.scrollTop = chat.scrollHeight; }
+
+(function setupScrollButton(){
+  const chat = document.getElementById('chat-container');
+  const btn = document.getElementById('to-bottom');
+  if(!chat || !btn) return;
+  const toggleBtn = ()=>{
+    const nearBottom = (chat.scrollHeight - chat.scrollTop - chat.clientHeight) < 40;
+    btn.style.display = nearBottom ? 'none' : 'block';
+  };
+  chat.addEventListener('scroll', toggleBtn);
+  setTimeout(toggleBtn, 200);
+})();
 
 function getCID(){
   const key='matbot_cid';
@@ -94,7 +246,10 @@ function getCID(){
   }
   return localStorage.getItem(key);
 }
-
+function resetHistory(HIST_KEY, hiddenMain){
+  localStorage.removeItem(HIST_KEY);
+  if (hiddenMain) hiddenMain.value = '[]';
+}
 function getTrimmedHistoryForSubmit(HIST_KEY){
   let arr=[];
   try{ arr = JSON.parse(localStorage.getItem(HIST_KEY) || '[]'); }catch(_){}
@@ -106,33 +261,34 @@ function getTrimmedHistoryForSubmit(HIST_KEY){
 }
 
 document.addEventListener('DOMContentLoaded', () => {
+  initDarkToggle();
+
   const askForm = document.getElementById('ask-form');
   const clearForm = document.getElementById('clear-form');
   const hiddenMain = document.getElementById('history_json_main');
+
   const cid = getCID();
   const HIST_KEY = 'matbot_history_' + cid;
   const serverHistory = {{ history|tojson|safe }};
 
-  // U localStorage spremi samo zadnjih 5 s početne strane
+  // === KLJUČNO: ako server nema historiju → obriši localStorage i pošalji [] ===
   if (Array.isArray(serverHistory) && serverHistory.length) {
     const last5 = serverHistory.slice(-5);
     localStorage.setItem(HIST_KEY, JSON.stringify(last5));
     if (hiddenMain) hiddenMain.value = JSON.stringify(last5);
   } else {
-    if (hiddenMain) hiddenMain.value = getTrimmedHistoryForSubmit(HIST_KEY);
+    resetHistory(HIST_KEY, hiddenMain); // <-- ovdje brišemo stare poruke
   }
 
   if (askForm){
     askForm.addEventListener('submit', (e)=>{
       const textarea = askForm.querySelector('textarea');
-      const fileInput = askForm.querySelector('input[type="file"]');
+      const fileInput = document.getElementById('slika');
       if ((!textarea || !textarea.value.trim()) && (!fileInput || !fileInput.files.length)){
         alert("Unesi matematičko pitanje ili učitaj sliku.");
         e.preventDefault(); return;
       }
-      // U hidden polje šaljemo samo TRIMOVANU historiju (zadnjih 5)
       if (hiddenMain) hiddenMain.value = getTrimmedHistoryForSubmit(HIST_KEY);
-
       showTyping();
       __matbotSubmitting = true;
       e.preventDefault();
@@ -140,19 +296,60 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   }
 
+  // Clear form: obriši localStorage PRIJE slanja na server
   if (clearForm){
     clearForm.addEventListener('submit', ()=>{
-      localStorage.removeItem(HIST_KEY);
+      resetHistory(HIST_KEY, hiddenMain);
+    });
+  }
+
+  const fileInput = document.getElementById('slika');
+  const fileNameSpan = document.getElementById('file-name');
+  if (fileInput && fileNameSpan){
+    fileInput.addEventListener('change', ()=>{
+      fileNameSpan.textContent = fileInput.files.length ? fileInput.files[0].name : "";
     });
   }
 });
 
 window.onload = ()=> setTimeout(scrollToBottom, 150);
 
-/* Plot funkcije (isti kao ranije) */
-function transformExpression(expr){return expr.replace(/\s+/g,'').replace(/([0-9])([a-zA-Z])/g,'$1*$2').replace(/([a-zA-Z])([a-zA-Z])/g,'$1*$2').replace(/([a-zA-Z])(\d)/g,'$1*$2').replace(/(\))(\()/g,'$1*$2').replace(/(\))([a-zA-Z])/g,'$1*$2').replace(/([a-zA-Z])(\()/g,'$1*$2').replace(/(\d+|\w+)\^(\d+|\w+)/g,'Math.pow($1,$2)').replace(/(?<!\.)\b(sin|cos|tan|exp|log|sqrt|abs)\b/g,'Math.$1').replace(/\bln\b/g,'Math.log');}
-function drawPlot(expression, container){const p=transformExpression(expression);const x=[],y=[];let f;try{f=new Function('x',`return ${p}`);}catch(e){return;}for(let i=-10;i<=10;i+=0.1){try{const r=f(i);x.push(i);y.push(isFinite(r)?r:null);}catch{x.push(i);y.push(null);}}const data=[{x,y,mode:'lines',line:{color:'#0077cc',width:3},name:expression}],layout={title:`Graf funkcije: y = ${expression}`,xaxis:{title:'x'},yaxis:{title:'y'},margin:{t:40},plot_bgcolor:'#fff',paper_bgcolor:'#fff'};const graphDiv=document.createElement("div");graphDiv.style="width:100%;max-width:700px;height:400px;margin-top:1rem;";container.appendChild(graphDiv);Plotly.newPlot(graphDiv,data,layout);}
-document.querySelectorAll('.plot-request').forEach(plotDiv=>{let expression=plotDiv.getAttribute("data-expression");const parent=plotDiv.closest(".formatted-bot-response");if(!expression||!parent)return;if(expression.trim().startsWith("y="))expression=expression.replace(/^y\s*=\s*/i,"").trim();drawPlot(expression,parent);plotDiv.remove();});
+/* Plot funkcije */
+function transformExpression(expr){
+  return expr.replace(/\s+/g,'')
+    .replace(/([0-9])([a-zA-Z])/g,'$1*$2')
+    .replace(/([a-zA-Z])([a-zA-Z])/g,'$1*$2')
+    .replace(/([a-zA-Z])(\d)/g,'$1*$2')
+    .replace(/(\))(\()/g,'$1*$2')
+    .replace(/(\))([a-zA-Z])/g,'$1*$2')
+    .replace(/([a-zA-Z])(\()/g,'$1*$2')
+    .replace(/(\d+|\w+)\^(\d+|\w+)/g,'Math.pow($1,$2)')
+    .replace(/(?<!\.)\b(sin|cos|tan|exp|log|sqrt|abs)\b/g,'Math.$1')
+    .replace(/\bln\b/g,'Math.log');
+}
+function drawPlot(expression, container){
+  const parsed = transformExpression(expression);
+  const x=[], y=[];
+  let f; try{ f=new Function('x',`return ${parsed}`); }catch(e){ return; }
+  for(let i=-10;i<=10;i+=0.1){
+    try{ const res=f(i); x.push(i); y.push(isFinite(res)?res:null);}
+    catch{ x.push(i); y.push(null);}
+  }
+  const data=[{x,y,mode:'lines',line:{color:'#0077cc',width:3},name:expression}];
+  const layout={title:`Graf funkcije: y = ${expression}`,xaxis:{title:'x'},yaxis:{title:'y'},margin:{t:40},plot_bgcolor:'#fff',paper_bgcolor:'#fff'};
+  const graphDiv=document.createElement("div");
+  graphDiv.style="width:100%;max-width:700px;height:400px;margin-top:1rem;";
+  container.appendChild(graphDiv);
+  Plotly.newPlot(graphDiv,data,layout);
+}
+document.querySelectorAll('.plot-request').forEach(plotDiv=>{
+  let expression=plotDiv.getAttribute("data-expression");
+  const parent=plotDiv.closest(".bubble");
+  if(!expression||!parent) return;
+  if(expression.trim().startsWith("y=")) expression=expression.replace(/^y\s*=\s*/i,"").trim();
+  drawPlot(expression,parent);
+  plotDiv.remove();
+});
 </script>
 </body>
 </html>
