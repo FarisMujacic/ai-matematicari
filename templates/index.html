@@ -12,125 +12,51 @@
   <script src="https://cdn.plot.ly/plotly-2.27.1.min.js"></script>
 
   <style>
-  :root{
-    --page-bg: linear-gradient(180deg, #eef5ff 0%, #f7fbff 100%);
-    --card-bg: rgba(255,255,255,0.92);
-    --card-border: rgba(0,0,0,0.06);
-    --text: #1a1a1a;
-
-    --accent-bot:#4caf50;
-    --accent-user:#05afc5;
-
-    --bubble-bg:#eaf7e8;
-    --bubble-text:#1a1a1a;
-
-    --btn-bg:#3d7d66;
-    --btn-bg-hover:#2f5c4e;
-    --danger:#c94f4f;
-    --muted:#6b7a86;
-  }
-  body.dark{
-    --page-bg: linear-gradient(180deg, #0d1416 0%, #0a0f11 100%);
-    --card-bg: rgba(27,35,39,0.90);
-    --card-border: rgba(255,255,255,0.08);
-    --text: #e9f1f3;
-
-    --bubble-bg:#263238;
-    --bubble-text:#eef6f8;
-
-    --btn-bg:#2f5c4e;
-    --btn-bg-hover:#274a40;
-    --muted:#9fb0b9;
-  }
-
-  *{box-sizing:border-box}
-  html,body{height:100%}
-  body{font-family:"Segoe UI", Tahoma, Geneva, Verdana, sans-serif;background:var(--page-bg);color:var(--text);margin:0;padding:100px 0 32px}
-
-  header{
-    position:fixed; top:0; left:0; right:0; z-index:1000;
-    background:#3d7d66; color:#fff; padding:0.9rem 1rem;
-    display:flex; align-items:center; justify-content:center;
-  }
-  .title-container{ font-size:1.85rem; font-weight:700; letter-spacing:.5px; }
-  .dropdown{ position:absolute; right:1rem; top:.6rem; }
-  .dropdown-toggle{ background: var(--btn-bg); color:#fff; border:none; padding:.55rem .9rem; font-size:1rem; border-radius:10px; cursor:pointer; }
-  .dropdown-toggle:hover{ background: var(--btn-bg-hover); }
-  .dropdown-content{
-    display:none; position:absolute; top:115%; right:0; min-width:240px;
-    background:var(--card-bg); color:var(--text); border:1px solid var(--card-border);
-    box-shadow:0 12px 30px rgba(0,0,0,.12); border-radius:12px; padding:1rem; backdrop-filter: blur(8px);
-  }
-  .dropdown.open .dropdown-content{ display:block; }
-  .toggle-row{ display:flex; align-items:center; justify-content:space-between; gap:.75rem; }
-  .toggle-slider{ position:relative; width:64px; height:32px; background:#cfd8dc; border-radius:32px; cursor:pointer; transition:background .25s; }
-  .toggle-slider::before{
-    content:""; position:absolute; top:3px; left:3px; width:26px; height:26px; background:#fff; border-radius:50%;
-    box-shadow:0 2px 6px rgba(0,0,0,.25); transition:transform .25s;
-  }
-  #darkToggle{ display:none; }
-  #darkToggle:checked + .toggle-slider{ background:#4caf50; }
-  #darkToggle:checked + .toggle-slider::before{ transform: translateX(32px); }
-
-  main{ max-width: 900px; margin: 0 auto; padding: 16px; }
-  .card{
-    background: var(--card-bg); border:1px solid var(--card-border);
-    border-radius:16px; padding: 1.25rem;
-    box-shadow: 0 8px 30px rgba(0,0,0,.08); backdrop-filter: blur(10px);
-  }
-  .stack{ display:flex; flex-direction:column; gap:1.25rem; }
-
-  #chat-container{
-    display:flex; flex-direction:column; gap:.75rem;
-    max-height:60vh; overflow-y:auto; scroll-behavior:smooth; padding:.25rem .25rem .5rem;
-    border-radius:12px;
-  }
-  .qa-pair{ display:flex; flex-direction:column; gap:.4rem; margin-bottom:.3rem; }
-  .chat-message{ display:flex; width:100%; word-break:break-word; }
-  .user-message{ justify-content:flex-end; }
-  .bot-message{ justify-content:flex-start; }
-  .bubble, .bubble.user{
-    padding:.9rem 1.1rem; border-radius:14px; font-size:1rem; line-height:1.75;
-    box-shadow:0 1px 4px rgba(0,0,0,.05); white-space:pre-wrap; background:var(--bubble-bg); color:var(--bubble-text);
-    max-width:75%; animation:fadeIn .25s ease;
-  }
-  .bubble{ border-left:4px solid var(--accent-bot); margin:.35rem 0; }
-  .bubble.user{ background:#c8ebf0; border-right:4px solid var(--accent-user); border-left:0!important; margin:.35rem 0 .35rem auto; max-width:60%; }
-
-  .typing-indicator{
-    position:sticky; bottom:0; align-self:flex-start;
-    font-style:italic; font-size:1rem; padding:.5rem .75rem; color:#444; background:#fff2c2;
-    border-left:4px solid #ffb84d; border-radius:8px; margin:.15rem 0 0; max-width:320px; display:none; z-index:2;
-  }
-  .typing-indicator::after{ content:'...'; animation:dots 1s steps(3,end) infinite; }
+  /* ... (isti CSS kao kod tebe; skraceno ovdje radi mjesta) ... */
+  :root{ --page-bg:linear-gradient(180deg,#eef5ff 0%,#f7fbff 100%); --card-bg:rgba(255,255,255,.92); --card-border:rgba(0,0,0,.06); --text:#1a1a1a; --accent-bot:#4caf50; --accent-user:#05afc5; --bubble-bg:#eaf7e8; --bubble-text:#1a1a1a; --btn-bg:#3d7d66; --btn-bg-hover:#2f5c4e; --danger:#c94f4f; --muted:#6b7a86; }
+  body.dark{ --page-bg:linear-gradient(180deg,#0d1416 0%,#0a0f11 100%); --card-bg:rgba(27,35,39,.90); --card-border:rgba(255,255,255,.08); --text:#e9f1f3; --bubble-bg:#263238; --bubble-text:#eef6f8; --btn-bg:#2f5c4e; --btn-bg-hover:#274a40; --muted:#9fb0b9; }
+  *{box-sizing:border-box} html,body{height:100%} body{font-family:"Segoe UI", Tahoma, Geneva, Verdana, sans-serif;background:var(--page-bg);color:var(--text);margin:0;padding:100px 0 32px}
+  header{position:fixed;top:0;left:0;right:0;z-index:1000;background:#3d7d66;color:#fff;padding:.9rem 1rem;display:flex;align-items:center;justify-content:center;}
+  .title-container{font-size:1.85rem;font-weight:700;letter-spacing:.5px;}
+  .dropdown{position:absolute;right:1rem;top:.6rem;}
+  .dropdown-toggle{background:var(--btn-bg);color:#fff;border:none;padding:.55rem .9rem;font-size:1rem;border-radius:10px;cursor:pointer;}
+  .dropdown-toggle:hover{background:var(--btn-bg-hover);}
+  .dropdown-content{display:none;position:absolute;top:115%;right:0;min-width:240px;background:var(--card-bg);color:var(--text);border:1px solid var(--card-border);box-shadow:0 12px 30px rgba(0,0,0,.12);border-radius:12px;padding:1rem;backdrop-filter: blur(8px);}
+  .dropdown.open .dropdown-content{display:block;}
+  .toggle-row{display:flex;align-items:center;justify-content:space-between;gap:.75rem;}
+  .toggle-slider{position:relative;width:64px;height:32px;background:#cfd8dc;border-radius:32px;cursor:pointer;transition:background .25s;}
+  .toggle-slider::before{content:"";position:absolute;top:3px;left:3px;width:26px;height:26px;background:#fff;border-radius:50%;box-shadow:0 2px 6px rgba(0,0,0,.25);transition:transform .25s;}
+  #darkToggle{display:none;} #darkToggle:checked + .toggle-slider{background:#4caf50;} #darkToggle:checked + .toggle-slider::before{transform: translateX(32px);}
+  main{max-width:900px;margin:0 auto;padding:16px;}
+  .card{background:var(--card-bg);border:1px solid var(--card-border);border-radius:16px;padding:1.25rem;box-shadow:0 8px 30px rgba(0,0,0,.08);backdrop-filter: blur(10px);}
+  .stack{display:flex;flex-direction:column;gap:1.25rem;}
+  #chat-container{display:flex;flex-direction:column;gap:.75rem;max-height:60vh;overflow-y:auto;scroll-behavior:smooth;padding:.25rem .25rem .5rem;border-radius:12px;}
+  .qa-pair{display:flex;flex-direction:column;gap:.4rem;margin-bottom:.3rem;}
+  .chat-message{display:flex;width:100%;word-break:break-word;}
+  .user-message{justify-content:flex-end;}
+  .bot-message{justify-content:flex-start;}
+  .bubble,.bubble.user{padding:.9rem 1.1rem;border-radius:14px;font-size:1rem;line-height:1.75;box-shadow:0 1px 4px rgba(0,0,0,.05);white-space:pre-wrap;background:var(--bubble-bg);color:var(--bubble-text);max-width:75%;animation:fadeIn .25s ease;}
+  .bubble{border-left:4px solid var(--accent-bot);margin:.35rem 0;}
+  .bubble.user{background:#c8ebf0;border-right:4px solid var(--accent-user);border-left:0!important;margin:.35rem 0 .35rem auto;max-width:60%;}
+  .typing-indicator{position:sticky;bottom:0;align-self:flex-start;font-style:italic;font-size:1rem;padding:.5rem .75rem;color:#444;background:#fff2c2;border-left:4px solid #ffb84d;border-radius:8px;margin:.15rem 0 0;max-width:320px;display:none;z-index:2;}
+  .typing-indicator::after{content:'...';animation:dots 1s steps(3,end) infinite;}
   @keyframes dots{0%{content:''}33%{content:'.'}66%{content:'..'}100%{content:'...'}}
-  @keyframes fadeIn{ from{opacity:0; transform:translateY(6px);} to{opacity:1; transform:translateY(0);} }
-
-  form{ display:flex; flex-direction:column; gap:1rem; } 
-  form, textarea, select { autocomplete: off; }
-  label{ font-weight:600; }
-  select{ padding:.5rem .6rem; border-radius:8px; border:1px solid var(--card-border); background:#fff; }
-  textarea{
-    width:100%; min-height:140px; padding:1rem; font-size:1.08rem; border-radius:12px;
-    border:2px solid #50e3c2; background:#f8fafd; outline:none; resize:vertical;
-    box-shadow:0 2px 8px rgba(0,0,0,.04);
-  }
-  textarea:focus{ border-color:#3d7d66; box-shadow:0 4px 14px rgba(0,0,0,.08); }
-
-  .file-row{ display:flex; align-items:center; gap:.75rem; flex-wrap:wrap; }
-  .file-input{ display:none; }
-  .btn{ background: var(--btn-bg); color:#fff; border:none; padding:.85rem 1.1rem; font-size:1rem; border-radius:10px; cursor:pointer; width:fit-content; transition: transform .05s ease, background .15s ease; }
-  .btn:hover{ background: var(--btn-bg-hover); }
-  .btn:active{ transform: translateY(1px); }
-  .btn.secondary{ background: transparent; color: var(--btn-bg); border: 2px solid var(--btn-bg); }
-  .btn.danger{ background: var(--danger); }
-  .file-name{ font-size:.95rem; color: var(--muted); min-height: 1.2em; }
-
-  .actions{ display:flex; gap:.8rem; flex-wrap:wrap; }
-  .actions .btn{ margin:0; }
-
-  #to-bottom{ position: fixed; right: 18px; bottom: 22px; z-index: 1001; display:none; padding:.6rem .8rem; border-radius:12px; font-weight:600; background: var(--btn-bg); color:#fff; border:none; cursor:pointer; box-shadow:0 6px 18px rgba(0,0,0,.18); }
-  #to-bottom:hover{ background: var(--btn-bg-hover); }
+  @keyframes fadeIn{from{opacity:0;transform:translateY(6px);}to{opacity:1;transform:translateY(0);}}
+  form{display:flex;flex-direction:column;gap:1rem;} form,textarea,select{autocomplete: off;}
+  label{font-weight:600;}
+  select{padding:.5rem .6rem;border-radius:8px;border:1px solid var(--card-border);background:#fff;}
+  textarea{width:100%;min-height:140px;padding:1rem;font-size:1.08rem;border-radius:12px;border:2px solid #50e3c2;background:#f8fafd;outline:none;resize:vertical;box-shadow:0 2px 8px rgba(0,0,0,.04);}
+  textarea:focus{border-color:#3d7d66;box-shadow:0 4px 14px rgba(0,0,0,.08);}
+  .file-row{display:flex;align-items:center;gap:.75rem;flex-wrap:wrap;}
+  .file-input{display:none;}
+  .btn{background:var(--btn-bg);color:#fff;border:none;padding:.85rem 1.1rem;font-size:1rem;border-radius:10px;cursor:pointer;width:fit-content;transition: transform .05s ease, background .15s ease;}
+  .btn:hover{background:var(--btn-bg-hover);} .btn:active{transform:translateY(1px);}
+  .btn.secondary{background:transparent;color:var(--btn-bg);border:2px solid var(--btn-bg);}
+  .btn.danger{background:var(--danger);}
+  .file-name{font-size:.95rem;color:var(--muted);min-height:1.2em;}
+  .actions{display:flex;gap:.8rem;flex-wrap:wrap;}
+  #to-bottom{position:fixed;right:18px;bottom:22px;z-index:1001;display:none;padding:.6rem .8rem;border-radius:12px;font-weight:600;background:var(--btn-bg);color:#fff;border:none;cursor:pointer;box-shadow:0 6px 18px rgba(0,0,0,.18);}
+  #to-bottom:hover{background:var(--btn-bg-hover);}
   </style>
 </head>
 <body>
@@ -168,8 +94,9 @@
     {% endif %}
 
     <div class="card">
-      <form id="ask-form" method="POST" enctype="multipart/form-data" autocomplete="off">
+      <form id="ask-form" method="POST" enctype="multipart/form-data" autocomplete="off" action="/">
         <input type="hidden" name="history_json" id="history_json_main" value='{{ history|tojson|safe }}'>
+        <input type="hidden" name="ajax" value="1">
 
         <div id="razred-wrapper" {% if razred %}style="display: none;"{% endif %}>
           <label for="razred">Koji si razred?</label>
@@ -200,6 +127,7 @@
       </form>
 
       <form id="clear-form" method="POST" action="/clear" autocomplete="off">
+        <input type="hidden" name="ajax" value="1" />
         <input type="hidden" name="confirm_clear" value="1" />
       </form>
     </div>
@@ -234,7 +162,7 @@ function scrollToBottom(){ const chat=document.getElementById('chat-container');
     const nearBottom = (chat.scrollHeight - chat.scrollTop - chat.clientHeight) < 40;
     btn.style.display = nearBottom ? 'none' : 'block';
   };
-  chat.addEventListener('scroll', toggleBtn);
+  if (chat) chat.addEventListener('scroll', toggleBtn);
   setTimeout(toggleBtn, 200);
 })();
 
@@ -261,13 +189,12 @@ function getTrimmedHistoryForSubmit(HIST_KEY){
   return JSON.stringify(last5);
 }
 
-/* === Klijentska kompresija slike (ako > 2.5MB) i zamjena fajla u inputu === */
+/* Klijentska kompresija slike (ako > 2.5MB) i zamjena fajla u inputu */
 function fileToImage(file){
   return new Promise((resolve,reject)=>{
     const fr=new FileReader();
     fr.onload=()=>{ const img=new Image(); img.onload=()=>resolve(img); img.onerror=reject; img.src=fr.result; };
-    fr.onerror=reject;
-    fr.readAsDataURL(file);
+    fr.onerror=reject; fr.readAsDataURL(file);
   });
 }
 function dataURLToBlob(dataURL){
@@ -319,8 +246,6 @@ document.addEventListener('DOMContentLoaded', () => {
       fileNameSpan.textContent = fileInput.files.length ? fileInput.files[0].name : "";
       const f = fileInput.files[0];
       if (!f) return;
-
-      // Kompresuj ako je veliko pa zamijeni fajl u inputu
       if (f.size > 2.5 * 1024 * 1024){
         try{
           const blob = await compressImage(f, 1600, 0.82);
@@ -334,26 +259,40 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   }
 
+  // SUBMIT PREKO FETCH ZA SVE SLUČAJEVE (Thinkific iframe-friendly)
   if (askForm){
-    askForm.addEventListener('submit', (e)=>{
+    askForm.addEventListener('submit', async (e)=>{
+      e.preventDefault();
       const hasText = textarea && textarea.value.trim().length>0;
       const hasFile = fileInput && fileInput.files && fileInput.files[0];
-
       if (!hasText && !hasFile){
-        e.preventDefault();
         alert("Unesi matematičko pitanje ili učitaj sliku.");
         return;
       }
-
-      // upiši trim historije pa pusti normalni submit (PRG na backendu)
       if (hiddenMain) hiddenMain.value = getTrimmedHistoryForSubmit(HIST_KEY);
-      showTyping(); // vizuelno, iako će se brzo reloadati
-      // NEMA preventDefault ovdje -> ide nativni POST
+      showTyping();
+
+      const fd = new FormData(askForm); // već sadrži ajax=1, history_json, razred, pitanje, slika
+      try{
+        const res = await fetch(askForm.action || '/', { method:'POST', body: fd, credentials:'include' });
+        const htmlText = await res.text();
+        document.open(); document.write(htmlText); document.close();
+      }catch(err){
+        hideTyping();
+        alert("Greška pri slanju. Molim pokušaj ponovo.");
+      }
     });
   }
 
   if (clearForm){
-    clearForm.addEventListener('submit', ()=>{
+    clearForm.addEventListener('submit', async (e)=>{
+      e.preventDefault();
+      const fd = new FormData(clearForm);
+      try{
+        const res = await fetch(clearForm.action || '/clear', { method:'POST', body: fd, credentials:'include' });
+        const htmlText = await res.text();
+        document.open(); document.write(htmlText); document.close();
+      }catch(_){}
       resetHistory(HIST_KEY, hiddenMain);
     });
   }
@@ -361,7 +300,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
 window.onload = ()=> setTimeout(scrollToBottom, 150);
 
-/* Plot */
+/* Plot (isto kao ranije) */
 function transformExpression(expr){
   return expr.replace(/\s+/g,'')
     .replace(/([0-9])([a-zA-Z])/g,'$1*$2')
@@ -376,11 +315,10 @@ function transformExpression(expr){
 }
 function drawPlot(expression, container){
   const parsed = transformExpression(expression);
-  const x=[], y=[];
-  let f; try{ f=new Function('x',`return ${parsed}`); }catch(e){ return; }
+  const x=[], y=[]; let f;
+  try{ f=new Function('x',`return ${parsed}`); }catch(e){ return; }
   for(let i=-10;i<=10;i+=0.1){
-    try{ const res=f(i); x.push(i); y.push(isFinite(res)?res:null);}
-    catch{ x.push(i); y.push(null);}
+    try{ const res=f(i); x.push(i); y.push(isFinite(res)?res:null);}catch{ x.push(i); y.push(null);}
   }
   const data=[{x,y,mode:'lines',line:{color:'#0077cc',width:3},name:expression}];
   const layout={title:`Graf funkcije: y = ${expression}`,xaxis:{title:'x'},yaxis:{title:'y'},margin:{t:40},plot_bgcolor:'#fff',paper_bgcolor:'#fff'};
