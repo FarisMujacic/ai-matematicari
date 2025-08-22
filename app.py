@@ -5,7 +5,7 @@ import os
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 import re
-# import requests   # --- OCR DISABLED --- (nije više potrebno)
+# import requests   # --- OCR DISABLED ---
 import base64
 from flask_cors import CORS
 from io import BytesIO
@@ -20,14 +20,9 @@ load_dotenv(override=True)
 
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
-# --- OCR DISABLED ---
-# MATHPIX_API_ID = os.getenv("MATHPIX_API_ID")
-# MATHPIX_API_KEY = os.getenv("MATHPIX_API_KEY")
-
 # ===================== Model konstante (ENV prvo, pa fallback) =====================
 MODEL_TEXT = os.getenv("OPENAI_MODEL_TEXT", "gpt-4o")        # npr. gpt-5-mini
 MODEL_VISION = os.getenv("OPENAI_MODEL_VISION", "gpt-4o")    # npr. gpt-4o-mini
-# MODEL_IMAGE_CLASSIFIER = os.getenv("OPENAI_MODEL_IMAGE_CLASSIFIER", MODEL_VISION)  # --- optional ---
 # ====================================================================================================
 
 # Debug: šta je stvarno učitano
@@ -67,10 +62,6 @@ prompti_po_razredu = {
     "8": "Ti si pomoćnik iz matematike za učenike 8. razreda osnovne škole. Fokusiraj se na linearne izraze, sisteme jednačina, geometriju i statistiku. Pomaži učenicima da razumiju postupke i objasni svako rješenje detaljno, korak po korak.",
     "9": "Ti si pomoćnik iz matematike za učenike 9. razreda osnovne škole. Pomaži im u savladavanju zadataka iz algebre, funkcija, geometrije i statistike. Koristi jasan i stručan jezik, ali primjeren njihovom nivou. Objasni svaki korak rješenja jasno i precizno."
 }
-
-# --- OCR DISABLED ---
-# def extract_text_from_image(file):
-#     ...
 
 def latexify_fractions(text):
     def zamijeni(match):
@@ -158,9 +149,6 @@ def get_history_from_request():
         print("history_json parse fail:", e)
         return []
 
-# ===================== KLASIFIKACIJA SLIKE — ISKLJUČENO radi brzine =====================
-# def classify_image_for_flow(...): ...
-
 def route_image_flow(slika_bytes: bytes, razred: str, history):
     """
     Vraća: (odgovor_html, used_path, used_model)
@@ -194,7 +182,7 @@ def route_image_flow(slika_bytes: bytes, razred: str, history):
     })
 
     resp = client.chat.completions.create(model=MODEL_VISION, messages=messages)
-    actual_model = getattr(resp, "model", MODEL_VISION)  # stvarni model iz API odgovora
+    actual_model = getattr(resp, "model", MODEL_VISION)
     raw = resp.choices[0].message.content
     raw = strip_ascii_graph_blocks(raw)
     return f"<p>{latexify_fractions(raw)}</p>", "vision_direct", actual_model
@@ -209,8 +197,9 @@ def index():
     history = get_history_from_request() or session.get("history", [])
 
     if request.method == "POST":
-        pitanje = request.form.get("pitanje", "") or ""
+        pitanje = (request.form.get("pitanje", "") or "").strip()
         slika = request.files.get("slika")
+        is_ajax = request.form.get("ajax") == "1" or request.headers.get("X-Requested-With") == "XMLHttpRequest"
 
         # ---------- IMAGE BRANCH ----------
         if slika and slika.filename:
@@ -225,7 +214,7 @@ def index():
                 used_path = "error"
                 used_model = "n/a"
 
-            combined_text = pitanje.strip()
+            combined_text = pitanje
             will_plot = should_plot(combined_text)
             if (not plot_expression_added) and will_plot:
                 expression = extract_plot_expression(combined_text, razred=razred, history=history)
@@ -246,7 +235,10 @@ def index():
             except Exception as ee:
                 print("Sheets append error:", ee)
 
-            # PRG: nakon POST-a radi redirect da se resetuje file input u browseru
+            # Ako je AJAX (Thinkific), vrati odmah renderovani HTML (bez redirecta)
+            if is_ajax:
+                return render_template("index.html", history=history, razred=razred)
+            # Inače PRG
             return redirect(url_for("index"))
 
         # ---------- TEXT BRANCH ----------
@@ -273,7 +265,7 @@ def index():
             messages.append({"role": "user", "content": pitanje})
 
             response = client.chat.completions.create(model=MODEL_TEXT, messages=messages)
-            actual_model = getattr(response, "model", MODEL_TEXT)  # stvarni model iz API odgovora
+            actual_model = getattr(response, "model", MODEL_TEXT)
             raw_odgovor = response.choices[0].message.content
             raw_odgovor = strip_ascii_graph_blocks(raw_odgovor)
             odgovor = f"<p>{latexify_fractions(raw_odgovor)}</p>"
@@ -285,7 +277,7 @@ def index():
                     odgovor = add_plot_div_once(odgovor, expression)
                     plot_expression_added = True
 
-            history.append({"user": pitanje.strip(), "bot": odgovor.strip()})
+            history.append({"user": pitanje, "bot": odgovor.strip()})
             session["history"] = history
             session["razred"] = razred
 
@@ -297,7 +289,7 @@ def index():
 
         except Exception as e:
             err_html = f"<p><b>Greška:</b> {html.escape(str(e))}</p>"
-            history.append({"user": pitanje.strip(), "bot": err_html})
+            history.append({"user": pitanje, "bot": err_html})
             session["history"] = history
             session["razred"] = razred
             try:
@@ -305,13 +297,15 @@ def index():
                 sheet.append_row([pitanje, err_html, mod_str])
             except Exception as ee:
                 print("Sheets append error:", ee)
-            # PRG i u error slučaju
+            if is_ajax:
+                return render_template("index.html", history=history, razred=razred)
             return redirect(url_for("index"))
 
-        # PRG nakon uspješne TEXT obrade
+        if is_ajax:
+            return render_template("index.html", history=history, razred=razred)
         return redirect(url_for("index"))
 
-    # GET: render čiste stranice (nakon PRG redirecta)
+    # GET: render
     return render_template("index.html", history=history, razred=razred)
 
 # ---- Error handler za prevelik upload ----
@@ -325,15 +319,10 @@ def clear():
     if request.form.get("confirm_clear") == "1":
         session.pop("history", None)
         session.pop("razred", None)
+    # Ako AJAX čistimo — vratimo stranicu odmah
+    if request.form.get("ajax") == "1":
+        return render_template("index.html", history=[], razred=None)
     return redirect("/")
-
-@app.route("/promijeni-razred", methods=["POST"])
-def promijeni_razred():
-    session.pop("razred", None)
-    session.pop("history", None)
-    novi_razred = request.form.get("razred")
-    session["razred"] = novi_razred
-    return redirect(url_for("index"))
 
 @app.after_request
 def add_no_cache_headers(resp):
@@ -341,6 +330,18 @@ def add_no_cache_headers(resp):
     resp.headers["Pragma"] = "no-cache"
     resp.headers["Expires"] = "0"
     resp.headers["Vary"] = "Cookie"
+
+    # Omogući ugradnju u Thinkific iframe (podesivo ENV-om)
+    # Primjer vrijednosti: FRAME_ANCESTORS="https://*.thinkific.com https://*.thinkific.site"
+    ancestors = os.getenv("FRAME_ANCESTORS", "").strip()
+    if ancestors:
+        resp.headers["Content-Security-Policy"] = f"frame-ancestors {ancestors}"
+    # Ukloni X-Frame-Options ako ga host automatski dodaje
+    try:
+        del resp.headers["X-Frame-Options"]
+    except KeyError:
+        pass
+
     return resp
 
 def strip_ascii_graph_blocks(text: str) -> str:
@@ -361,4 +362,5 @@ def strip_ascii_graph_blocks(text: str) -> str:
     return fence_re.sub(repl, text)
 
 if __name__ == "__main__":
+    # Važno: na produkciji obavezno HTTPS (SameSite=None zahtijeva Secure)
     app.run(debug=True, port=5000)
