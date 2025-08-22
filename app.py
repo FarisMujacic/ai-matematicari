@@ -221,6 +221,7 @@ def route_image_flow(slika_bytes: bytes, razred: str, history):
             "content": (
                 prompt_za_razred +
                 " Odgovaraj na jeziku pitanja; ako nisi siguran, koristi bosanski (ijekavica). "
+                "Ne miješaj jezike i ne koristi engleske riječi u objašnjenjima. "
                 "Ako nije matematika, reci: 'Molim te, postavi matematičko pitanje.' "
                 "Ako ne znaš tačno rješenje, reci: 'Za ovaj zadatak se obrati instruktorima na info@matematicari.com'."
             )
@@ -245,6 +246,7 @@ def route_image_flow(slika_bytes: bytes, razred: str, history):
             "content": (
                 prompt_za_razred +
                 " Odgovaraj na jeziku pitanja; ako nisi siguran, koristi bosanski (ijekavica). "
+                "Ne miješaj jezike i ne koristi engleske riječi u objašnjenjima. "
                 "Ako nije matematika, reci: 'Molim te, postavi matematičko pitanje.' "
                 "Ako ne znaš tačno rješenje, reci: 'Za ovaj zadatak se obrati instruktorima na info@matematicari.com'. "
                 "Ne prikazuj ASCII grafove osim ako su izričito traženi."
@@ -333,6 +335,7 @@ def index():
             "content": (
                 prompt_za_razred +
                 " Odgovaraj na jeziku na kojem je pitanje postavljeno. Ako nisi siguran, koristi bosanski. "
+                "Ne miješaj jezike i ne koristi engleske riječi u objašnjenjima. "
                 "Uvijek koristi ijekavicu. Ako pitanje nije iz matematike, reci: 'Molim te, postavi matematičko pitanje.' "
                 "Ako ne znaš tačno rješenje, reci: 'Za ovaj zadatak se obrati instruktorima na info@matematicari.com'."
                 " Ne prikazuj ASCII ili tekstualne dijagrame koordinatnog sistema u code blockovima (```...```) "
