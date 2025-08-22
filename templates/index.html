@@ -208,8 +208,6 @@
   <button id="to-bottom" onclick="scrollToBottom()">⬇ Do dna</button>
 
 <script>
-let __matbotSubmitting = false;
-
 /* Dropdown & Dark */
 function toggleDropdown(e){ e.preventDefault(); document.getElementById('menuWrap').classList.toggle('open'); }
 function initDarkToggle(){
@@ -263,7 +261,7 @@ function getTrimmedHistoryForSubmit(HIST_KEY){
   return JSON.stringify(last5);
 }
 
-/* === Klijentska kompresija slike (ako > 2.5MB) === */
+/* === Klijentska kompresija slike (ako > 2.5MB) i zamjena fajla u inputu === */
 function fileToImage(file){
   return new Promise((resolve,reject)=>{
     const fr=new FileReader();
@@ -281,7 +279,7 @@ function dataURLToBlob(dataURL){
 }
 async function compressImage(file, maxDim=1600, quality=0.82){
   const img = await fileToImage(file);
-  let {width:w, height:h} = img;
+  const w=img.width, h=img.height;
   const scale = Math.min(1, maxDim/Math.max(w,h));
   const cw = Math.max(1, Math.round(w*scale));
   const ch = Math.max(1, Math.round(h*scale));
@@ -317,54 +315,40 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   if (fileInput && fileNameSpan){
-    fileInput.addEventListener('change', ()=>{ fileNameSpan.textContent = fileInput.files.length ? fileInput.files[0].name : ""; });
+    fileInput.addEventListener('change', async ()=>{
+      fileNameSpan.textContent = fileInput.files.length ? fileInput.files[0].name : "";
+      const f = fileInput.files[0];
+      if (!f) return;
+
+      // Kompresuj ako je veliko pa zamijeni fajl u inputu
+      if (f.size > 2.5 * 1024 * 1024){
+        try{
+          const blob = await compressImage(f, 1600, 0.82);
+          const newFile = new File([blob], 'upload.jpg', { type: 'image/jpeg' });
+          const dt = new DataTransfer();
+          dt.items.add(newFile);
+          fileInput.files = dt.files;
+          fileNameSpan.textContent = newFile.name + ' (kompresovano)';
+        }catch(_){}
+      }
+    });
   }
 
   if (askForm){
-    askForm.addEventListener('submit', async (e)=>{
-      e.preventDefault();
-
+    askForm.addEventListener('submit', (e)=>{
       const hasText = textarea && textarea.value.trim().length>0;
       const hasFile = fileInput && fileInput.files && fileInput.files[0];
 
       if (!hasText && !hasFile){
+        e.preventDefault();
         alert("Unesi matematičko pitanje ili učitaj sliku.");
         return;
       }
 
-      // upiši trim historije
+      // upiši trim historije pa pusti normalni submit (PRG na backendu)
       if (hiddenMain) hiddenMain.value = getTrimmedHistoryForSubmit(HIST_KEY);
-
-      showTyping();
-
-      // Ako NEMA slike -> klasični submit (brže i jednostavnije)
-      if (!hasFile){
-        askForm.submit();
-        return;
-      }
-
-      // Ima sliku -> napravimo FormData ručno i (po potrebi) kompresujemo
-      const file = fileInput.files[0];
-      let blob = file;
-      if (file.size > 2.5 * 1024 * 1024){  // prag za kompresiju
-        try { blob = await compressImage(file, 1600, 0.82); }
-        catch(_) { /* ako kompresija propadne, šaljemo original */ }
-      }
-
-      const fd = new FormData();
-      fd.append('history_json', hiddenMain.value || '[]');
-      if (razredSel && razredSel.value) fd.append('razred', razredSel.value);
-      if (textarea && textarea.value)   fd.append('pitanje', textarea.value);
-      fd.append('slika', blob, 'upload.jpg');
-
-      try{
-        const res = await fetch('/', { method:'POST', body: fd, credentials:'include' });
-        const htmlText = await res.text();
-        document.open(); document.write(htmlText); document.close();
-      }catch(err){
-        hideTyping();
-        alert("Greška pri slanju. Molim pokušaj ponovo.");
-      }
+      showTyping(); // vizuelno, iako će se brzo reloadati
+      // NEMA preventDefault ovdje -> ide nativni POST
     });
   }
 
