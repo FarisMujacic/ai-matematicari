@@ -24,7 +24,7 @@ client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 # MATHPIX_API_KEY = os.getenv("MATHPIX_API_KEY")
 
 # ===================== Model konstante (sigurni defaulti + ENV override) =====================
-MODEL_TEXT = os.getenv("OPENAI_MODEL_TEXT", "gpt-4o-mini")   # tekstualni zadaci
+MODEL_TEXT = os.getenv("OPENAI_MODEL_TEXT", "gpt-4o")   # tekstualni zadaci
 MODEL_VISION = os.getenv("OPENAI_MODEL_VISION", "gpt-4o")    # direktan vision za slike
 # MODEL_IMAGE_CLASSIFIER = os.getenv("OPENAI_MODEL_IMAGE_CLASSIFIER", MODEL_VISION)  # --- OCR/CLS optional ---
 # =================================================================================================
