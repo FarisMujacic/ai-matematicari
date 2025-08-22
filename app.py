@@ -1,6 +1,6 @@
 from flask import Flask, render_template, request, session, redirect, url_for
 from openai import OpenAI
-from dotenv import load_dotenv
+from dotenv import load_dotenv, find_dotenv
 import os
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
@@ -13,9 +13,10 @@ from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 import json
 import html
+from datetime import timedelta
 
-# Učitaj .env varijable
-load_dotenv()
+# Učitaj .env varijable (server ENV ima prioritet nad .env)
+load_dotenv(override=True)
 
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
@@ -23,17 +24,27 @@ client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 # MATHPIX_API_ID = os.getenv("MATHPIX_API_ID")
 # MATHPIX_API_KEY = os.getenv("MATHPIX_API_KEY")
 
-# ===================== Model konstante (sigurni defaulti + ENV override) =====================
-MODEL_TEXT = os.getenv("OPENAI_MODEL_TEXT", "gpt-4o")   # tekstualni zadaci
-MODEL_VISION = os.getenv("OPENAI_MODEL_VISION", "gpt-4o")    # direktan vision za slike
-# MODEL_IMAGE_CLASSIFIER = os.getenv("OPENAI_MODEL_IMAGE_CLASSIFIER", MODEL_VISION)  # --- OCR/CLS optional ---
-# =================================================================================================
+# ===================== Model konstante (ENV prvo, pa fallback) =====================
+MODEL_TEXT = os.getenv("OPENAI_MODEL_TEXT", "gpt-4o")        # npr. gpt-5-mini
+MODEL_VISION = os.getenv("OPENAI_MODEL_VISION", "gpt-4o")    # npr. gpt-4o-mini
+# MODEL_IMAGE_CLASSIFIER = os.getenv("OPENAI_MODEL_IMAGE_CLASSIFIER", MODEL_VISION)  # --- optional ---
+# ====================================================================================================
+
+# Debug: šta je stvarno učitano
+print("ENV file:", find_dotenv(usecwd=True))
+print("MODEL_TEXT  =", MODEL_TEXT)
+print("MODEL_VISION=", MODEL_VISION)
 
 app = Flask(__name__)
 app.config.update(
     SESSION_COOKIE_SAMESITE=None,
-    SESSION_COOKIE_SECURE=True
+    SESSION_COOKIE_SECURE=True,
+    SESSION_COOKIE_NAME="matbot_session_v2",
+    PERMANENT_SESSION_LIFETIME=timedelta(hours=12),
+    SEND_FILE_MAX_AGE_DEFAULT=0,
+    ETAG_DISABLED=True,
 )
+
 # Limit request body-a (sprječava tihi 500; prilagodi po potrebi)
 MAX_MB = int(os.getenv("MAX_CONTENT_LENGTH_MB", "20"))
 app.config["MAX_CONTENT_LENGTH"] = MAX_MB * 1024 * 1024
@@ -59,24 +70,7 @@ prompti_po_razredu = {
 
 # --- OCR DISABLED ---
 # def extract_text_from_image(file):
-#     image_data_b64 = base64.b64encode(file.read()).decode()
-#     headers = {
-#         "app_id": MATHPIX_API_ID,
-#         "app_key": MATHPIX_API_KEY,
-#         "Content-type": "application/json"
-#     }
-#     data = {
-#         "src": f"data:image/jpg;base64,{image_data_b64}",
-#         "formats": ["text"],
-#         "ocr": ["math", "text"]
-#     }
-#     response = requests.post("https://api.mathpix.com/v3/text", headers=headers, json=data, timeout=40)
-#     if response.ok:
-#         text = (response.json().get("text") or "").strip()
-#         confidence_hint = len(text) >= 20
-#         return text, confidence_hint
-#     else:
-#         return "", False
+#     ...
 
 def latexify_fractions(text):
     def zamijeni(match):
@@ -164,49 +158,14 @@ def get_history_from_request():
         print("history_json parse fail:", e)
         return []
 
-# ===================== (OPCIONALNO) KLASIFIKACIJA SLIKE — ONEMOGUĆENO radi brzine =====================
-# def classify_image_for_flow(image_bytes: bytes) -> dict:
-#     b64 = base64.b64encode(image_bytes).decode()
-#     messages = [
-#         {
-#             "role": "system",
-#             "content": (
-#                 "Task: Determine routing for a math-helper app.\n"
-#                 "Answer ONLY as compact JSON with keys: has_geometry (true/false), "
-#                 "has_embedded_images (true/false), reason (short string)."
-#             )
-#         },
-#         {
-#             "role": "user",
-#             "content": [
-#                 {"type": "text", "text": "Classify this image for routing."},
-#                 {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b64}"}}
-#             ]
-#         }
-#     ]
-#     try:
-#         resp = client.chat.completions.create(model=MODEL_IMAGE_CLASSIFIER, messages=messages)
-#         raw = resp.choices[0].message.content.strip()
-#         try:
-#             result = json.loads(raw)
-#         except Exception:
-#             raw = re.sub(r"^```json|```$", "", raw.strip(), flags=re.IGNORECASE | re.MULTILINE)
-#             result = json.loads(raw)
-#         return {
-#             "has_geometry": bool(result.get("has_geometry", False)),
-#             "has_embedded_images": bool(result.get("has_embedded_images", False)),
-#             "reason": result.get("reason", "")
-#         }
-#     except Exception as e:
-#         print("Image classification failed:", e)
-#         return {"has_geometry": True, "has_embedded_images": True, "reason": "fallback_on_error"}
+# ===================== KLASIFIKACIJA SLIKE — ISKLJUČENO radi brzine =====================
+# def classify_image_for_flow(...): ...
 
 def route_image_flow(slika_bytes: bytes, razred: str, history):
     """
     Vraća: (odgovor_html, used_path, used_model)
     OCR je potpuno isključen. Slika ide direktno na vision model.
     """
-    # Direktno vision rješenje (brže i bez vanjskog OCR poziva)
     image_b64 = base64.b64encode(slika_bytes).decode()
 
     prompt_za_razred = prompti_po_razredu.get(razred, prompti_po_razredu["5"])
@@ -235,23 +194,23 @@ def route_image_flow(slika_bytes: bytes, razred: str, history):
     })
 
     resp = client.chat.completions.create(model=MODEL_VISION, messages=messages)
+    actual_model = getattr(resp, "model", MODEL_VISION)  # stvarni model iz API odgovora
     raw = resp.choices[0].message.content
     raw = strip_ascii_graph_blocks(raw)
-    return f"<p>{latexify_fractions(raw)}</p>", "vision_direct", MODEL_VISION
-
-# =============================================================================
+    return f"<p>{latexify_fractions(raw)}</p>", "vision_direct", actual_model
 
 @app.route("/", methods=["GET", "POST"])
 def index():
     plot_expression_added = False
     razred = session.get("razred") or request.form.get("razred")
     print("Content-Length:", request.content_length, "bytes")
-    history = get_history_from_request()
+
+    # Uzmemo history iz requesta (ako dođe iz frontenda) ili iz sessiona
+    history = get_history_from_request() or session.get("history", [])
 
     if request.method == "POST":
-        pitanje = request.form.get("pitanje", "")
+        pitanje = request.form.get("pitanje", "") or ""
         slika = request.files.get("slika")
-        # pitanje_iz_slike = ""  # više ne koristimo OCR
 
         # ---------- IMAGE BRANCH ----------
         if slika and slika.filename:
@@ -266,7 +225,7 @@ def index():
                 used_path = "error"
                 used_model = "n/a"
 
-            combined_text = (pitanje or "").strip()
+            combined_text = pitanje.strip()
             will_plot = should_plot(combined_text)
             if (not plot_expression_added) and will_plot:
                 expression = extract_plot_expression(combined_text, razred=razred, history=history)
@@ -275,7 +234,7 @@ def index():
                     plot_expression_added = True
 
             history.append({
-                "user": pitanje.strip() if pitanje else "[SLIKA]",
+                "user": combined_text if combined_text else "[SLIKA]",
                 "bot": odgovor.strip(),
             })
             session["history"] = history
@@ -283,11 +242,12 @@ def index():
 
             mod_str = f"{used_path}|{used_model}"
             try:
-                sheet.append_row([pitanje if pitanje else "[SLIKA]", odgovor, mod_str])
+                sheet.append_row([combined_text if combined_text else "[SLIKA]", odgovor, mod_str])
             except Exception as ee:
                 print("Sheets append error:", ee)
 
-            return render_template("index.html", history=history, razred=razred)
+            # PRG: nakon POST-a radi redirect da se resetuje file input u browseru
+            return redirect(url_for("index"))
 
         # ---------- TEXT BRANCH ----------
         prompt_za_razred = prompti_po_razredu.get(razred, prompti_po_razredu["5"])
@@ -313,6 +273,7 @@ def index():
             messages.append({"role": "user", "content": pitanje})
 
             response = client.chat.completions.create(model=MODEL_TEXT, messages=messages)
+            actual_model = getattr(response, "model", MODEL_TEXT)  # stvarni model iz API odgovora
             raw_odgovor = response.choices[0].message.content
             raw_odgovor = strip_ascii_graph_blocks(raw_odgovor)
             odgovor = f"<p>{latexify_fractions(raw_odgovor)}</p>"
@@ -328,12 +289,15 @@ def index():
             session["history"] = history
             session["razred"] = razred
 
-            mod_str = f"text|{MODEL_TEXT}"
-            sheet.append_row([pitanje, odgovor, mod_str])
+            mod_str = f"text|{actual_model}"
+            try:
+                sheet.append_row([pitanje, odgovor, mod_str])
+            except Exception as ee:
+                print("Sheets append error:", ee)
 
         except Exception as e:
             err_html = f"<p><b>Greška:</b> {html.escape(str(e))}</p>"
-            history.append({"user": (pitanje or "").strip(), "bot": err_html})
+            history.append({"user": pitanje.strip(), "bot": err_html})
             session["history"] = history
             session["razred"] = razred
             try:
@@ -341,10 +305,13 @@ def index():
                 sheet.append_row([pitanje, err_html, mod_str])
             except Exception as ee:
                 print("Sheets append error:", ee)
-            return render_template("index.html", history=history, razred=razred)
+            # PRG i u error slučaju
+            return redirect(url_for("index"))
 
-        return render_template("index.html", history=history, razred=razred)
+        # PRG nakon uspješne TEXT obrade
+        return redirect(url_for("index"))
 
+    # GET: render čiste stranice (nakon PRG redirecta)
     return render_template("index.html", history=history, razred=razred)
 
 # ---- Error handler za prevelik upload ----
@@ -367,14 +334,6 @@ def promijeni_razred():
     novi_razred = request.form.get("razred")
     session["razred"] = novi_razred
     return redirect(url_for("index"))
-
-from datetime import timedelta
-app.config.update(
-    SESSION_COOKIE_NAME="matbot_session_v2",
-    PERMANENT_SESSION_LIFETIME=timedelta(hours=12),
-    SEND_FILE_MAX_AGE_DEFAULT=0,
-    ETAG_DISABLED=True,
-)
 
 @app.after_request
 def add_no_cache_headers(resp):
