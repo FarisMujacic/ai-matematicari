@@ -33,7 +33,7 @@ app.config.update(
     SESSION_COOKIE_SECURE=True
 )
 # Limit request body-a (sprječava tihi 500; prilagodi po potrebi)
-MAX_MB = int(os.getenv("MAX_CONTENT_LENGTH_MB", "8"))
+MAX_MB = int(os.getenv("MAX_CONTENT_LENGTH_MB", "20"))
 app.config["MAX_CONTENT_LENGTH"] = MAX_MB * 1024 * 1024
 
 CORS(app, supports_credentials=True)
