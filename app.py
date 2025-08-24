@@ -246,16 +246,30 @@ def route_image_flow(slika_bytes: bytes, razred: str, history, requested_tasks=N
 @app.route("/prijava", methods=["GET", "POST"])
 def prijava():
     if request.method == "GET":
+        # Ako je već ulogovan, nema smisla prikazivati login
+        if session.get("user_email"):
+            return redirect(url_for("index"))
         return render_template("prijava.html", error=None)
+
+    # ⇩⇩ KLJUČNO: svaku novu prijavu počni čistom sesijom
+    session.pop("user_email", None)
 
     email = (request.form.get("email") or "").strip().lower()
     code  = (request.form.get("code")  or "").strip()
 
-    if email in ALLOWED_EMAILS and code == ACCESS_CODE:
+    allowed = (email in ALLOWED_EMAILS)
+    code_ok = (code == ACCESS_CODE)
+
+    # mali debug u logu (ne ispisuj stvarni kod!)
+    print(f"[login] email={email} allowed={allowed} code_ok={code_ok}")
+
+    if allowed and code_ok:
         session["user_email"] = email
         return redirect(url_for("index"))
-    # greška
-    return render_template("prijava.html", error="Pogrešan email ili kod. Pokušaj ponovo.")
+
+    # ne postavljamo session, ostaje izlogovan
+    return render_template("prijava.html", error="Pogrešan email ili kod. Pokušaj ponovo."), 401
+
 
 @app.post("/odjava")
 def odjava():
