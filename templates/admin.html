@@ -2,64 +2,46 @@
 <html lang="bs">
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>Admin • MAT-BOT</title>
+  <title>Admin panel</title>
   <style>
-    body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Ubuntu,"Helvetica Neue",sans-serif;margin:0;background:#f6fafc;color:#222}
-    header{background:#3d7d66;color:#fff;padding:14px 18px;display:flex;justify-content:space-between;align-items:center}
-    main{max-width:800px;margin:24px auto;padding:0 16px}
-    .card{background:#fff;border:1px solid #e6eef2;border-radius:12px;box-shadow:0 6px 18px rgba(0,0,0,.06);padding:16px}
-    h1{margin:0;font-size:20px}
-    form{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:16px}
-    input[type=email]{flex:1;min-width:260px;padding:10px;border:1px solid #cfd8dc;border-radius:8px}
-    button{background:#3d7d66;color:#fff;border:none;border-radius:8px;padding:10px 14px;cursor:pointer}
-    button.danger{background:#c94f4f}
-    table{width:100%;border-collapse:collapse;margin-top:10px}
-    th,td{padding:10px;border-bottom:1px solid #eef2f6;text-align:left}
-    .msg{margin-bottom:12px;color:#c94f4f}
-    .badge{display:inline-block;background:#eef7ee;color:#2c6232;border:1px solid #b9e0c0;border-radius:999px;padding:4px 10px;font-size:12px}
+    body{font-family:system-ui,-apple-system,Segoe UI,Roboto;max-width:720px;margin:40px auto;padding:0 16px}
+    h1{margin-bottom:8px}
+    form{margin:12px 0}
+    input[type="email"], input[type="text"]{padding:8px 10px;border:1px solid #ccc;border-radius:8px;width:280px}
+    button{padding:8px 12px;border:0;border-radius:8px;background:#2563eb;color:#fff;cursor:pointer}
+    button.danger{background:#c24141}
+    table{width:100%;border-collapse:collapse;margin-top:12px}
+    th,td{padding:10px;border-bottom:1px solid #eee;text-align:left}
   </style>
 </head>
 <body>
-<header>
-  <h1>Admin • MAT-BOT</h1>
-  <nav>
-    <a href="{{ url_for('index') }}" style="color:#fff;text-decoration:none;">⬅ Nazad</a>
-  </nav>
-</header>
+  <h1>Admin panel</h1>
+  <p><a href="/odjava"><button type="button">Odjava</button></a></p>
 
-<main>
-  <div class="card">
-    {% if not db_active %}
-      <div class="msg">⚠️ Nema konfigurisanog DATABASE_URL – izmjene će se čuvati samo u memoriji i nestati nakon redeploya.</div>
-    {% endif %}
+  <h2>Dodaj email</h2>
+  <form method="post" action="/admin/add">
+    <input type="email" name="email" placeholder="email@domena.com" required />
+    <button type="submit">Dodaj</button>
+  </form>
 
-    {% if message %}<div class="msg">{{ message }}</div>{% endif %}
-
-    <form method="POST" action="{{ url_for('admin_add') }}">
-      <input type="email" name="email" placeholder="npr. ucenik1@example.com" required />
-      <button type="submit">➕ Dodaj email</button>
-    </form>
-
-    <table>
-      <thead><tr><th>Email</th><th>Akcija</th></tr></thead>
-      <tbody>
-      {% for e in emails %}
-        <tr>
-          <td>{{ e }}</td>
-          <td>
-            <form method="POST" action="{{ url_for('admin_delete') }}" onsubmit="return confirm('Obrisati {{ e }}?')">
-              <input type="hidden" name="email" value="{{ e }}">
-              <button type="submit" class="danger">🗑 Obriši</button>
-            </form>
-          </td>
-        </tr>
-      {% else %}
-        <tr><td colspan="2"><span class="badge">Nema unosa</span></td></tr>
-      {% endfor %}
-      </tbody>
-    </table>
-  </div>
-</main>
+  <h2>Dozvoljeni emailovi</h2>
+  <table>
+    <thead><tr><th>Email</th><th>Akcija</th></tr></thead>
+    <tbody>
+    {% for e in allowed %}
+      <tr>
+        <td>{{ e }}</td>
+        <td>
+          <form method="post" action="/admin/remove" style="display:inline">
+            <input type="hidden" name="email" value="{{ e }}">
+            <button class="danger" type="submit">Ukloni</button>
+          </form>
+        </td>
+      </tr>
+    {% else %}
+      <tr><td colspan="2">Nema unosa.</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
 </body>
 </html>
