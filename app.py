@@ -9,7 +9,7 @@ from uuid import uuid4
 import psycopg2
 from psycopg2.extras import RealDictCursor
 
-from openai import OpenAI, APIConnectionError, APIStatusError, RateLimitError
+from openai import OpenAI, APIConnectionError, APIStatusError, RateLimitError, APITimeoutError
 from flask_cors import CORS
 
 # Google Sheets (opciono; neće srušiti ako credentials nema)
@@ -28,20 +28,6 @@ ADMIN_PASS  = (os.getenv("ADMIN_PASS")  or os.getenv("adminPass")  or "").strip(
 
 # Access code (ENV ili fallback)
 ACCESS_CODE = os.getenv("ACCESS_CODE", "MATH-2025")
-
-# --- TEST LOGIN (hard-coded korisnici) ---
-# Možeš promijeniti ili proširiti ovu mapu; kasnije je samo obriši kada spojiš bazu.
-TEST_USERS = {
-    "faris@test.com": "12345",
-    "ucenik@test.com": "1111",
-}
-# Alternativa: preko ENV-a (opciono). Postavi TEST_USERS_JSON='{"mail":"kod", ...}'
-try:
-    env_users = os.getenv("TEST_USERS_JSON", "")
-    if env_users:
-        TEST_USERS.update(json.loads(env_users))
-except Exception:
-    pass
 
 # Ako nema DB, koristi se fallback skup (memorija)
 ALLOWED_EMAILS_FALLBACK = {
@@ -66,7 +52,7 @@ app.config.update(
     SESSION_COOKIE_SECURE=SECURE_COOKIES,
     SESSION_COOKIE_NAME="matbot_session_v2",
     PERMANENT_SESSION_LIFETIME=timedelta(hours=12),
-    SEND_FILE_MAX_AGE_DEFAULT=0,
+    SEND_FILE_MAX_AGE_DEFAULT=0,  # ne utiče na /uploads jer ga preskačemo niže
     ETAG_DISABLED=True,
 )
 CORS(app, supports_credentials=True)
@@ -164,14 +150,18 @@ def delete_allowed_email(email: str) -> None:
         pass
 # ---------------------------------------------
 
-# OpenAI klijent (sa timeoutom i manjim brojem retry-a)
-OPENAI_TIMEOUT = float(os.getenv("OPENAI_TIMEOUT", "60"))
-OPENAI_MAX_RETRIES = int(os.getenv("OPENAI_MAX_RETRIES", "1"))
-client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"), timeout=OPENAI_TIMEOUT, max_retries=OPENAI_MAX_RETRIES)
+# OpenAI klijent (veći timeout + više retry)
+OPENAI_TIMEOUT = float(os.getenv("OPENAI_TIMEOUT", "180"))
+OPENAI_MAX_RETRIES = int(os.getenv("OPENAI_MAX_RETRIES", "3"))
+client = OpenAI(
+    api_key=os.getenv("OPENAI_API_KEY"),
+    timeout=OPENAI_TIMEOUT,
+    max_retries=OPENAI_MAX_RETRIES
+)
 
 # Modeli (možeš prepisati kroz .env)
 MODEL_TEXT   = os.getenv("OPENAI_MODEL_TEXT", "gpt-5-mini")
-MODEL_VISION = os.getenv("OPENAI_MODEL_VISION", "gpt-5")
+MODEL_VISION = os.getenv("OPENAI_MODEL_VISION", "gpt-5")  # možeš probati "gpt-5-mini" za brže
 
 # Google Sheets (opciono)
 try:
@@ -257,6 +247,13 @@ def should_plot(text: str) -> bool:
         return False
     return _trigger_re.search(text) is not None
 
+# --- helper: očisti HTML prije slanja modelu ---
+tag_re = re.compile(r"<[^>]+>")
+
+def _plain(txt: str, limit=800):
+    t = tag_re.sub("", txt or "")
+    return t[:limit]
+
 def extract_plot_expression(text, razred=None, history=None):
     try:
         system_message = {
@@ -272,8 +269,8 @@ def extract_plot_expression(text, razred=None, history=None):
         messages = [system_message]
         if history:
             for msg in history[-5:]:
-                messages.append({"role": "user", "content": msg["user"]})
-                messages.append({"role": "assistant", "content": msg["bot"]})
+                messages.append({"role": "user", "content": _plain(msg["user"], 800)})
+                messages.append({"role": "assistant", "content": _plain(msg["bot"], 800)})
         messages.append({"role": "user", "content": text})
 
         response = client.chat.completions.create(model=MODEL_TEXT, messages=messages)
@@ -346,8 +343,8 @@ def route_image_flow_url(image_url: str, razred: str, history, requested_tasks=N
 
     messages = [system_message]
     for msg in history[-5:]:
-        messages.append({"role": "user", "content": msg["user"]})
-        messages.append({"role": "assistant", "content": msg["bot"]})
+        messages.append({"role": "user", "content": _plain(msg["user"], 800)})
+        messages.append({"role": "assistant", "content": _plain(msg["bot"], 800)})
 
     user_content = [{"type": "text", "text": "Na slici je matematički zadatak."}]
     if requested_tasks:
@@ -360,7 +357,10 @@ def route_image_flow_url(image_url: str, razred: str, history, requested_tasks=N
 
     try:
         resp = client.chat.completions.create(model=MODEL_VISION, messages=messages)
-    except (APIConnectionError, APIStatusError, RateLimitError) as e:
+    except APIStatusError as e:
+        print("OpenAI status error (vision URL):", getattr(e, "status_code", None), repr(e), flush=True)
+        return "<p><b>Greška:</b> Servis sporo odgovara ili je zauzet. Pokušaj ponovo.</p>", "vision_url_error", "n/a"
+    except (APIConnectionError, RateLimitError, APITimeoutError) as e:
         print("OpenAI vision error:", repr(e), flush=True)
         return "<p><b>Greška:</b> Servis sporo odgovara ili je zauzet. Pokušaj ponovo.</p>", "vision_url_error", "n/a"
 
@@ -407,8 +407,8 @@ def route_image_flow(slika_bytes: bytes, razred: str, history, requested_tasks=N
 
     messages = [system_message]
     for msg in history[-5:]:
-        messages.append({"role": "user", "content": msg["user"]})
-        messages.append({"role": "assistant", "content": msg["bot"]})
+        messages.append({"role": "user", "content": _plain(msg["user"], 800)})
+        messages.append({"role": "assistant", "content": _plain(msg["bot"], 800)})
 
     user_content = [{"type": "text", "text": "Na slici je matematički zadatak."}]
     if requested_tasks:
@@ -420,7 +420,10 @@ def route_image_flow(slika_bytes: bytes, razred: str, history, requested_tasks=N
 
     try:
         resp = client.chat.completions.create(model=MODEL_VISION, messages=messages)
-    except (APIConnectionError, APIStatusError, RateLimitError) as e:
+    except APIStatusError as e:
+        print("OpenAI status error (vision base64):", getattr(e, "status_code", None), repr(e), flush=True)
+        return "<p><b>Greška:</b> Servis sporo odgovara ili je zauzet. Pokušaj ponovo.</p>", "vision_direct_error", "n/a"
+    except (APIConnectionError, RateLimitError, APITimeoutError) as e:
         print("OpenAI vision error (base64 path):", repr(e), flush=True)
         return "<p><b>Greška:</b> Servis sporo odgovara ili je zauzet. Pokušaj ponovo.</p>", "vision_direct_error", "n/a"
 
@@ -444,13 +447,7 @@ def prijava():
         session["is_admin"]  = True
         return redirect(url_for("admin_panel"))
 
-    # 2) TEST USERS (hard-coded) -> odmah pusti unutra
-    if email in TEST_USERS and code == TEST_USERS[email]:
-        session["user_email"] = email
-        session["is_admin"]  = False
-        return redirect(url_for("index"))
-
-    # 3) OBIČAN KORISNIK: whitelist + access code (DB ili fallback skup)
+    # 2) OBIČAN KORISNIK: whitelist + access code
     if is_email_allowed(email) and code == ACCESS_CODE:
         session["user_email"] = email
         session["is_admin"]  = False
@@ -530,7 +527,10 @@ def gcs_signed_upload():
 @app.get("/uploads/<name>")
 def uploads(name):
     # za lokalni/dev ili Cloud Run privremeni disk
-    return send_from_directory(UPLOAD_DIR, name)
+    resp = send_from_directory(UPLOAD_DIR, name)
+    # dozvoli caching da OpenAI bez problema povuče fajl
+    resp.headers["Cache-Control"] = "public, max-age=900, immutable"
+    return resp
 
 # ---- Glavna ruta (MAT-BOT) ----
 @app.route("/", methods=["GET", "POST"])
@@ -615,12 +615,13 @@ def index():
                     odgovor = f"<p><b>Greška:</b> {html.escape(str(e))}</p>"
                     used_path = "error"; used_model = "n/a"
 
-                # pokušaj obrisati fajl nakon kratkog čekanja (da je model sigurno preuzeo)
-                try:
-                    time.sleep(3)
-                    os.remove(path)
-                except Exception:
-                    pass
+                # VAŽNO: ne briši odmah fajl (OpenAI može dohvatiti kasnije)
+                # Ako želiš čišćenje, uradi poseban periodic job ili obriši nakon dužeg vremena.
+                # try:
+                #     time.sleep(120)
+                #     os.remove(path)
+                # except Exception:
+                #     pass
 
                 # graf?
                 will_plot = should_plot(combined_text)
@@ -678,8 +679,8 @@ def index():
 
             messages = [system_message]
             for msg in history[-5:]:
-                messages.append({"role": "user", "content": msg["user"]})
-                messages.append({"role": "assistant", "content": msg["bot"]})
+                messages.append({"role": "user", "content": _plain(msg["user"], 800)})
+                messages.append({"role": "assistant", "content": _plain(msg["bot"], 800)})
             messages.append({"role": "user", "content": pitanje})
 
             response = client.chat.completions.create(model=MODEL_TEXT, messages=messages)
@@ -736,6 +737,9 @@ def clear():
 
 @app.after_request
 def add_no_cache_headers(resp):
+    # Ne diraj cache header za uploadovane slike (moraju biti dohvatljive i kesirane)
+    if request.path.startswith("/uploads/"):
+        return resp
     resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0, private"
     resp.headers["Pragma"] = "no-cache"
     resp.headers["Expires"] = "0"
@@ -813,4 +817,5 @@ def app_health():
     }, (200 if not problems else 500)
 
 if __name__ == "__main__":
+    # Za lokalni debug; u Cloud Runu koristiš gunicorn
     app.run(debug=True, port=5000)
