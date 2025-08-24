@@ -89,7 +89,6 @@
   .btn.secondary{background:transparent;color:var(--btn-bg);border:2px solid var(--btn-bg);}
   .btn.danger{background:var(--danger);}
 
-  /* NOVO: jedinstvena linija s lijevo (upload) i desno (akcije) */
   .form-actions{
     display:flex;align-items:center;justify-content:space-between;gap:1rem;flex-wrap:wrap;
     padding-top:.75rem;border-top:1px solid var(--card-border);
@@ -164,12 +163,11 @@
         <label for="pitanje">Postavi mi matematičko pitanje (tekst ili slika):</label>
         <textarea name="pitanje" id="pitanje" placeholder="Ovdje možeš unijeti zadatak ili pitanje..." autofocus autocomplete="off"></textarea>
 
-        <!-- NOVO: jedna linija – lijevo upload, desno dugmad -->
         <div class="form-actions">
           <div class="left">
-            <label for="slika">Ili učitaj sliku pitanja:</label>
+            <label for="slika">Ili učitaj / uslikaj sliku:</label>
             <div class="file-row">
-              <input class="file-input" id="slika" type="file" name="slika" accept="image/*" />
+              <input class="file-input" id="slika" type="file" name="slika" accept="image/*" capture="environment" />
               <label for="slika" class="btn secondary">📎 Izaberi fajl</label>
 
               <span id="file-chip" class="file-chip">
@@ -222,7 +220,7 @@ function scrollToBottom(){ const chat=document.getElementById('chat-container');
     const nearBottom = (chat.scrollHeight - chat.scrollTop - chat.clientHeight) < 40;
     btn.style.display = nearBottom ? 'none' : 'block';
   };
-  if (chat) chat.addEventListener('scroll', toggleBtn);
+  chat.addEventListener('scroll', toggleBtn);
   setTimeout(toggleBtn, 200);
 })();
 
@@ -242,40 +240,53 @@ function resetHistory(HIST_KEY, hiddenMain){
 function getTrimmedHistoryForSubmit(HIST_KEY){
   let arr=[];
   try{ arr = JSON.parse(localStorage.getItem(HIST_KEY) || '[]'); }catch(_){}
-  const last5 = arr.slice(-5).map(m=>({
-    user: String(m.user||'').slice(0,2000),
-    bot:  String(m.bot ||'').slice(0,4000)
-  }));
+  const last5 = arr.slice(-5).map(m=>({ user:String(m.user||'').slice(0,2000), bot:String(m.bot||'').slice(0,4000) }));
   return JSON.stringify(last5);
 }
 
-/* Fajl: prikaz, kompresija, reset */
-function fileToImage(file){
-  return new Promise((resolve,reject)=>{
-    const fr=new FileReader();
-    fr.onload=()=>{ const img=new Image(); img.onload=()=>resolve(img); img.onerror=reject; img.src=fr.result; };
-    fr.onerror=reject; fr.readAsDataURL(file);
-  });
+/* UI za fajl */
+function updateFileUI(){
+  const fileInput = document.getElementById('slika');
+  const fileName = document.getElementById('file-name');
+  const fileChip  = document.getElementById('file-chip');
+  const hasFile = fileInput && fileInput.files && fileInput.files[0];
+  if (hasFile){
+    fileName.textContent = fileInput.files[0].name;
+    fileChip.classList.add('show');
+  } else {
+    fileName.textContent = 'Nije odabran fajl';
+    fileChip.classList.remove('show');
+  }
 }
-function dataURLToBlob(dataURL){
-  const [hdr, b64]=dataURL.split(',');
-  const mime=(hdr.match(/:(.*?);/)||[])[1]||'image/jpeg';
-  const bin=atob(b64); const arr=new Uint8Array(bin.length);
-  for(let i=0;i<bin.length;i++) arr[i]=bin.charCodeAt(i);
-  return new Blob([arr], {type:mime});
+function clearFile(){
+  const fileInput = document.getElementById('slika');
+  if (!fileInput) return;
+  const dt = new DataTransfer();
+  fileInput.files = dt.files;
+  fileInput.value = "";
+  updateFileUI();
 }
-async function compressImage(file, maxDim=1600, quality=0.82){
-  const img = await fileToImage(file);
-  const w=img.width, h=img.height;
-  const scale = Math.min(1, maxDim/Math.max(w,h));
-  const cw = Math.max(1, Math.round(w*scale));
-  const ch = Math.max(1, Math.round(h*scale));
-  const canvas=document.createElement('canvas');
-  canvas.width=cw; canvas.height=ch;
-  const ctx=canvas.getContext('2d');
-  ctx.drawImage(img,0,0,cw,ch);
-  const dataURL = canvas.toDataURL('image/jpeg', quality);
-  return dataURLToBlob(dataURL);
+
+/* GCS signed upload helper (vrati readUrl ili null) */
+async function uploadToGCS(file){
+  try{
+    const su = await fetch('/gcs/signed-upload', {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({contentType: file.type || 'image/jpeg'})
+    }).then(r=>{ if(!r.ok) throw new Error('signed-upload failed'); return r.json(); });
+
+    const putRes = await fetch(su.uploadUrl, {
+      method:'PUT',
+      headers:{'Content-Type': file.type || 'image/jpeg'},
+      body: file
+    });
+    if(!putRes.ok) throw new Error('PUT to GCS failed');
+    return su.readUrl; // uspjeh
+  }catch(err){
+    console.warn('GCS upload fallback:', err);
+    return null;
+  }
 }
 
 document.addEventListener('DOMContentLoaded', () => {
@@ -285,8 +296,6 @@ document.addEventListener('DOMContentLoaded', () => {
   const clearForm = document.getElementById('clear-form');
   const hiddenMain = document.getElementById('history_json_main');
   const fileInput = document.getElementById('slika');
-  const fileName = document.getElementById('file-name');
-  const fileChip = document.getElementById('file-chip');
   const removeBtn = document.getElementById('remove-file');
   const textarea = document.getElementById('pitanje');
 
@@ -302,43 +311,12 @@ document.addEventListener('DOMContentLoaded', () => {
     resetHistory(HIST_KEY, hiddenMain);
   }
 
-  function updateFileUI(){
-    const hasFile = fileInput && fileInput.files && fileInput.files[0];
-    if (hasFile){
-      fileName.textContent = fileInput.files[0].name;
-      fileChip.classList.add('show');
-    } else {
-      fileName.textContent = 'Nije odabran fajl';
-      fileChip.classList.remove('show');
-    }
-  }
-
-  function clearFile(){
-    if (!fileInput) return;
-    const dt = new DataTransfer(); // prazno
-    fileInput.files = dt.files;
-    fileInput.value = "";
-    updateFileUI();
-  }
-
   if (fileInput){
-    fileInput.addEventListener('change', async ()=>{
-      const f = fileInput.files[0];
-      if (f && f.size > 2.5 * 1024 * 1024){
-        try{
-          const blob = await compressImage(f, 1600, 0.82);
-          const newFile = new File([blob], 'upload.jpg', { type: 'image/jpeg' });
-          const dt = new DataTransfer(); dt.items.add(newFile);
-          fileInput.files = dt.files;
-        }catch(_){}
-      }
-      updateFileUI();
-    });
+    fileInput.addEventListener('change', updateFileUI);
   }
-
   if (removeBtn) removeBtn.addEventListener('click', clearFile);
 
-  // SUBMIT PREKO FETCH (iframe-friendly)
+  // SUBMIT: prvo pokušaj GCS upload -> pošalji image_url; ako ne uspije, šalji fajl kao i ranije
   if (askForm){
     askForm.addEventListener('submit', async (e)=>{
       e.preventDefault();
@@ -352,6 +330,18 @@ document.addEventListener('DOMContentLoaded', () => {
       showTyping();
 
       const fd = new FormData(askForm);
+
+      // pokušaj GCS tok (bez mijenjanja rezolucije)
+      if (hasFile){
+        const f = fileInput.files[0];
+        const readUrl = await uploadToGCS(f);
+        if (readUrl){
+          fd.append('image_url', readUrl);
+          // izbaci binarni fajl iz POST-a da ne ide i on
+          fd.delete('slika');
+        }
+      }
+
       try{
         const res = await fetch(askForm.action || '/', { method:'POST', body: fd, credentials:'include' });
         const htmlText = await res.text();
@@ -372,14 +362,14 @@ document.addEventListener('DOMContentLoaded', () => {
         const htmlText = await res.text();
         document.open(); document.write(htmlText); document.close();
       }catch(_){}
-      const HIST_KEY2 = HIST_KEY; resetHistory(HIST_KEY2, hiddenMain);
+      resetHistory(HIST_KEY, hiddenMain);
     });
   }
 });
 
 window.onload = ()=> setTimeout(scrollToBottom, 150);
 
-/* Plot (kao ranije) */
+/* Plot (isto kao ranije) */
 function transformExpression(expr){
   return expr.replace(/\s+/g,'')
     .replace(/([0-9])([a-zA-Z])/g,'$1*$2')
