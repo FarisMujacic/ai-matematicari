@@ -576,6 +576,20 @@ def strip_ascii_graph_blocks(text: str) -> str:
                   lambda m: "" if "```" in m.group(0) else m.group(0),
                   text, flags=re.IGNORECASE)
     return fence_re.sub(repl, text)
+@app.get("/db-health")
+@app.get("/db-health")
+def db_health():
+    try:
+        conn = db()
+        if not conn:
+            return "DB_URL not set", 500
+        with conn, conn.cursor() as cur:
+            cur.execute("select count(*) from allowed_emails;")
+            n = cur.fetchone()[0]
+        return f"OK, allowed_emails={n}", 200
+    except Exception as e:
+        return f"DB error: {e}", 500
+
 
 if __name__ == "__main__":
     app.run(debug=True, port=5000)
