@@ -26,7 +26,7 @@ ADMIN_PASS  = (os.getenv("ADMIN_PASS")  or os.getenv("adminPass")  or "").strip(
 # Access code (ENV ili fallback)
 ACCESS_CODE = os.getenv("ACCESS_CODE", "MATH-2025")
 
-# Ako nema DB, koristi se fallback skup (memorija) – korisno lokalno.
+# Ako nema DB, koristi se fallback skup (memorija)
 ALLOWED_EMAILS_FALLBACK = {
     "ucenik1@example.com",
     # "ucenik2@example.com",
@@ -61,7 +61,7 @@ MAX_MB = int(os.getenv("MAX_CONTENT_LENGTH_MB", "20"))
 app.config["MAX_CONTENT_LENGTH"] = MAX_MB * 1024 * 1024
 
 
-# ---------- Guard-ovi (moraju biti definisani PRIJE ruta) ----------
+# ---------- Guard-ovi ----------
 def require_login(fn):
     @wraps(fn)
     def w(*a, **kw):
@@ -77,7 +77,7 @@ def require_admin(fn):
             return redirect(url_for("prijava"))
         return fn(*a, **kw)
     return w
-# -------------------------------------------------------------------
+# --------------------------------
 
 
 # ---------- DB helper-i i whitelist ----------
@@ -98,7 +98,6 @@ def is_email_allowed(email: str) -> bool:
                 return cur.fetchone() is not None
         finally:
             conn.close()
-    # fallback kad nema DB
     return email in ALLOWED_EMAILS_FALLBACK
 
 def list_allowed_emails():
@@ -111,7 +110,6 @@ def list_allowed_emails():
                 return [r["email"] for r in rows]  # ['...', ...]
         finally:
             conn.close()
-    # fallback kad nema DB
     return sorted(list(ALLOWED_EMAILS_FALLBACK))
 
 def add_allowed_email(email: str) -> bool:
@@ -129,7 +127,6 @@ def add_allowed_email(email: str) -> bool:
             return True
         finally:
             conn.close()
-    # fallback
     ALLOWED_EMAILS_FALLBACK.add(email)
     return True
 
@@ -143,7 +140,6 @@ def delete_allowed_email(email: str) -> None:
         finally:
             conn.close()
         return
-    # fallback
     try:
         ALLOWED_EMAILS_FALLBACK.remove(email)
     except KeyError:
@@ -258,7 +254,7 @@ def extract_plot_expression(text, razred=None, history=None):
             rhs = fx_match.group(1).strip()
             return "y=" + rhs.replace(" ", "")
     except Exception as e:
-        print("GPT nije prepoznao funkciju za crtanje:", e)
+        print("GPT nije prepoznao funkciju za crtanje:", e, flush=True)
     return None
 
 def get_history_from_request():
@@ -276,7 +272,7 @@ def get_history_from_request():
             trimmed.append({"user": u, "bot": b})
         return trimmed
     except Exception as e:
-        print("history_json parse fail:", e)
+        print("history_json parse fail:", e, flush=True)
         return []
 
 
@@ -365,7 +361,9 @@ def prijava():
 def admin_panel():
     emails = list_allowed_emails()
     db_active = bool(DB_URL)
-    return render_template("admin.html", emails=emails, db_active=db_active)
+    return render_template("admin.html",
+                           emails=emails, db_active=db_active,
+                           message=request.args.get("m"))
 
 @app.post("/admin/add")
 @require_login
@@ -373,8 +371,8 @@ def admin_panel():
 def admin_add():
     email = (request.form.get("email") or "").strip().lower()
     ok = add_allowed_email(email)
-    # PRG: poruku šaljemo preko query stringa
     msg = "OK" if ok else "Neispravan email."
+    # PRG
     return redirect(url_for("admin_panel") + (f"?m={msg}" if msg else ""))
 
 @app.post("/admin/delete")
@@ -385,13 +383,12 @@ def admin_delete():
     delete_allowed_email(email)
     return redirect(url_for("admin_panel"))
 
-# (opciono) brzi test da vidiš šta čita iz baze:
+# brzi JSON pregled liste (za debug)
 @app.get("/admin/list.json")
 @require_login
 @require_admin
 def admin_list_json():
     return {"db_active": bool(DB_URL), "emails": list_allowed_emails()}
-
 
 @app.post("/odjava")
 def odjava():
@@ -406,82 +403,88 @@ def odjava():
 def index():
     plot_expression_added = False
     razred = session.get("razred") or request.form.get("razred")
-    print("Content-Length:", request.content_length, "bytes")
-
     history = get_history_from_request() or session.get("history", [])
 
     if request.method == "POST":
-        pitanje = (request.form.get("pitanje", "") or "").strip()
-        slika = request.files.get("slika")
-        is_ajax = request.form.get("ajax") == "1" or request.headers.get("X-Requested-With") == "XMLHttpRequest"
-
-        # --- slika ---
-        if slika and slika.filename:
-            slika_bytes = BytesIO(slika.read()); slika.seek(0)
-            combined_text = pitanje
-            requested = extract_requested_tasks(combined_text)
-            try:
-                odgovor, used_path, used_model = route_image_flow(
-                    slika_bytes.getvalue(), razred, history, requested_tasks=requested
-                )
-            except Exception as e:
-                print("route_image_flow error:", e)
-                odgovor = f"<p><b>Greška:</b> {html.escape(str(e))}</p>"
-                used_path = "error"; used_model = "n/a"
-
-            # graf?
-            will_plot = should_plot(combined_text)
-            if (not plot_expression_added) and will_plot:
-                expression = extract_plot_expression(combined_text, razred=razred, history=history)
-                if expression:
-                    odgovor = add_plot_div_once(odgovor, expression); plot_expression_added = True
-
-            history.append({"user": combined_text if combined_text else "[SLIKA]", "bot": odgovor.strip()})
-            session["history"] = history; session["razred"] = razred
-
-            try:
-                if sheet:
-                    mod_str = f"{used_path}|{used_model}"
-                    sheet.append_row([combined_text if combined_text else "[SLIKA]", odgovor, mod_str])
-            except Exception as ee:
-                print("Sheets append error:", ee)
-
-            if is_ajax:
-                return render_template("index.html", history=history, razred=razred)
-            return redirect(url_for("index"))
-
-        # --- tekst ---
-        prompt_za_razred = prompti_po_razredu.get(razred, prompti_po_razredu["5"])
-        requested = extract_requested_tasks(pitanje)
-        only_clause = ""
-        strict_geom_policy_text = (
-            " Ako problem uključuje geometriju iz slike ili teksta: "
-            "1) koristi samo eksplicitno date podatke; "
-            "2) ne pretpostavljaj paralelnost/jednakokrakost bez oznake; "
-            "3) navedi nazive teorema (unutrašnji naspramni, vanjski ugao, Thales, itd.)."
-        )
-        if requested:
-            only_clause = (
-                " Riješi ISKLJUČIVO sljedeće zadatke: " + ", ".join(map(str, requested)) +
-                ". Sve ostale primjere u poruci ili slici ignoriraj."
-            )
-
-        system_message = {
-            "role": "system",
-            "content": (
-                prompt_za_razred +
-                " Odgovaraj na jeziku na kojem je pitanje postavljeno. Ako nisi siguran, koristi bosanski. "
-                "Ne miješaj jezike i ne koristi engleske riječi u objašnjenjima. "
-                "Uvijek koristi ijekavicu. Ako pitanje nije iz matematike, reci: 'Molim te, postavi matematičko pitanje.' "
-                "Ako ne znaš tačno rješenje, reci: 'Za ovaj zadatak se obrati instruktorima na info@matematicari.com'. "
-                " Ne prikazuj ASCII ili tekstualne dijagrame koordinatnog sistema u code blockovima (```...```) "
-                " osim ako korisnik eksplicitno traži ASCII dijagram. "
-                " Ako korisnik nije tražio graf, nemoj crtati ni spominjati grafički prikaz."
-                + only_clause + strict_geom_policy_text
-            )
-        }
-
         try:
+            pitanje = (request.form.get("pitanje", "") or "").strip()
+            slika = request.files.get("slika")
+            is_ajax = request.form.get("ajax") == "1" or request.headers.get("X-Requested-With") == "XMLHttpRequest"
+
+            # --- slika ---
+            if slika and slika.filename:
+                slika_bytes = BytesIO(slika.read()); slika.seek(0)
+                combined_text = pitanje
+                requested = extract_requested_tasks(combined_text)
+                try:
+                    odgovor, used_path, used_model = route_image_flow(
+                        slika_bytes.getvalue(), razred, history, requested_tasks=requested
+                    )
+                except Exception as e:
+                    print("route_image_flow error:", repr(e), flush=True)
+                    odgovor = f"<p><b>Greška:</b> {html.escape(str(e))}</p>"
+                    used_path = "error"; used_model = "n/a"
+
+                # graf?
+                will_plot = should_plot(combined_text)
+                if (not plot_expression_added) and will_plot:
+                    expression = extract_plot_expression(combined_text, razred=razred, history=history)
+                    if expression:
+                        odgovor = add_plot_div_once(odgovor, expression); plot_expression_added = True
+
+                history.append({"user": combined_text if combined_text else "[SLIKA]", "bot": odgovor.strip()})
+                session["history"] = history; session["razred"] = razred
+
+                try:
+                    if sheet:
+                        mod_str = f"{used_path}|{used_model}"
+                        sheet.append_row([combined_text if combined_text else "[SLIKA]", odgovor, mod_str])
+                except Exception as ee:
+                    print("Sheets append error:", ee, flush=True)
+
+                if is_ajax:
+                    return render_template("index.html", history=history, razred=razred)
+                return redirect(url_for("index"))
+
+            # --- tekst ---
+            prompti_po_razredu = {
+                "5": "Ti si pomoćnik iz matematike za učenike 5. razreda osnovne škole. Objašnjavaj jednostavnim i razumljivim jezikom. Pomaži učenicima da razumiju zadatke iz prirodnih brojeva, osnovnih računskih operacija, jednostavne geometrije i tekstualnih zadataka. Svako rješenje objasni jasno, korak po korak.",
+                "6": "Ti si pomoćnik iz matematike za učenike 6. razreda osnovne škole. Odgovaraj detaljno i pedagoški, koristeći primjere primjerene njihovom uzrastu. Pomaži im da razumiju razlomke, decimalne brojeve, procente, geometriju i tekstualne zadatke. Objasni rješenje jasno i korak po korak.",
+                "7": "Ti si pomoćnik iz matematike za učenike 7. razreda osnovne škole. Pomaži im u razumijevanju složenijih zadataka iz algebre, geometrije i funkcija. Koristi jasan, primjeren jezik i objasni svaki korak logično i precizno.",
+                "8": "Ti si pomoćnik iz matematike za učenike 8. razreda osnovne škole. Fokusiraj se na linearne izraze, sisteme jednačina, geometriju i statistiku. Pomaži učenicima da razumiju postupke i objasni svako rješenje detaljno, korak po korak.",
+                "9": "Ti si pomoćnik iz matematike za učenike 9. razreda osnovne škole. Pomaži im u savladavanju zadataka iz algebre, funkcija, geometrije i statistike. Koristi jasan i stručan jezik, ali primjeren njihovom nivou. Objasni svaki korak rješenja jasno i precizno."
+            }
+            prompt_za_razred = prompti_po_razredu.get(razred, prompti_po_razredu["5"])
+
+            requested = extract_requested_tasks(pitanje)
+            only_clause = ""
+            strict_geom_policy_text = (
+                " Ako problem uključuje geometriju iz slike ili teksta: "
+                "1) koristi samo eksplicitno date podatke; "
+                "2) ne pretpostavljaj paralelnost/jednakokrakost bez oznake; "
+                "3) navedi nazive teorema (unutrašnji naspramni, vanjski ugao, Thales, itd.)."
+            )
+            if requested:
+                only_clause = (
+                    " Riješi ISKLJUČIVO sljedeće zadatke: " + ", ".join(map(str, requested)) +
+                    ". Sve ostale primjere u poruci ili slici ignoriraj."
+                )
+
+            system_message = {
+                "role": "system",
+                "content": (
+                    prompt_za_razred +
+                    " Odgovaraj na jeziku na kojem je pitanje postavljeno. Ako nisi siguran, koristi bosanski. "
+                    "Ne miješaj jezike i ne koristi engleske riječi u objašnjenjima. "
+                    "Uvijek koristi ijekavicu. Ako pitanje nije iz matematike, reci: 'Molim te, postavi matematičko pitanje.' "
+                    "Ako ne znaš tačno rješenje, reci: 'Za ovaj zadatak se obrati instruktorima na info@matematicari.com'. "
+                    " Ne prikazuj ASCII ili tekstualne dijagrame koordinatnog sistema u code blockovima (```...```) "
+                    " osim ako korisnik eksplicitno traži ASCII dijagram. "
+                    " Ako korisnik nije tražio graf, nemoj crtati ni spominjati grafički prikaz."
+                    + only_clause + strict_geom_policy_text
+                )
+            }
+
             messages = [system_message]
             for msg in history[-5:]:
                 messages.append({"role": "user", "content": msg["user"]})
@@ -508,25 +511,16 @@ def index():
                     mod_str = f"text|{actual_model}"
                     sheet.append_row([pitanje, odgovor, mod_str])
             except Exception as ee:
-                print("Sheets append error:", ee)
+                print("Sheets append error:", ee, flush=True)
 
         except Exception as e:
-            err_html = f"<p><b>Greška:</b> {html.escape(str(e))}</p>"
-            history.append({"user": pitanje, "bot": err_html})
-            session["history"] = history; session["razred"] = razred
-            try:
-                if sheet:
-                    mod_str = f"text_error|{MODEL_TEXT}"
-                    sheet.append_row([pitanje, err_html, mod_str])
-            except Exception as ee:
-                print("Sheets append error:", ee)
-            if is_ajax:
+            print("FATAL index.POST:", repr(e), flush=True)
+            err_html = f"<p><b>Greška servera:</b> {html.escape(str(e))}</p>"
+            history.append({"user": request.form.get('pitanje') or "[SLIKA]", "bot": err_html})
+            session["history"] = history
+            if request.form.get("ajax") == "1":
                 return render_template("index.html", history=history, razred=razred)
             return redirect(url_for("index"))
-
-        if is_ajax:
-            return render_template("index.html", history=history, razred=razred)
-        return redirect(url_for("index"))
 
     # GET
     return render_template("index.html", history=history, razred=razred)
@@ -594,12 +588,37 @@ def db_health():
     except Exception as e:
         return f"DB error: {e}", 500
 
-def admin_panel():
-    emails = list_allowed_emails()
-    db_active = bool(DB_URL)
-    return render_template("admin.html",
-                           emails=emails, db_active=db_active,
-                           message=request.args.get("m"))
+@app.get("/app-health")
+def app_health():
+    problems = []
+    # DB
+    db_ok = False
+    try:
+        conn = db()
+        if conn:
+            with conn, conn.cursor() as cur:
+                cur.execute("select 1;")
+            db_ok = True
+    except Exception as e:
+        problems.append(f"DB: {e}")
+    # OpenAI
+    llm_ok = False
+    try:
+        test = client.chat.completions.create(
+            model=MODEL_TEXT,
+            messages=[{"role":"user","content":"ping"}],
+        )
+        llm_ok = True if getattr(test, "choices", None) else False
+    except Exception as e:
+        problems.append(f"OpenAI: {e}")
+    return {
+        "db_ok": db_ok,
+        "llm_ok": llm_ok,
+        "MODEL_TEXT": MODEL_TEXT,
+        "MODEL_VISION": MODEL_VISION,
+        "has_api_key": bool(os.getenv("OPENAI_API_KEY")),
+        "problems": problems
+    }, (200 if not problems else 500)
 
 
 if __name__ == "__main__":
