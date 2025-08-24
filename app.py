@@ -4,8 +4,10 @@ import os, re, base64, json, html
 from datetime import timedelta
 from io import BytesIO
 from functools import wraps
+
 import psycopg2
 from psycopg2.extras import RealDictCursor
+
 from openai import OpenAI
 from flask_cors import CORS
 
@@ -13,29 +15,36 @@ from flask_cors import CORS
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 
+
 # ================== ENV ==================
 load_dotenv(override=True)
-# ========================================
 
-# ---------- JEDNOSTAVNI LOGIN (lokalno) ----------
-# Dozvoljeni emailovi i pristupni kod – ZA TESTIRANJE
+# Admin kredencijali iz ENV-a (prima i lower i upper ključeve)
+ADMIN_EMAIL = (os.getenv("ADMIN_EMAIL") or os.getenv("adminEmail") or "").strip().lower()
+ADMIN_PASS  = (os.getenv("ADMIN_PASS")  or os.getenv("adminPass")  or "").strip()
+
+# ========= Konfiguracija pristupa =========
+# Ako nema DB, koristi se fallback skup (memorija) – korisno lokalno.
 ALLOWED_EMAILS = {
     "ucenik1@example.com",
     # "ucenik2@example.com",
 }
-ACCESS_CODE = "MATH-2025"  # promijeni po želji
 
-
-# --- DB i admin konfiguracija ---
 DB_URL = os.getenv("DATABASE_URL") or os.getenv("EXTERNAL_DATABASE_URL")
-ACCESS_CODE = os.getenv("ACCESS_CODE", "MATH-2025")  # sada iz ENV-a (ima fallback)
-ADMIN_EMAILS = [e.strip().lower() for e in os.getenv("ADMIN_EMAILS", "").split(",") if e.strip()]
+ACCESS_CODE = os.getenv("ACCESS_CODE", "MATH-2025")  # možeš prepisati kroz ENV
+
+def _with_sslmode(url: str) -> str:
+    if not url:
+        return url
+    if "sslmode=" in url:
+        return url
+    return url + ("&" if "?" in url else "?") + "sslmode=require"
 
 def db():
     """Vrati konekciju ili None ako DB_URL nije postavljen."""
     if not DB_URL:
         return None
-    return psycopg2.connect(DB_URL, cursor_factory=RealDictCursor)
+    return psycopg2.connect(_with_sslmode(DB_URL), cursor_factory=RealDictCursor)
 
 def is_email_allowed(email: str) -> bool:
     """Provjera whiteliste iz baze (fallback na ALLOWED_EMAILS skup)."""
@@ -98,19 +107,10 @@ def delete_allowed_email(email: str) -> None:
         ALLOWED_EMAILS.remove(email)
     except KeyError:
         pass
-
-def require_admin(fn):
-    """Dozvoli pristup samo session korisnicima čiji email je u ADMIN_EMAILS env listi."""
-    from functools import wraps
-    @wraps(fn)
-    def w(*a, **kw):
-        u = session.get("user_email")
-        if not u or u.lower() not in ADMIN_EMAILS:
-            return redirect(url_for("index"))
-        return fn(*a, **kw)
-    return w
+# ========================================
 
 
+# ---------- Guard-ovi ----------
 def require_login(fn):
     @wraps(fn)
     def w(*a, **kw):
@@ -118,7 +118,16 @@ def require_login(fn):
             return redirect(url_for("prijava"))
         return fn(*a, **kw)
     return w
-# --------------------------------------------------
+
+def require_admin(fn):
+    @wraps(fn)
+    def w(*a, **kw):
+        if not session.get("is_admin"):
+            return redirect(url_for("prijava"))
+        return fn(*a, **kw)
+    return w
+# -------------------------------
+
 
 # OpenAI klijent
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
@@ -152,6 +161,7 @@ def extract_requested_tasks(text: str):
         if n and n not in seen:
             out.append(n); seen.add(n)
     return out
+
 
 # -------- Flask app / session --------
 SECURE_COOKIES = os.getenv("COOKIE_SECURE", "0") == "1"  # lokalno False; na Render postavi 1
@@ -273,10 +283,10 @@ def get_history_from_request():
         print("history_json parse fail:", e)
         return []
 
+
 # ---- Vision flow (slika) ----
 def route_image_flow(slika_bytes: bytes, razred: str, history, requested_tasks=None):
     image_b64 = base64.b64encode(slika_bytes).decode()
-
     prompt_za_razred = prompti_po_razredu.get(razred, prompti_po_razredu["5"])
 
     only_clause = ""
@@ -329,29 +339,29 @@ def route_image_flow(slika_bytes: bytes, razred: str, history, requested_tasks=N
     raw = strip_ascii_graph_blocks(raw)
     return f"<p>{latexify_fractions(raw)}</p>", "vision_direct", actual_model
 
-# ----------------- LOGIN RUTE -----------------
+
+# ----------------- LOGIN & ADMIN -----------------
 @app.route("/prijava", methods=["GET", "POST"])
 def prijava():
     if request.method == "GET":
-        if session.get("user_email"):
-            return redirect(url_for("index"))
         return render_template("prijava.html", error=None)
-
-    # svaki login POST počni čistom sesijom
-    session.pop("user_email", None)
 
     email = (request.form.get("email") or "").strip().lower()
     code  = (request.form.get("code")  or "").strip()
 
-    allowed = is_email_allowed(email)
-    code_ok = (code == ACCESS_CODE)
-    print(f"[login] email={email} allowed={allowed} code_ok={code_ok}")
-
-    if allowed and code_ok:
+    # 1) ADMIN login (ENV)
+    if ADMIN_EMAIL and ADMIN_PASS and email == ADMIN_EMAIL and code == ADMIN_PASS:
         session["user_email"] = email
+        session["is_admin"]  = True
+        return redirect(url_for("admin_panel"))   # odmah na admin panel
+
+    # 2) OBIČAN KORISNIK: whitelist + access code
+    if is_email_allowed(email) and code == ACCESS_CODE:
+        session["user_email"] = email
+        session["is_admin"]  = False
         return redirect(url_for("index"))
 
-    return render_template("prijava.html", error="Pogrešan email ili kod. Pokušaj ponovo."), 401
+    return render_template("prijava.html", error="Pogrešan email ili kod. Pokušaj ponovo.")
 
 @app.get("/admin")
 @require_login
@@ -380,14 +390,14 @@ def admin_delete():
     emails = list_allowed_emails()
     return render_template("admin.html", emails=emails, db_active=bool(DB_URL), message=None)
 
-
 @app.post("/odjava")
 def odjava():
     session.clear()
     return redirect(url_for("prijava"))
 # ----------------------------------------------
 
-# ---- Glavna ruta ----
+
+# ---- Glavna ruta (MAT-BOT) ----
 @app.route("/", methods=["GET", "POST"])
 @require_login
 def index():
@@ -404,12 +414,9 @@ def index():
 
         # --- slika ---
         if slika and slika.filename:
-            slika_bytes = BytesIO(slika.read())
-            slika.seek(0)
-
+            slika_bytes = BytesIO(slika.read()); slika.seek(0)
             combined_text = pitanje
             requested = extract_requested_tasks(combined_text)
-
             try:
                 odgovor, used_path, used_model = route_image_flow(
                     slika_bytes.getvalue(), razred, history, requested_tasks=requested
@@ -427,8 +434,7 @@ def index():
                     odgovor = add_plot_div_once(odgovor, expression); plot_expression_added = True
 
             history.append({"user": combined_text if combined_text else "[SLIKA]", "bot": odgovor.strip()})
-            session["history"] = history
-            session["razred"]  = razred
+            session["history"] = history; session["razred"] = razred
 
             try:
                 if sheet:
@@ -443,7 +449,6 @@ def index():
 
         # --- tekst ---
         prompt_za_razred = prompti_po_razredu.get(razred, prompti_po_razredu["5"])
-
         requested = extract_requested_tasks(pitanje)
         only_clause = ""
         strict_geom_policy_text = (
@@ -493,8 +498,7 @@ def index():
                     odgovor = add_plot_div_once(odgovor, expression); plot_expression_added = True
 
             history.append({"user": pitanje, "bot": odgovor.strip()})
-            session["history"] = history
-            session["razred"]  = razred
+            session["history"] = history; session["razred"] = razred
 
             try:
                 if sheet:
@@ -523,6 +527,7 @@ def index():
 
     # GET
     return render_template("index.html", history=history, razred=razred)
+
 
 # ---- Error handler za prevelik upload ----
 @app.errorhandler(413)
