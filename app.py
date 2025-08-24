@@ -29,6 +29,20 @@ ADMIN_PASS  = (os.getenv("ADMIN_PASS")  or os.getenv("adminPass")  or "").strip(
 # Access code (ENV ili fallback)
 ACCESS_CODE = os.getenv("ACCESS_CODE", "MATH-2025")
 
+# --- TEST LOGIN (hard-coded korisnici) ---
+# Možeš promijeniti ili proširiti ovu mapu; kasnije je samo obriši kada spojiš bazu.
+TEST_USERS = {
+    "faris@test.com": "12345",
+    "ucenik@test.com": "1111",
+}
+# Alternativa: preko ENV-a (opciono). Postavi TEST_USERS_JSON='{"mail":"kod", ...}'
+try:
+    env_users = os.getenv("TEST_USERS_JSON", "")
+    if env_users:
+        TEST_USERS.update(json.loads(env_users))
+except Exception:
+    pass
+
 # Ako nema DB, koristi se fallback skup (memorija)
 ALLOWED_EMAILS_FALLBACK = {
     "ucenik1@example.com",
@@ -430,7 +444,13 @@ def prijava():
         session["is_admin"]  = True
         return redirect(url_for("admin_panel"))
 
-    # 2) OBIČAN KORISNIK: whitelist + access code
+    # 2) TEST USERS (hard-coded) -> odmah pusti unutra
+    if email in TEST_USERS and code == TEST_USERS[email]:
+        session["user_email"] = email
+        session["is_admin"]  = False
+        return redirect(url_for("index"))
+
+    # 3) OBIČAN KORISNIK: whitelist + access code (DB ili fallback skup)
     if is_email_allowed(email) and code == ACCESS_CODE:
         session["user_email"] = email
         session["is_admin"]  = False
