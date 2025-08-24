@@ -10,3 +10,8 @@ requests
 matplotlib
 sympy
 numpy
+argon2-cffi
+pyjwt
+psycopg2-binary
+flask-limiter
+
