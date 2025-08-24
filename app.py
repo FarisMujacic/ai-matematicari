@@ -15,7 +15,6 @@ from flask_cors import CORS
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 
-
 # ================== ENV ==================
 load_dotenv(override=True)
 
@@ -41,7 +40,6 @@ def _with_sslmode(url: str) -> str:
         return url
     return url + ("&" if "?" in url else "?") + "sslmode=require"
 
-
 # -------- Flask app / session --------
 SECURE_COOKIES = os.getenv("COOKIE_SECURE", "0") == "1"  # lokalno False; na Render postavi 1
 app = Flask(__name__)
@@ -60,7 +58,6 @@ app.secret_key = os.getenv("SECRET_KEY", "tajna_lozinka")
 MAX_MB = int(os.getenv("MAX_CONTENT_LENGTH_MB", "20"))
 app.config["MAX_CONTENT_LENGTH"] = MAX_MB * 1024 * 1024
 
-
 # ---------- Guard-ovi ----------
 def require_login(fn):
     @wraps(fn)
@@ -78,7 +75,6 @@ def require_admin(fn):
         return fn(*a, **kw)
     return w
 # --------------------------------
-
 
 # ---------- DB helper-i i whitelist ----------
 def db():
@@ -146,7 +142,6 @@ def delete_allowed_email(email: str) -> None:
         pass
 # ---------------------------------------------
 
-
 # OpenAI klijent
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
@@ -164,6 +159,15 @@ try:
 except Exception:
     sheet = None
 
+# ===== Globalni prompti po razredu (jedan izvor istine) =====
+PROMPTI_PO_RAZREDU = {
+    "5": "Ti si pomoćnik iz matematike za učenike 5. razreda osnovne škole. Objašnjavaj jednostavnim i razumljivim jezikom. Pomaži učenicima da razumiju zadatke iz prirodnih brojeva, osnovnih računskih operacija, jednostavne geometrije i tekstualnih zadataka. Svako rješenje objasni jasno, korak po korak.",
+    "6": "Ti si pomoćnik iz matematike za učenike 6. razreda osnovne škole. Odgovaraj detaljno i pedagoški, koristeći primjere primjerene njihovom uzrastu. Pomaži im da razumiju razlomke, decimalne brojeve, procente, geometriju i tekstualne zadatke. Objasni rješenje jasno i korak po korak.",
+    "7": "Ti si pomoćnik iz matematike za učenike 7. razreda osnovne škole. Pomaži im u razumijevanju složenijih zadataka iz algebre, geometrije i funkcija. Koristi jasan, primjeren jezik i objasni svaki korak logično i precizno.",
+    "8": "Ti si pomoćnik iz matematike za učenike 8. razreda osnovne škole. Fokusiraj se na linearne izraze, sisteme jednačina, geometriju i statistiku. Pomaži učenicima da razumiju postupke i objasni svako rješenje detaljno, korak po korak.",
+    "9": "Ti si pomoćnik iz matematike za učenike 9. razreda osnovne škole. Pomaži im u savladavanju zadataka iz algebre, funkcija, geometrije i statistike. Koristi jasan i stručan jezik, ali primjeren njihovom nivou. Objasni svaki korak rješenja jasno i precizno."
+}
+DOZVOLJENI_RAZREDI = set(PROMPTI_PO_RAZREDU.keys())
 
 # --- parser brojeva zadataka ---
 ORDINAL_WORDS = {
@@ -190,7 +194,6 @@ def extract_requested_tasks(text: str):
         if n and n not in seen:
             out.append(n); seen.add(n)
     return out
-
 
 def latexify_fractions(text):
     def zamijeni(match):
@@ -275,11 +278,12 @@ def get_history_from_request():
         print("history_json parse fail:", e, flush=True)
         return []
 
-
 # ---- Vision flow (slika) ----
 def route_image_flow(slika_bytes: bytes, razred: str, history, requested_tasks=None):
     image_b64 = base64.b64encode(slika_bytes).decode()
-    prompt_za_razred = prompti_po_razredu.get(razred, prompti_po_razredu["5"])
+
+    # ✅ koristimo globalni PROMPTI_PO_RAZREDU
+    prompt_za_razred = PROMPTI_PO_RAZREDU.get(razred, PROMPTI_PO_RAZREDU["5"])
 
     only_clause = ""
     if requested_tasks:
@@ -330,7 +334,6 @@ def route_image_flow(slika_bytes: bytes, razred: str, history, requested_tasks=N
     raw = resp.choices[0].message.content
     raw = strip_ascii_graph_blocks(raw)
     return f"<p>{latexify_fractions(raw)}</p>", "vision_direct", actual_model
-
 
 # ----------------- LOGIN & ADMIN -----------------
 @app.route("/prijava", methods=["GET", "POST"])
@@ -396,16 +399,25 @@ def odjava():
     return redirect(url_for("prijava"))
 # ----------------------------------------------
 
-
 # ---- Glavna ruta (MAT-BOT) ----
 @app.route("/", methods=["GET", "POST"])
 @require_login
 def index():
     plot_expression_added = False
-    razred = session.get("razred") or request.form.get("razred")
     history = get_history_from_request() or session.get("history", [])
 
+    # Uvijek uzmi razred iz forme (ako je POST) ili iz sesije
+    razred = (request.form.get("razred") or session.get("razred") or "").strip()
+
     if request.method == "POST":
+        # ✅ Server-side validacija razreda (obavezno)
+        if razred not in DOZVOLJENI_RAZREDI:
+            return render_template("index.html",
+                                   history=history, razred=razred,
+                                   error="Molim odaberi razred."), 400
+        # zapamti izbor
+        session["razred"] = razred
+
         try:
             pitanje = (request.form.get("pitanje", "") or "").strip()
             slika = request.files.get("slika")
@@ -433,7 +445,7 @@ def index():
                         odgovor = add_plot_div_once(odgovor, expression); plot_expression_added = True
 
                 history.append({"user": combined_text if combined_text else "[SLIKA]", "bot": odgovor.strip()})
-                session["history"] = history; session["razred"] = razred
+                session["history"] = history
 
                 try:
                     if sheet:
@@ -447,14 +459,7 @@ def index():
                 return redirect(url_for("index"))
 
             # --- tekst ---
-            prompti_po_razredu = {
-                "5": "Ti si pomoćnik iz matematike za učenike 5. razreda osnovne škole. Objašnjavaj jednostavnim i razumljivim jezikom. Pomaži učenicima da razumiju zadatke iz prirodnih brojeva, osnovnih računskih operacija, jednostavne geometrije i tekstualnih zadataka. Svako rješenje objasni jasno, korak po korak.",
-                "6": "Ti si pomoćnik iz matematike za učenike 6. razreda osnovne škole. Odgovaraj detaljno i pedagoški, koristeći primjere primjerene njihovom uzrastu. Pomaži im da razumiju razlomke, decimalne brojeve, procente, geometriju i tekstualne zadatke. Objasni rješenje jasno i korak po korak.",
-                "7": "Ti si pomoćnik iz matematike za učenike 7. razreda osnovne škole. Pomaži im u razumijevanju složenijih zadataka iz algebre, geometrije i funkcija. Koristi jasan, primjeren jezik i objasni svaki korak logično i precizno.",
-                "8": "Ti si pomoćnik iz matematike za učenike 8. razreda osnovne škole. Fokusiraj se na linearne izraze, sisteme jednačina, geometriju i statistiku. Pomaži učenicima da razumiju postupke i objasni svako rješenje detaljno, korak po korak.",
-                "9": "Ti si pomoćnik iz matematike za učenike 9. razreda osnovne škole. Pomaži im u savladavanju zadataka iz algebre, funkcija, geometrije i statistike. Koristi jasan i stručan jezik, ali primjeren njihovom nivou. Objasni svaki korak rješenja jasno i precizno."
-            }
-            prompt_za_razred = prompti_po_razredu.get(razred, prompti_po_razredu["5"])
+            prompt_za_razred = PROMPTI_PO_RAZREDU[razred]
 
             requested = extract_requested_tasks(pitanje)
             only_clause = ""
@@ -504,7 +509,7 @@ def index():
                     odgovor = add_plot_div_once(odgovor, expression); plot_expression_added = True
 
             history.append({"user": pitanje, "bot": odgovor.strip()})
-            session["history"] = history; session["razred"] = razred
+            session["history"] = history
 
             try:
                 if sheet:
@@ -524,7 +529,6 @@ def index():
 
     # GET
     return render_template("index.html", history=history, razred=razred)
-
 
 # ---- Error handler za prevelik upload ----
 @app.errorhandler(413)
@@ -619,7 +623,6 @@ def app_health():
         "has_api_key": bool(os.getenv("OPENAI_API_KEY")),
         "problems": problems
     }, (200 if not problems else 500)
-
 
 if __name__ == "__main__":
     app.run(debug=True, port=5000)
