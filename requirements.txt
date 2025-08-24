@@ -14,4 +14,5 @@ argon2-cffi
 pyjwt
 psycopg2-binary
 flask-limiter
+google-cloud-storage>=2.16.0
 
