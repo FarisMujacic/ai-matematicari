@@ -23,15 +23,16 @@ load_dotenv(override=True)
 ADMIN_EMAIL = (os.getenv("ADMIN_EMAIL") or os.getenv("adminEmail") or "").strip().lower()
 ADMIN_PASS  = (os.getenv("ADMIN_PASS")  or os.getenv("adminPass")  or "").strip()
 
-# ========= Konfiguracija pristupa =========
+# Access code (ENV ili fallback)
+ACCESS_CODE = os.getenv("ACCESS_CODE", "MATH-2025")
+
 # Ako nema DB, koristi se fallback skup (memorija) – korisno lokalno.
-ALLOWED_EMAILS = {
+ALLOWED_EMAILS_FALLBACK = {
     "ucenik1@example.com",
     # "ucenik2@example.com",
 }
 
 DB_URL = os.getenv("DATABASE_URL") or os.getenv("EXTERNAL_DATABASE_URL")
-ACCESS_CODE = os.getenv("ACCESS_CODE", "MATH-2025")  # možeš prepisati kroz ENV
 
 def _with_sslmode(url: str) -> str:
     if not url:
@@ -40,6 +41,46 @@ def _with_sslmode(url: str) -> str:
         return url
     return url + ("&" if "?" in url else "?") + "sslmode=require"
 
+
+# -------- Flask app / session --------
+SECURE_COOKIES = os.getenv("COOKIE_SECURE", "0") == "1"  # lokalno False; na Render postavi 1
+app = Flask(__name__)
+app.config.update(
+    SESSION_COOKIE_SAMESITE="Lax",
+    SESSION_COOKIE_SECURE=SECURE_COOKIES,
+    SESSION_COOKIE_NAME="matbot_session_v2",
+    PERMANENT_SESSION_LIFETIME=timedelta(hours=12),
+    SEND_FILE_MAX_AGE_DEFAULT=0,
+    ETAG_DISABLED=True,
+)
+CORS(app, supports_credentials=True)
+app.secret_key = os.getenv("SECRET_KEY", "tajna_lozinka")
+
+# Limit request body-a (sprječava tihi 500; prilagodi po potrebi)
+MAX_MB = int(os.getenv("MAX_CONTENT_LENGTH_MB", "20"))
+app.config["MAX_CONTENT_LENGTH"] = MAX_MB * 1024 * 1024
+
+
+# ---------- Guard-ovi (moraju biti definisani PRIJE ruta) ----------
+def require_login(fn):
+    @wraps(fn)
+    def w(*a, **kw):
+        if not session.get("user_email"):
+            return redirect(url_for("prijava"))
+        return fn(*a, **kw)
+    return w
+
+def require_admin(fn):
+    @wraps(fn)
+    def w(*a, **kw):
+        if not session.get("is_admin"):
+            return redirect(url_for("prijava"))
+        return fn(*a, **kw)
+    return w
+# -------------------------------------------------------------------
+
+
+# ---------- DB helper-i i whitelist ----------
 def db():
     """Vrati konekciju ili None ako DB_URL nije postavljen."""
     if not DB_URL:
@@ -47,7 +88,7 @@ def db():
     return psycopg2.connect(_with_sslmode(DB_URL), cursor_factory=RealDictCursor)
 
 def is_email_allowed(email: str) -> bool:
-    """Provjera whiteliste iz baze (fallback na ALLOWED_EMAILS skup)."""
+    """Provjera whiteliste iz baze (fallback na ALLOWED_EMAILS_FALLBACK)."""
     email = (email or "").strip().lower()
     conn = db()
     if conn:
@@ -57,21 +98,21 @@ def is_email_allowed(email: str) -> bool:
                 return cur.fetchone() is not None
         finally:
             conn.close()
-    # fallback na lokalni skup (za lokalni dev ili ako nema DB)
-    return email in ALLOWED_EMAILS
+    # fallback kad nema DB
+    return email in ALLOWED_EMAILS_FALLBACK
 
 def list_allowed_emails():
     conn = db()
     if conn:
         try:
             with conn, conn.cursor() as cur:
-                cur.execute("select email from allowed_emails order by email asc")
-                rows = cur.fetchall()
-                return [r["email"] for r in rows]
+                cur.execute("select email from allowed_emails order by email asc;")
+                rows = cur.fetchall()              # [{'email': '...'}, ...]
+                return [r["email"] for r in rows]  # ['...', ...]
         finally:
             conn.close()
-    # fallback
-    return sorted(list(ALLOWED_EMAILS))
+    # fallback kad nema DB
+    return sorted(list(ALLOWED_EMAILS_FALLBACK))
 
 def add_allowed_email(email: str) -> bool:
     email = (email or "").strip().lower()
@@ -89,7 +130,7 @@ def add_allowed_email(email: str) -> bool:
         finally:
             conn.close()
     # fallback
-    ALLOWED_EMAILS.add(email)
+    ALLOWED_EMAILS_FALLBACK.add(email)
     return True
 
 def delete_allowed_email(email: str) -> None:
@@ -104,29 +145,10 @@ def delete_allowed_email(email: str) -> None:
         return
     # fallback
     try:
-        ALLOWED_EMAILS.remove(email)
+        ALLOWED_EMAILS_FALLBACK.remove(email)
     except KeyError:
         pass
-# ========================================
-
-
-# ---------- Guard-ovi ----------
-def require_login(fn):
-    @wraps(fn)
-    def w(*a, **kw):
-        if not session.get("user_email"):
-            return redirect(url_for("prijava"))
-        return fn(*a, **kw)
-    return w
-
-def require_admin(fn):
-    @wraps(fn)
-    def w(*a, **kw):
-        if not session.get("is_admin"):
-            return redirect(url_for("prijava"))
-        return fn(*a, **kw)
-    return w
-# -------------------------------
+# ---------------------------------------------
 
 
 # OpenAI klijent
@@ -135,6 +157,17 @@ client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 # Modeli (možeš prepisati kroz .env)
 MODEL_TEXT   = os.getenv("OPENAI_MODEL_TEXT", "gpt-5-mini")
 MODEL_VISION = os.getenv("OPENAI_MODEL_VISION", "gpt-5")
+
+# Google Sheets (opciono)
+try:
+    SCOPE = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
+    CREDS_FILE = "credentials.json"
+    creds = ServiceAccountCredentials.from_json_keyfile_name(CREDS_FILE, SCOPE)
+    gs_client = gspread.authorize(creds)
+    sheet = gs_client.open("matematika-bot").sheet1
+except Exception:
+    sheet = None
+
 
 # --- parser brojeva zadataka ---
 ORDINAL_WORDS = {
@@ -162,43 +195,6 @@ def extract_requested_tasks(text: str):
             out.append(n); seen.add(n)
     return out
 
-
-# -------- Flask app / session --------
-SECURE_COOKIES = os.getenv("COOKIE_SECURE", "0") == "1"  # lokalno False; na Render postavi 1
-app = Flask(__name__)
-app.config.update(
-    SESSION_COOKIE_SAMESITE="Lax",
-    SESSION_COOKIE_SECURE=SECURE_COOKIES,
-    SESSION_COOKIE_NAME="matbot_session_v2",
-    PERMANENT_SESSION_LIFETIME=timedelta(hours=12),
-    SEND_FILE_MAX_AGE_DEFAULT=0,
-    ETAG_DISABLED=True,
-)
-CORS(app, supports_credentials=True)
-app.secret_key = os.getenv("SECRET_KEY", "tajna_lozinka")
-
-# Limit request body-a (sprječava tihi 500; prilagodi po potrebi)
-MAX_MB = int(os.getenv("MAX_CONTENT_LENGTH_MB", "20"))
-app.config["MAX_CONTENT_LENGTH"] = MAX_MB * 1024 * 1024
-
-# Google Sheets (opciono)
-try:
-    SCOPE = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
-    CREDS_FILE = "credentials.json"
-    creds = ServiceAccountCredentials.from_json_keyfile_name(CREDS_FILE, SCOPE)
-    gs_client = gspread.authorize(creds)
-    sheet = gs_client.open("matematika-bot").sheet1
-except Exception as _:
-    sheet = None
-
-# Prompti po razredu
-prompti_po_razredu = {
-    "5": "Ti si pomoćnik iz matematike za učenike 5. razreda osnovne škole. Objašnjavaj jednostavnim i razumljivim jezikom. Pomaži učenicima da razumiju zadatke iz prirodnih brojeva, osnovnih računskih operacija, jednostavne geometrije i tekstualnih zadataka. Svako rješenje objasni jasno, korak po korak.",
-    "6": "Ti si pomoćnik iz matematike za učenike 6. razreda osnovne škole. Odgovaraj detaljno i pedagoški, koristeći primjere primjerene njihovom uzrastu. Pomaži im da razumiju razlomke, decimalne brojeve, procente, geometriju i tekstualne zadatke. Objasni rješenje jasno i korak po korak.",
-    "7": "Ti si pomoćnik iz matematike za učenike 7. razreda osnovne škole. Pomaži im u razumijevanju složenijih zadataka iz algebre, geometrije i funkcija. Koristi jasan, primjeren jezik i objasni svaki korak logično i precizno.",
-    "8": "Ti si pomoćnik iz matematike za učenike 8. razreda osnovne škole. Fokusiraj se na linearne izraze, sisteme jednačina, geometriju i statistiku. Pomaži učenicima da razumiju postupke i objasni svako rješenje detaljno, korak po korak.",
-    "9": "Ti si pomoćnik iz matematike za učenike 9. razreda osnovne škole. Pomaži im u savladavanju zadataka iz algebre, funkcija, geometrije i statistike. Koristi jasan i stručan jezik, ali primjeren njihovom nivou. Objasni svaki korak rješenja jasno i precizno."
-}
 
 def latexify_fractions(text):
     def zamijeni(match):
@@ -353,7 +349,7 @@ def prijava():
     if ADMIN_EMAIL and ADMIN_PASS and email == ADMIN_EMAIL and code == ADMIN_PASS:
         session["user_email"] = email
         session["is_admin"]  = True
-        return redirect(url_for("admin_panel"))   # odmah na admin panel
+        return redirect(url_for("admin_panel"))
 
     # 2) OBIČAN KORISNIK: whitelist + access code
     if is_email_allowed(email) and code == ACCESS_CODE:
@@ -590,7 +586,6 @@ def db_health():
         return f"OK, allowed_emails={n}", 200
     except Exception as e:
         return f"DB error: {e}", 500
-
 
 
 if __name__ == "__main__":
