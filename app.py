@@ -4,7 +4,8 @@ import os, re, base64, json, html
 from datetime import timedelta
 from io import BytesIO
 from functools import wraps
-
+import psycopg2
+from psycopg2.extras import RealDictCursor
 from openai import OpenAI
 from flask_cors import CORS
 
@@ -23,6 +24,92 @@ ALLOWED_EMAILS = {
     # "ucenik2@example.com",
 }
 ACCESS_CODE = "MATH-2025"  # promijeni po želji
+
+
+# --- DB i admin konfiguracija ---
+DB_URL = os.getenv("DATABASE_URL") or os.getenv("EXTERNAL_DATABASE_URL")
+ACCESS_CODE = os.getenv("ACCESS_CODE", "MATH-2025")  # sada iz ENV-a (ima fallback)
+ADMIN_EMAILS = [e.strip().lower() for e in os.getenv("ADMIN_EMAILS", "").split(",") if e.strip()]
+
+def db():
+    """Vrati konekciju ili None ako DB_URL nije postavljen."""
+    if not DB_URL:
+        return None
+    return psycopg2.connect(DB_URL, cursor_factory=RealDictCursor)
+
+def is_email_allowed(email: str) -> bool:
+    """Provjera whiteliste iz baze (fallback na ALLOWED_EMAILS skup)."""
+    email = (email or "").strip().lower()
+    conn = db()
+    if conn:
+        try:
+            with conn, conn.cursor() as cur:
+                cur.execute("select 1 from allowed_emails where email=%s", (email,))
+                return cur.fetchone() is not None
+        finally:
+            conn.close()
+    # fallback na lokalni skup (za lokalni dev ili ako nema DB)
+    return email in ALLOWED_EMAILS
+
+def list_allowed_emails():
+    conn = db()
+    if conn:
+        try:
+            with conn, conn.cursor() as cur:
+                cur.execute("select email from allowed_emails order by email asc")
+                rows = cur.fetchall()
+                return [r["email"] for r in rows]
+        finally:
+            conn.close()
+    # fallback
+    return sorted(list(ALLOWED_EMAILS))
+
+def add_allowed_email(email: str) -> bool:
+    email = (email or "").strip().lower()
+    if not email or "@" not in email or len(email) > 200:
+        return False
+    conn = db()
+    if conn:
+        try:
+            with conn, conn.cursor() as cur:
+                cur.execute(
+                    "insert into allowed_emails(email) values (%s) on conflict do nothing;",
+                    (email,)
+                )
+            return True
+        finally:
+            conn.close()
+    # fallback
+    ALLOWED_EMAILS.add(email)
+    return True
+
+def delete_allowed_email(email: str) -> None:
+    email = (email or "").strip().lower()
+    conn = db()
+    if conn:
+        try:
+            with conn, conn.cursor() as cur:
+                cur.execute("delete from allowed_emails where email=%s", (email,))
+        finally:
+            conn.close()
+        return
+    # fallback
+    try:
+        ALLOWED_EMAILS.remove(email)
+    except KeyError:
+        pass
+
+def require_admin(fn):
+    """Dozvoli pristup samo session korisnicima čiji email je u ADMIN_EMAILS env listi."""
+    from functools import wraps
+    @wraps(fn)
+    def w(*a, **kw):
+        u = session.get("user_email")
+        if not u or u.lower() not in ADMIN_EMAILS:
+            return redirect(url_for("index"))
+        return fn(*a, **kw)
+    return w
+
 
 def require_login(fn):
     @wraps(fn)
@@ -246,29 +333,52 @@ def route_image_flow(slika_bytes: bytes, razred: str, history, requested_tasks=N
 @app.route("/prijava", methods=["GET", "POST"])
 def prijava():
     if request.method == "GET":
-        # Ako je već ulogovan, nema smisla prikazivati login
         if session.get("user_email"):
             return redirect(url_for("index"))
         return render_template("prijava.html", error=None)
 
-    # ⇩⇩ KLJUČNO: svaku novu prijavu počni čistom sesijom
+    # svaki login POST počni čistom sesijom
     session.pop("user_email", None)
 
     email = (request.form.get("email") or "").strip().lower()
     code  = (request.form.get("code")  or "").strip()
 
-    allowed = (email in ALLOWED_EMAILS)
+    allowed = is_email_allowed(email)
     code_ok = (code == ACCESS_CODE)
-
-    # mali debug u logu (ne ispisuj stvarni kod!)
     print(f"[login] email={email} allowed={allowed} code_ok={code_ok}")
 
     if allowed and code_ok:
         session["user_email"] = email
         return redirect(url_for("index"))
 
-    # ne postavljamo session, ostaje izlogovan
     return render_template("prijava.html", error="Pogrešan email ili kod. Pokušaj ponovo."), 401
+
+@app.get("/admin")
+@require_login
+@require_admin
+def admin_panel():
+    emails = list_allowed_emails()
+    db_active = bool(DB_URL)
+    return render_template("admin.html", emails=emails, db_active=db_active)
+
+@app.post("/admin/add")
+@require_login
+@require_admin
+def admin_add():
+    email = (request.form.get("email") or "").strip().lower()
+    ok = add_allowed_email(email)
+    msg = None if ok else "Neispravan email."
+    emails = list_allowed_emails()
+    return render_template("admin.html", emails=emails, db_active=bool(DB_URL), message=msg)
+
+@app.post("/admin/delete")
+@require_login
+@require_admin
+def admin_delete():
+    email = (request.form.get("email") or "").strip().lower()
+    delete_allowed_email(email)
+    emails = list_allowed_emails()
+    return render_template("admin.html", emails=emails, db_active=bool(DB_URL), message=None)
 
 
 @app.post("/odjava")
