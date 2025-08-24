@@ -1,19 +1,23 @@
-from flask import Flask, render_template, request, session, redirect, url_for
+from flask import Flask, render_template, request, session, redirect, url_for, send_from_directory, jsonify
 from dotenv import load_dotenv
-import os, re, base64, json, html
+import os, re, base64, json, html, datetime, time
 from datetime import timedelta
 from io import BytesIO
 from functools import wraps
+from uuid import uuid4
 
 import psycopg2
 from psycopg2.extras import RealDictCursor
 
-from openai import OpenAI
+from openai import OpenAI, APIConnectionError, APIStatusError, RateLimitError
 from flask_cors import CORS
 
 # Google Sheets (opciono; neće srušiti ako credentials nema)
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
+
+# Google Cloud Storage (za signed URL upload)
+from google.cloud import storage
 
 # ================== ENV ==================
 load_dotenv(override=True)
@@ -41,7 +45,7 @@ def _with_sslmode(url: str) -> str:
     return url + ("&" if "?" in url else "?") + "sslmode=require"
 
 # -------- Flask app / session --------
-SECURE_COOKIES = os.getenv("COOKIE_SECURE", "0") == "1"  # lokalno False; na Render postavi 1
+SECURE_COOKIES = os.getenv("COOKIE_SECURE", "0") == "1"  # lokalno False; na Render/Cloud Run postavi 1 po potrebi
 app = Flask(__name__)
 app.config.update(
     SESSION_COOKIE_SAMESITE="Lax",
@@ -57,6 +61,10 @@ app.secret_key = os.getenv("SECRET_KEY", "tajna_lozinka")
 # Limit request body-a (sprječava tihi 500; prilagodi po potrebi)
 MAX_MB = int(os.getenv("MAX_CONTENT_LENGTH_MB", "20"))
 app.config["MAX_CONTENT_LENGTH"] = MAX_MB * 1024 * 1024
+
+# Upload folder (fallback kada ne koristiš GCS direktno iz browsera)
+UPLOAD_DIR = "/tmp/uploads"
+os.makedirs(UPLOAD_DIR, exist_ok=True)
 
 # ---------- Guard-ovi ----------
 def require_login(fn):
@@ -142,8 +150,10 @@ def delete_allowed_email(email: str) -> None:
         pass
 # ---------------------------------------------
 
-# OpenAI klijent
-client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+# OpenAI klijent (sa timeoutom i manjim brojem retry-a)
+OPENAI_TIMEOUT = float(os.getenv("OPENAI_TIMEOUT", "60"))
+OPENAI_MAX_RETRIES = int(os.getenv("OPENAI_MAX_RETRIES", "1"))
+client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"), timeout=OPENAI_TIMEOUT, max_retries=OPENAI_MAX_RETRIES)
 
 # Modeli (možeš prepisati kroz .env)
 MODEL_TEXT   = os.getenv("OPENAI_MODEL_TEXT", "gpt-5-mini")
@@ -158,6 +168,13 @@ try:
     sheet = gs_client.open("matematika-bot").sheet1
 except Exception:
     sheet = None
+
+# GCS (za signed URL upload)
+GCS_BUCKET = os.getenv("GCS_BUCKET", "").strip()
+try:
+    storage_client = storage.Client() if GCS_BUCKET else None
+except Exception:
+    storage_client = None
 
 # ===== Globalni prompti po razredu (jedan izvor istine) =====
 PROMPTI_PO_RAZREDU = {
@@ -278,11 +295,69 @@ def get_history_from_request():
         print("history_json parse fail:", e, flush=True)
         return []
 
-# ---- Vision flow (slika) ----
+# ---- Vision flow (URL) ----
+def route_image_flow_url(image_url: str, razred: str, history, requested_tasks=None):
+    prompt_za_razred = PROMPTI_PO_RAZREDU.get(razred, PROMPTI_PO_RAZREDU["5"])
+
+    only_clause = ""
+    if requested_tasks:
+        only_clause = (
+            " Riješi ISKLJUČIVO sljedeće zadatke (ignoriši sve ostale koji su vidljivi na slici), "
+            f"tačno ove brojeve: {', '.join(map(str, requested_tasks))}. "
+            "Ako ne možeš jasno identificirati tražene brojeve na slici, napiši: "
+            "'Ne mogu izolovati traženi broj zadatka na slici.' i stani."
+        )
+
+    strict_geom_policy = (
+        " Radi tačno i oprezno:\n"
+        "1) PRVO, jasno prepiši koje uglove i oznake SI PROČITAO sa slike (npr. 53°, 65°, 98°).\n"
+        "   Ako ijedan broj nije jasan, napiši: 'Ne mogu pouzdano pročitati podatke – napiši ih tekstom.' i stani.\n"
+        "2) Nemoj pretpostavljati paralelnost, jednakokrakost, jednake uglove ili sličnost trokuta ako to nije eksplicitno označeno.\n"
+        "3) Ako korisnik uz sliku da tekstualne podatke, ONI SU ISTINITI i imaju prioritet nad onim što vidiš.\n"
+        "4) Daj konačan odgovor za traženi ugao x u stepenima i kratko objašnjenje (2–4 rečenice)."
+    )
+
+    system_message = {
+        "role": "system",
+        "content": (
+            prompt_za_razred +
+            " Odgovaraj na jeziku pitanja; ako nisi siguran, koristi bosanski (ijekavica). "
+            "Ne miješaj jezike i ne koristi engleske riječi u objašnjenjima. "
+            "Ako nije matematika, reci: 'Molim te, postavi matematičko pitanje.' "
+            "Ako ne znaš tačno rješenje, reci: 'Za ovaj zadatak se obrati instruktorima na info@matematicari.com'. "
+            "Ne prikazuj ASCII grafove osim ako su izričito traženi. "
+            + only_clause + " " + strict_geom_policy
+        )
+    }
+
+    messages = [system_message]
+    for msg in history[-5:]:
+        messages.append({"role": "user", "content": msg["user"]})
+        messages.append({"role": "assistant", "content": msg["bot"]})
+
+    user_content = [{"type": "text", "text": "Na slici je matematički zadatak."}]
+    if requested_tasks:
+        user_content[0]["text"] += f" Riješi isključivo zadatak(e): {', '.join(map(str, requested_tasks))}."
+    else:
+        user_content[0]["text"] += " Riješi samo ono što korisnik izričito traži."
+
+    user_content.append({"type": "image_url", "image_url": {"url": image_url}})
+    messages.append({"role": "user", "content": user_content})
+
+    try:
+        resp = client.chat.completions.create(model=MODEL_VISION, messages=messages)
+    except (APIConnectionError, APIStatusError, RateLimitError) as e:
+        print("OpenAI vision error:", repr(e), flush=True)
+        return "<p><b>Greška:</b> Servis sporo odgovara ili je zauzet. Pokušaj ponovo.</p>", "vision_url_error", "n/a"
+
+    actual_model = getattr(resp, "model", MODEL_VISION)
+    raw = resp.choices[0].message.content
+    raw = strip_ascii_graph_blocks(raw)
+    return f"<p>{latexify_fractions(raw)}</p>", "vision_url", actual_model
+
+# (stara base64 varijanta ostaje kao fallback, ali se ne koristi više u glavnom toku)
 def route_image_flow(slika_bytes: bytes, razred: str, history, requested_tasks=None):
     image_b64 = base64.b64encode(slika_bytes).decode()
-
-    # ✅ koristimo globalni PROMPTI_PO_RAZREDU
     prompt_za_razred = PROMPTI_PO_RAZREDU.get(razred, PROMPTI_PO_RAZREDU["5"])
 
     only_clause = ""
@@ -329,7 +404,12 @@ def route_image_flow(slika_bytes: bytes, razred: str, history, requested_tasks=N
     user_content.append({"type": "image_url", "image_url": {"url": f"data:image/png;base64,{image_b64}"}})
     messages.append({"role": "user", "content": user_content})
 
-    resp = client.chat.completions.create(model=MODEL_VISION, messages=messages)
+    try:
+        resp = client.chat.completions.create(model=MODEL_VISION, messages=messages)
+    except (APIConnectionError, APIStatusError, RateLimitError) as e:
+        print("OpenAI vision error (base64 path):", repr(e), flush=True)
+        return "<p><b>Greška:</b> Servis sporo odgovara ili je zauzet. Pokušaj ponovo.</p>", "vision_direct_error", "n/a"
+
     actual_model = getattr(resp, "model", MODEL_VISION)
     raw = resp.choices[0].message.content
     raw = strip_ascii_graph_blocks(raw)
@@ -399,6 +479,39 @@ def odjava():
     return redirect(url_for("prijava"))
 # ----------------------------------------------
 
+# ---- GCS signed upload endpoint (browser -> bucket PUT) ----
+@app.post("/gcs/signed-upload")
+@require_login
+def gcs_signed_upload():
+    if not (GCS_BUCKET and storage_client):
+        return {"error": "GCS nije konfigurisan (GCS_BUCKET)."}, 500
+    data = request.get_json(force=True, silent=True) or {}
+    content_type = data.get("contentType") or "image/jpeg"
+    ext = ".jpg" if "jpeg" in content_type else (".png" if "png" in content_type else ".webp")
+    blob_name = f"uploads/{uuid4().hex}{ext}"
+
+    bucket = storage_client.bucket(GCS_BUCKET)
+    blob = bucket.blob(blob_name)
+
+    upload_url = blob.generate_signed_url(
+        version="v4",
+        expiration=datetime.timedelta(minutes=10),
+        method="PUT",
+        content_type=content_type,
+    )
+    read_url = blob.generate_signed_url(
+        version="v4",
+        expiration=datetime.timedelta(minutes=45),
+        method="GET",
+    )
+    return jsonify({"uploadUrl": upload_url, "readUrl": read_url})
+
+# ---- Lokalni fallback serviranja uploadovane slike kao URL (/tmp/uploads) ----
+@app.get("/uploads/<name>")
+def uploads(name):
+    # za lokalni/dev ili Cloud Run privremeni disk
+    return send_from_directory(UPLOAD_DIR, name)
+
 # ---- Glavna ruta (MAT-BOT) ----
 @app.route("/", methods=["GET", "POST"])
 @require_login
@@ -421,19 +534,20 @@ def index():
         try:
             pitanje = (request.form.get("pitanje", "") or "").strip()
             slika = request.files.get("slika")
+            image_url = (request.form.get("image_url") or "").strip()  # kad klijent koristi GCS signed upload
             is_ajax = request.form.get("ajax") == "1" or request.headers.get("X-Requested-With") == "XMLHttpRequest"
 
-            # --- slika ---
-            if slika and slika.filename:
-                slika_bytes = BytesIO(slika.read()); slika.seek(0)
+            # --- slika preko URL-a (preporučeno) ---
+            if image_url:
                 combined_text = pitanje
                 requested = extract_requested_tasks(combined_text)
+
                 try:
-                    odgovor, used_path, used_model = route_image_flow(
-                        slika_bytes.getvalue(), razred, history, requested_tasks=requested
+                    odgovor, used_path, used_model = route_image_flow_url(
+                        image_url, razred, history, requested_tasks=requested
                     )
                 except Exception as e:
-                    print("route_image_flow error:", repr(e), flush=True)
+                    print("route_image_flow_url error:", repr(e), flush=True)
                     odgovor = f"<p><b>Greška:</b> {html.escape(str(e))}</p>"
                     used_path = "error"; used_model = "n/a"
 
@@ -444,7 +558,59 @@ def index():
                     if expression:
                         odgovor = add_plot_div_once(odgovor, expression); plot_expression_added = True
 
+                history.append({"user": combined_text if combined_text else "[SLIKA-URL]", "bot": odgovor.strip()})
+                # drži historiju razumno kratkom u cookie-u
+                history = history[-8:]
+                session["history"] = history
+
+                try:
+                    if sheet:
+                        mod_str = f"{used_path}|{used_model}"
+                        sheet.append_row([combined_text if combined_text else "[SLIKA-URL]", odgovor, mod_str])
+                except Exception as ee:
+                    print("Sheets append error:", ee, flush=True)
+
+                if is_ajax:
+                    return render_template("index.html", history=history, razred=razred)
+                return redirect(url_for("index"))
+
+            # --- slika uploadovana direktno (fallback: snimi pa posluži kao URL) ---
+            if slika and slika.filename:
+                # sačuvaj u /tmp/uploads i napravi javni URL
+                ext = os.path.splitext(slika.filename)[1].lower() or ".jpg"
+                fname = f"{uuid4().hex}{ext}"
+                path  = os.path.join(UPLOAD_DIR, fname)
+                slika.save(path)
+                public_url = (request.url_root.rstrip("/") + "/uploads/" + fname)
+
+                combined_text = pitanje
+                requested = extract_requested_tasks(combined_text)
+
+                try:
+                    odgovor, used_path, used_model = route_image_flow_url(
+                        public_url, razred, history, requested_tasks=requested
+                    )
+                except Exception as e:
+                    print("route_image_flow_url (local) error:", repr(e), flush=True)
+                    odgovor = f"<p><b>Greška:</b> {html.escape(str(e))}</p>"
+                    used_path = "error"; used_model = "n/a"
+
+                # pokušaj obrisati fajl nakon kratkog čekanja (da je model sigurno preuzeo)
+                try:
+                    time.sleep(3)
+                    os.remove(path)
+                except Exception:
+                    pass
+
+                # graf?
+                will_plot = should_plot(combined_text)
+                if (not plot_expression_added) and will_plot:
+                    expression = extract_plot_expression(combined_text, razred=razred, history=history)
+                    if expression:
+                        odgovor = add_plot_div_once(odgovor, expression); plot_expression_added = True
+
                 history.append({"user": combined_text if combined_text else "[SLIKA]", "bot": odgovor.strip()})
+                history = history[-8:]
                 session["history"] = history
 
                 try:
@@ -509,6 +675,7 @@ def index():
                     odgovor = add_plot_div_once(odgovor, expression); plot_expression_added = True
 
             history.append({"user": pitanje, "bot": odgovor.strip()})
+            history = history[-8:]
             session["history"] = history
 
             try:
@@ -522,6 +689,7 @@ def index():
             print("FATAL index.POST:", repr(e), flush=True)
             err_html = f"<p><b>Greška servera:</b> {html.escape(str(e))}</p>"
             history.append({"user": request.form.get('pitanje') or "[SLIKA]", "bot": err_html})
+            history = history[-8:]
             session["history"] = history
             if request.form.get("ajax") == "1":
                 return render_template("index.html", history=history, razred=razred)
@@ -533,7 +701,7 @@ def index():
 # ---- Error handler za prevelik upload ----
 @app.errorhandler(413)
 def too_large(e):
-    msg = f"<p><b>Greška:</b> Fajl je prevelik (limit {MAX_MB} MB). Smanji rezoluciju slike i pokušaj ponovo.</p>"
+    msg = f"<p><b>Greška:</b> Fajl je prevelik (limit {MAX_MB} MB). Pokušaj ponovo (npr. fotografija bez duplih snimaka/Live/HEIC), ili koristi GCS upload.</p>"
     return render_template("index.html", history=[{"user":"[SLIKA]", "bot": msg}], razred=session.get("razred")), 413
 
 @app.route("/clear", methods=["POST"])
