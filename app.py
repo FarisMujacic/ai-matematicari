@@ -373,9 +373,9 @@ def admin_panel():
 def admin_add():
     email = (request.form.get("email") or "").strip().lower()
     ok = add_allowed_email(email)
-    msg = None if ok else "Neispravan email."
-    emails = list_allowed_emails()
-    return render_template("admin.html", emails=emails, db_active=bool(DB_URL), message=msg)
+    # PRG: poruku šaljemo preko query stringa
+    msg = "OK" if ok else "Neispravan email."
+    return redirect(url_for("admin_panel") + (f"?m={msg}" if msg else ""))
 
 @app.post("/admin/delete")
 @require_login
@@ -383,8 +383,15 @@ def admin_add():
 def admin_delete():
     email = (request.form.get("email") or "").strip().lower()
     delete_allowed_email(email)
-    emails = list_allowed_emails()
-    return render_template("admin.html", emails=emails, db_active=bool(DB_URL), message=None)
+    return redirect(url_for("admin_panel"))
+
+# (opciono) brzi test da vidiš šta čita iz baze:
+@app.get("/admin/list.json")
+@require_login
+@require_admin
+def admin_list_json():
+    return {"db_active": bool(DB_URL), "emails": list_allowed_emails()}
+
 
 @app.post("/odjava")
 def odjava():
@@ -586,6 +593,13 @@ def db_health():
         return f"OK, allowed_emails={n}", 200
     except Exception as e:
         return f"DB error: {e}", 500
+
+def admin_panel():
+    emails = list_allowed_emails()
+    db_active = bool(DB_URL)
+    return render_template("admin.html",
+                           emails=emails, db_active=db_active,
+                           message=request.args.get("m"))
 
 
 if __name__ == "__main__":
