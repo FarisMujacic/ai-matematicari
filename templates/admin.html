@@ -1,47 +1,70 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="bs">
 <head>
   <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Admin panel</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
   <style>
-    body{font-family:system-ui,-apple-system,Segoe UI,Roboto;max-width:720px;margin:40px auto;padding:0 16px}
-    h1{margin-bottom:8px}
-    form{margin:12px 0}
-    input[type="email"], input[type="text"]{padding:8px 10px;border:1px solid #ccc;border-radius:8px;width:280px}
-    button{padding:8px 12px;border:0;border-radius:8px;background:#2563eb;color:#fff;cursor:pointer}
-    button.danger{background:#c24141}
-    table{width:100%;border-collapse:collapse;margin-top:12px}
-    th,td{padding:10px;border-bottom:1px solid #eee;text-align:left}
+    body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Inter,Ubuntu,'Helvetica Neue',Arial,sans-serif;margin:40px;}
+    h1{font-size:2.2rem;margin-bottom:1rem}
+    .row{display:flex;gap:16px;align-items:center;margin:.5rem 0}
+    input[type=email]{padding:.6rem .8rem;border:1px solid #c9c9c9;border-radius:8px;min-width:280px}
+    button{padding:.55rem .9rem;border:0;border-radius:8px;background:#2563eb;color:#fff;cursor:pointer}
+    button.del{background:#dc2626}
+    table{width:100%;border-collapse:collapse;margin-top:1rem}
+    th,td{border-bottom:1px solid #eee;padding:.7rem .6rem;text-align:left}
+    .msg{margin-top:.5rem;color:#0a0}
+    .warn{color:#b91c1c}
+    .topbar{display:flex;justify-content:space-between;align-items:center;margin-bottom:1rem}
   </style>
 </head>
 <body>
-  <h1>Admin panel</h1>
-  <p><a href="/odjava"><button type="button">Odjava</button></a></p>
+  <div class="topbar">
+    <h1>Admin panel</h1>
+    <form method="post" action="{{ url_for('odjava') }}">
+      <button type="submit">Odjava</button>
+    </form>
+  </div>
 
-  <h2>Dodaj email</h2>
-  <form method="post" action="/admin/add">
-    <input type="email" name="email" placeholder="email@domena.com" required />
-    <button type="submit">Dodaj</button>
-  </form>
+  {% if db_active %}
+    <div class="row">
+      <form class="row" method="post" action="{{ url_for('admin_add') }}">
+        <input type="email" name="email" placeholder="email@domena.com" required />
+        <button type="submit">Dodaj</button>
+      </form>
+    </div>
 
-  <h2>Dozvoljeni emailovi</h2>
-  <table>
-    <thead><tr><th>Email</th><th>Akcija</th></tr></thead>
-    <tbody>
-    {% for e in allowed %}
-      <tr>
-        <td>{{ e }}</td>
-        <td>
-          <form method="post" action="/admin/remove" style="display:inline">
-            <input type="hidden" name="email" value="{{ e }}">
-            <button class="danger" type="submit">Ukloni</button>
-          </form>
-        </td>
-      </tr>
-    {% else %}
-      <tr><td colspan="2">Nema unosa.</td></tr>
-    {% endfor %}
-    </tbody>
-  </table>
+    {% if message %}
+      <div class="msg">{{ message }}</div>
+    {% endif %}
+
+    <h2>Dozvoljeni emailovi</h2>
+    <table>
+      <thead>
+        <tr><th>Email</th><th>Akcija</th></tr>
+      </thead>
+      <tbody>
+      {% if emails and emails|length %}
+        {% for e in emails %}
+          <tr>
+            <td>{{ e }}</td>
+            <td>
+              <form method="post" action="{{ url_for('admin_delete') }}">
+                <input type="hidden" name="email" value="{{ e }}">
+                <button type="submit" class="del">Obriši</button>
+              </form>
+            </td>
+          </tr>
+        {% endfor %}
+      {% else %}
+        <tr><td colspan="2">Nema unosa.</td></tr>
+      {% endif %}
+      </tbody>
+    </table>
+  {% else %}
+    <p class="warn"><b>Baza nije povezana.</b> Postavi <code>DATABASE_URL</code> ili <code>EXTERNAL_DATABASE_URL</code> na Renderu i kreiraj tabelu
+      <code>allowed_emails</code>.</p>
+  {% endif %}
 </body>
 </html>
