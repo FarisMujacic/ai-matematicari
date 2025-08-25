@@ -77,7 +77,6 @@
   textarea{width:100%;min-height:140px;padding:1rem;font-size:1.08rem;border-radius:12px;border:2px solid #50e3c2;background:#f8fafd;outline:none;resize:vertical;box-shadow:0 2px 8px rgba(0,0,0,.04);}
   textarea:focus{border-color:#3d7d66;box-shadow:0 4px 14px rgba(0,0,0,.08);}
 
-  /* upload */
   .file-row{display:flex;align-items:center;gap:.75rem;flex-wrap:wrap;}
   .file-input{display:none;}
   .file-chip{display:none;align-items:center;gap:.5rem;background:#eff6ff;border:1px dashed #b9d2ff;color:#2a4365;padding:.45rem .6rem;border-radius:999px;font-size:.92rem;}
@@ -145,21 +144,17 @@
 
         <div id="razred-wrapper" {% if razred %}style="display: none;"{% endif %}>
           <label for="razred">Koji si razred?</label>
-<select name="razred" id="razred" required>
-  <option value="" disabled {% if not razred %}selected{% endif %}>
-    -- Odaberi razred --
-  </option>
-  <option value="5" {% if razred == '5' %}selected{% endif %}>5. razred</option>
-  <option value="6" {% if razred == '6' %}selected{% endif %}>6. razred</option>
-  <option value="7" {% if razred == '7' %}selected{% endif %}>7. razred</option>
-  <option value="8" {% if razred == '8' %}selected{% endif %}>8. razred</option>
-  <option value="9" {% if razred == '9' %}selected{% endif %}>9. razred</option>
-</select>
-{% if error %}<div class="error">{{ error }}</div>{% endif %}
-
+          <select name="razred" id="razred" required>
+            <option value="" disabled {% if not razred %}selected{% endif %}>-- Odaberi razred --</option>
+            <option value="5" {% if razred == '5' %}selected{% endif %}>5. razred</option>
+            <option value="6" {% if razred == '6' %}selected{% endif %}>6. razred</option>
+            <option value="7" {% if razred == '7' %}selected{% endif %}>7. razred</option>
+            <option value="8" {% if razred == '8' %}selected{% endif %}>8. razred</option>
+            <option value="9" {% if razred == '9' %}selected{% endif %}>9. razred</option>
+          </select>
+          {% if error %}<div class="error">{{ error }}</div>{% endif %}
         </div>
 
-        <!-- Tekstualno pitanje -->
         <label for="pitanje">Postavi mi matematičko pitanje (tekst ili slika):</label>
         <textarea name="pitanje" id="pitanje" placeholder="Ovdje možeš unijeti zadatak ili pitanje..." autofocus autocomplete="off"></textarea>
 
@@ -194,7 +189,6 @@
   <button id="to-bottom" onclick="scrollToBottom()">⬇ Do dna</button>
 
 <script>
-/* Dropdown & Dark */
 function toggleDropdown(e){ e.preventDefault(); document.getElementById('menuWrap').classList.toggle('open'); }
 function initDarkToggle(){
   const cb = document.getElementById('darkToggle');
@@ -206,12 +200,10 @@ function initDarkToggle(){
   });
 }
 
-/* Typing & scroll */
 function showTyping(){ const el = document.getElementById('typing'); if(!el) return; el.style.display='block'; scrollToBottom(); }
 function hideTyping(){ const el = document.getElementById('typing'); if(el) el.style.display='none'; }
 function scrollToBottom(){ const chat=document.getElementById('chat-container'); if(chat) chat.scrollTop = chat.scrollHeight; }
 
-/* to-bottom button */
 (function setupScrollButton(){
   const chat = document.getElementById('chat-container');
   const btn = document.getElementById('to-bottom');
@@ -224,7 +216,6 @@ function scrollToBottom(){ const chat=document.getElementById('chat-container');
   setTimeout(toggleBtn, 200);
 })();
 
-/* Local history helpers */
 function getCID(){
   const key='matbot_cid';
   if(!localStorage.getItem(key)){
@@ -244,7 +235,6 @@ function getTrimmedHistoryForSubmit(HIST_KEY){
   return JSON.stringify(last5);
 }
 
-/* UI za fajl */
 function updateFileUI(){
   const fileInput = document.getElementById('slika');
   const fileName = document.getElementById('file-name');
@@ -267,7 +257,6 @@ function clearFile(){
   updateFileUI();
 }
 
-/* GCS signed upload helper (vrati readUrl ili null) */
 async function uploadToGCS(file){
   try{
     const su = await fetch('/gcs/signed-upload', {
@@ -282,7 +271,7 @@ async function uploadToGCS(file){
       body: file
     });
     if(!putRes.ok) throw new Error('PUT to GCS failed');
-    return su.readUrl; // uspjeh
+    return su.readUrl;
   }catch(err){
     console.warn('GCS upload fallback:', err);
     return null;
@@ -316,7 +305,6 @@ document.addEventListener('DOMContentLoaded', () => {
   }
   if (removeBtn) removeBtn.addEventListener('click', clearFile);
 
-  // SUBMIT: prvo pokušaj GCS upload -> pošalji image_url; ako ne uspije, šalji fajl kao i ranije
   if (askForm){
     askForm.addEventListener('submit', async (e)=>{
       e.preventDefault();
@@ -331,13 +319,11 @@ document.addEventListener('DOMContentLoaded', () => {
 
       const fd = new FormData(askForm);
 
-      // pokušaj GCS tok (bez mijenjanja rezolucije)
       if (hasFile){
         const f = fileInput.files[0];
         const readUrl = await uploadToGCS(f);
         if (readUrl){
           fd.append('image_url', readUrl);
-          // izbaci binarni fajl iz POST-a da ne ide i on
           fd.delete('slika');
         }
       }
@@ -369,7 +355,6 @@ document.addEventListener('DOMContentLoaded', () => {
 
 window.onload = ()=> setTimeout(scrollToBottom, 150);
 
-/* Plot (isto kao ranije) */
 function transformExpression(expr){
   return expr.replace(/\s+/g,'')
     .replace(/([0-9])([a-zA-Z])/g,'$1*$2')
