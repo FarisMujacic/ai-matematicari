@@ -1,10 +1,9 @@
-# app.py — robustnija verzija (Cloud Run friendly, graceful fallback, reuse zadnje slike, lokalni evaluator za računske izraze)
+# app.py — sve ide preko OpenAI API (bez lokalnog evaluatora), Cloud Run friendly
 
 from flask import Flask, render_template, request, session, redirect, url_for, send_from_directory, jsonify
 from dotenv import load_dotenv
-import os, re, base64, json, html, datetime, time, logging, traceback, ast
+import os, re, base64, json, html, datetime, logging, traceback
 from datetime import timedelta
-from io import BytesIO
 from uuid import uuid4
 
 from openai import OpenAI, APIConnectionError, APIStatusError, RateLimitError
@@ -13,9 +12,8 @@ from flask_cors import CORS
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 
-# httpx je dependency OpenAI SDK-a (za specifične exceptione)
+# httpx je dependency OpenAI SDK-a (za robusnije konekcije / timeoute)
 import httpx
-from fractions import Fraction
 
 # --- (opcionalno) HTML sanitizacija; ako bleach nije instaliran, safe_html je NO-OP ---
 try:
@@ -33,7 +31,7 @@ try:
     from google.cloud import storage
     import google.auth
     from google.auth.transport.requests import Request as GoogleAuthRequest
-except Exception:  # local dev ili nedostaju libs
+except Exception:
     storage = None
 
 load_dotenv(override=True)
@@ -62,7 +60,7 @@ os.makedirs(UPLOAD_DIR, exist_ok=True)
 OPENAI_TIMEOUT = float(os.getenv("OPENAI_TIMEOUT", "240"))
 OPENAI_MAX_RETRIES = int(os.getenv("OPENAI_MAX_RETRIES", "2"))
 
-# Custom httpx.Client za stabilnije konekcije (opcionalno, ali pomaže)
+# Stabilniji http klijent (poželjno na Cloud Run-u)
 http_client = httpx.Client(
     http2=False,
     limits=httpx.Limits(max_keepalive_connections=10, max_connections=100),
@@ -77,7 +75,7 @@ client = OpenAI(
 )
 
 MODEL_TEXT   = os.getenv("OPENAI_MODEL_TEXT", "gpt-5-mini")
-MODEL_VISION = os.getenv("OPENAI_MODEL_VISION", "gpt-4o")  # default vizija = gpt-4o
+MODEL_VISION = os.getenv("OPENAI_MODEL_VISION", "gpt-4o")
 
 # --- Google Sheets (optional) ---
 try:
@@ -93,7 +91,7 @@ except Exception as e:
 # --- GCS config ---
 GCS_BUCKET = (os.getenv("GCS_BUCKET") or "").strip()
 GCS_SIGNED_GET = os.getenv("GCS_SIGNED_GET", "1") == "1"
-GCS_REQUIRED = os.getenv("GCS_REQUIRED", "1") == "1"  # obavezno na Cloud Runu
+GCS_REQUIRED = os.getenv("GCS_REQUIRED", "1") == "1"
 storage_client = None
 if GCS_BUCKET and storage is not None:
     try:
@@ -175,10 +173,10 @@ def should_plot(text: str) -> bool:
         return False
     return _trigger_re.search(text) is not None
 
-# ===================== LLM helpers (sigurni pozivi) =====================
+# ===================== OpenAI helpers =====================
 
 def _compat_params(model: str, max_out: int = 800, temperature: float = 0.2, seed: int | None = 1234):
-    """Vrati dict kompatibilnih parametara (gpt-5 koristi max_completion_tokens)."""
+    """Kompat parametri: gpt-5 koristi max_completion_tokens, stariji koriste max_tokens."""
     params = {"model": model, "temperature": temperature}
     if seed is not None:
         params["seed"] = seed
@@ -194,14 +192,10 @@ def log_openai_error(e, ctx=""):
         resp = getattr(e, "response", None)
         if resp is not None:
             status = getattr(resp, "status_code", None)
-            try:
-                rid = resp.headers.get("x-request-id")
-            except Exception:
-                pass
-            try:
-                body = resp.text[:800]
-            except Exception:
-                body = None
+            try: rid = resp.headers.get("x-request-id")
+            except Exception: pass
+            try: body = resp.text[:800]
+            except Exception: body = None
     except Exception:
         pass
     log.error("OpenAI/HTTP error [%s]: %s | status=%s | req_id=%s | body=%s",
@@ -210,7 +204,7 @@ def log_openai_error(e, ctx=""):
 
 def safe_llm_chat(model: str, messages: list, timeout: float | None = None,
                   max_out: int = 800, temperature: float = 0.2, seed: int | None = 1234):
-    """Siguran chat poziv — vraća response ili None (nikad ne diže 500)."""
+    """Siguran chat poziv — vraća response ili None (ne diže 500)."""
     try:
         cli = client if timeout is None else client.with_options(timeout=timeout)
         params = _compat_params(model, max_out=max_out, temperature=temperature, seed=seed)
@@ -224,118 +218,6 @@ def safe_llm_chat(model: str, messages: list, timeout: float | None = None,
     except Exception as e:
         log_openai_error(e, ctx="chat.completions-unknown")
         return None
-
-# ===================== MALENI DETERM. EVALUATOR ZA RAČUNE =====================
-
-SAFE_EXPR_RE = re.compile(r'^[\s0-9\+\-\*/\.\,\(\)\^:×÷·∙/]+$')
-
-def _normalize_expr(expr: str) -> str:
-    # decimal coma -> tačka; razni znakovi množenja/dijeljenja u standardne
-    return (expr.replace(",", ".")
-                .replace("×", "*").replace("∙", "*").replace("·", "*")
-                .replace("÷", "/").replace(":", "/")
-                .replace("^", "**"))
-
-def _eval_ast(node) -> Fraction:
-    if isinstance(node, ast.Expression):
-        return _eval_ast(node.body)
-    if isinstance(node, ast.Constant) and isinstance(node.value, (int, float)):
-        # float pretvori u razlomak (ako je došao iz "1.5" nakon zamjene zareza)
-        if isinstance(node.value, float):
-            return Fraction(str(node.value))
-        return Fraction(node.value, 1)
-    if isinstance(node, ast.UnaryOp):
-        val = _eval_ast(node.operand)
-        if isinstance(node.op, ast.UAdd):
-            return +val
-        if isinstance(node.op, ast.USub):
-            return -val
-        raise ValueError("Nepodržan unarni operator")
-    if isinstance(node, ast.BinOp):
-        L = _eval_ast(node.left)
-        R = _eval_ast(node.right)
-        if isinstance(node.op, ast.Add):  return L + R
-        if isinstance(node.op, ast.Sub):  return L - R
-        if isinstance(node.op, ast.Mult): return L * R
-        if isinstance(node.op, ast.Div):  return L / R
-        if isinstance(node.op, ast.Pow):
-            if R.denominator == 1 and R.numerator >= 0:
-                return L ** R.numerator
-            raise ValueError("Eksponent mora biti nenegativan cijeli broj")
-        raise ValueError("Nepodržan operator")
-    raise ValueError("Nedozvoljen izraz")
-
-def try_eval_simple_expression(text: str):
-    """
-    Pokušava bez LLM-a riješiti čisto aritmetički izraz (brojevi, + - * / ^ zagrade, razlomci).
-    Vraća (html_string) ili None ako izraz nije “čist”.
-    """
-    if not text:
-        return None
-    s = text.strip()
-    # odbaci ako postoji jednako bilo kakvo slovo (da ne hvatamo algebru)
-    if re.search(r'[A-Za-zšđčćžŠĐČĆŽ]', s):
-        return None
-    if not SAFE_EXPR_RE.match(s):
-        return None
-    try:
-        norm = _normalize_expr(s)
-        tree = ast.parse(norm, mode="eval")
-        result = _eval_ast(tree)
-        # Uredi prikaz: skraćeni razlomak i decimalno
-        num, den = result.numerator, result.denominator
-        if den == 1:
-            frac_tex = f"\\({num}\\)"
-            dec_str = f"{float(result):.10g}"
-        else:
-            frac_tex = f"\\(\\frac{{{num}}}{{{den}}}\\)"
-            dec_str = f"{num/den:.10g}"
-        html_out = (
-            f"<p><b>Rezultat:</b> {frac_tex}"
-            f" <span style='color:#888'>(≈ {dec_str})</span></p>"
-        )
-        return html_out
-    except Exception as e:
-        log.info("Local eval nije uspio (%s), prelazim na LLM.", e)
-        return None
-
-# ===================== Plot extraction =====================
-
-def extract_plot_expression(text, razred=None, history=None):
-    try:
-        system_message = {
-            "role": "system",
-            "content": (
-                "Tvoja uloga je da iz korisničkog pitanja detektuješ da li KORISNIK EKSPPLICITNO TRAŽI CRTEŽ GRAFA. "
-                "Ako korisnik NE traži graf, odgovori tačno 'None'. "
-                "Ako traži graf, i ako je prikladno nacrtati funkciju, odgovori isključivo u obliku 'y = ...'. "
-                "Ako su data jednačina/nejednačina bez traženja grafa, odgovori 'None'. "
-                "Ako je tražen graf nejednačine, takođe odgovori 'None'."
-            )
-        }
-        messages = [system_message]
-        if history:
-            for msg in history[-5:]:
-                messages.append({"role": "user", "content": msg["user"]})
-                messages.append({"role": "assistant", "content": msg["bot"]})
-        messages.append({"role": "user", "content": text})
-
-        response = safe_llm_chat(MODEL_TEXT, messages, timeout=min(OPENAI_TIMEOUT, 60), max_out=80, temperature=0)
-        if response is None:
-            return None
-        raw = response.choices[0].message.content.strip()
-        if raw.lower() == "none":
-            return None
-        cleaned = raw.replace(" ", "")
-        if cleaned.startswith("y="):
-            return cleaned
-        fx_match = re.match(r"f\s*\(\s*x\s*\)\s*=\s*(.+)", raw, flags=re.IGNORECASE)
-        if fx_match:
-            rhs = fx_match.group(1).strip()
-            return "y=" + rhs.replace(" ", "")
-    except Exception as e:
-        log.warning("GPT nije prepoznao funkciju za crtanje: %s", e)
-    return None
 
 # ===================== Vision flows =====================
 
@@ -447,7 +329,6 @@ def get_history_from_request():
 # =============== GCS helpers (keyless signed URLs) ===============
 
 def _gcs_credentials_for_signing():
-    """Obezbijedi access_token + service_account_email za keyless V4 potpisivanje."""
     if storage is None:
         raise RuntimeError("GCS libs not available")
     creds, project_id = google.auth.default()
@@ -494,7 +375,6 @@ def gcs_upload_filestorage(f):
         return None
 
 def gcs_upload_bytes(data: bytes, content_type: str = "image/jpeg", ext: str = ".jpg"):
-    """Best-effort upload čistih bajtova (za <=1.5MB upload da bismo 'zapamtili' sliku)."""
     if not (storage_client and GCS_BUCKET):
         return None
     try:
@@ -602,8 +482,7 @@ def index():
                 )
                 remember_last_image(image_url)
 
-                will_plot = should_plot(combined_text)
-                if (not plot_expression_added) and will_plot:
+                if (not plot_expression_added) and should_plot(combined_text):
                     expression = extract_plot_expression(combined_text, razred=razred, history=history)
                     if expression:
                         odgovor = add_plot_div_once(odgovor, expression); plot_expression_added = True
@@ -637,7 +516,7 @@ def index():
                     odgovor, used_path, used_model = route_image_flow(
                         body, razred, history, requested_tasks=requested
                     )
-                    # best-effort: sačuvaj i URL u GCS da bismo kasnije mogli "uradi 3"
+                    # zapamti URL (best effort) da kasnije može "uradi 3"
                     guessed_ext = os.path.splitext(slika.filename or "")[1].lower() or ".jpg"
                     last_url = gcs_upload_bytes(body, content_type=slika.mimetype or "image/jpeg", ext=guessed_ext)
                     if last_url:
@@ -668,8 +547,7 @@ def index():
                             public_url, razred, history, requested_tasks=requested
                         )
 
-                will_plot = should_plot(combined_text)
-                if (not plot_expression_added) and will_plot:
+                if (not plot_expression_added) and should_plot(combined_text):
                     expression = extract_plot_expression(combined_text, razred=razred, history=history)
                     if expression:
                         odgovor = add_plot_div_once(odgovor, expression); plot_expression_added = True
@@ -689,50 +567,9 @@ def index():
                     return render_template("index.html", history=history, razred=razred)
                 return redirect(url_for("index"))
 
-            # --- PURE TEXT ---
-
-            # 0) PROBAJ LOKALNI EVALUATOR (da jednostavni izrazi ne ovise o LLM-u)
-            local = try_eval_simple_expression(pitanje)
-            if local:
-                odgovor = local
-                history.append({"user": pitanje, "bot": odgovor.strip()})
-                session["history"] = history[-8:]
-                try:
-                    if sheet: sheet.append_row([f"[LOCAL] {pitanje}", odgovor, "local_eval"])
-                except Exception as ee:
-                    log.warning("Sheets append error: %s", ee)
-                if is_ajax:
-                    return render_template("index.html", history=session["history"], razred=razred)
-                return redirect(url_for("index"))
-
-            # 1) Ako korisnik napiše "uradi 3" i imamo zadnju sliku — automatski reuse te slike.
-            last_image_url = session.get("last_image_url")
-            requested = extract_requested_tasks(pitanje)
-            if (not request.files.get("slika")) and (not request.form.get("image_url")) \
-               and last_image_url and (requested or looks_like_task_only(pitanje)):
-                odgovor, used_path, used_model = route_image_flow_url(
-                    last_image_url, razred, history, requested_tasks=requested
-                )
-
-                will_plot = should_plot(pitanje)
-                if (not plot_expression_added) and will_plot:
-                    expression = extract_plot_expression(pitanje, razred=razred, history=history)
-                    if expression:
-                        odgovor = add_plot_div_once(odgovor, expression); plot_expression_added = True
-
-                history.append({"user": pitanje, "bot": odgovor.strip()})
-                session["history"] = history[-8:]
-                try:
-                    if sheet: sheet.append_row([f"[REUSE IMG] {pitanje}", odgovor, f"vision_reuse|{MODEL_VISION}"])
-                except Exception as ee:
-                    log.warning("Sheets append error: %s", ee)
-
-                if is_ajax:
-                    return render_template("index.html", history=session["history"], razred=razred)
-                return redirect(url_for("index"))
-
-            # 2) Inače normalan tekstualni LLM odgovor
+            # --- PURE TEXT (UVJEK PREKO OPENAI) ---
             prompt_za_razred = PROMPTI_PO_RAZREDU[razred]
+            requested = extract_requested_tasks(pitanje)
             only_clause = ""
             strict_geom_policy_text = (
                 " Ako problem uključuje geometriju iz slike ili teksta: "
@@ -777,8 +614,7 @@ def index():
                 raw_odgovor = strip_ascii_graph_blocks(raw_odgovor)
                 odgovor = f"<p>{latexify_fractions(safe_html(raw_odgovor))}</p>"
 
-            will_plot = should_plot(pitanje)
-            if (not plot_expression_added) and will_plot:
+            if (not plot_expression_added) and should_plot(pitanje):
                 expression = extract_plot_expression(pitanje, razred=razred, history=history)
                 if expression:
                     odgovor = add_plot_div_once(odgovor, expression); plot_expression_added = True
@@ -796,7 +632,7 @@ def index():
 
         except Exception as e:
             log.error("FATAL index.POST: %r", e)
-            err_html = FALLBACK_HTML  # uvijek kontrolisana poruka
+            err_html = FALLBACK_HTML
             history.append({"user": request.form.get('pitanje') or "[SLIKA]", "bot": err_html})
             history = history[-8:]
             session["history"] = history
