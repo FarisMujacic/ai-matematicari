@@ -512,11 +512,19 @@ def index():
                 messages.append({"role": "assistant", "content": msg["bot"]})
             messages.append({"role": "user", "content": pitanje})
 
-            response = _openai_chat(MODEL_TEXT, messages, timeout=min(OPENAI_TIMEOUT, 120))
+            response = _openai_chat(MODEL_TEXT, messages, timeout=OPENAI_TIMEOUT)
             actual_model = getattr(response, "model", MODEL_TEXT)
             raw_odgovor = response.choices[0].message.content
             raw_odgovor = strip_ascii_graph_blocks(raw_odgovor)
             odgovor = f"<p>{latexify_fractions(raw_odgovor)}</p>"
+            try:
+                response = _openai_chat(MODEL_TEXT, messages, timeout=OPENAI_TIMEOUT)
+            except (APIConnectionError, APIStatusError, RateLimitError) as e:
+                log.warning("LLM error: %r", e)
+                odgovor = "<p><b>Greška:</b> Model sporo odgovara ili je zauzet. Pokušaj ponovo.</p>"
+                history.append({"user": pitanje, "bot": odgovor})
+                session["history"] = history[-8:]
+                return render_template("index.html", history=history, razred=razred)
 
             will_plot = should_plot(pitanje)
             if (not plot_expression_added) and will_plot:
@@ -618,3 +626,4 @@ if __name__ == "__main__":
     port = int(os.environ.get("PORT", "8080"))
     debug = os.getenv("FLASK_DEBUG", "0") == "1"
     app.run(host="0.0.0.0", port=port, debug=debug)
+
