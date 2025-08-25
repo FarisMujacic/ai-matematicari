@@ -9,24 +9,20 @@ from uuid import uuid4
 from openai import OpenAI, APIConnectionError, APIStatusError, RateLimitError
 from flask_cors import CORS
 
-# Google Sheets (opciono; neće srušiti ako credentials nema)
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 
-# Google Cloud Storage (za upload i signed URL)
 try:
     from google.cloud import storage
 except Exception:
-    storage = None  # lib možda nije instalirana
+    storage = None
 
-# ================== ENV / LOG ==================
 load_dotenv(override=True)
 
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
 log = logging.getLogger("matbot")
 
-# -------- Flask app / session --------
-SECURE_COOKIES = os.getenv("COOKIE_SECURE", "0") == "1"  # lokalno False; na Render/Cloud Run postavi 1 po potrebi
+SECURE_COOKIES = os.getenv("COOKIE_SECURE", "0") == "1"
 app = Flask(__name__)
 app.config.update(
     SESSION_COOKIE_SAMESITE="Lax",
@@ -39,24 +35,19 @@ app.config.update(
 CORS(app, supports_credentials=True)
 app.secret_key = os.getenv("SECRET_KEY", "tajna_lozinka")
 
-# Limit request body-a
 MAX_MB = int(os.getenv("MAX_CONTENT_LENGTH_MB", "20"))
 app.config["MAX_CONTENT_LENGTH"] = MAX_MB * 1024 * 1024
 
-# Upload folder (fallback kada ne koristiš GCS direktno)
 UPLOAD_DIR = "/tmp/uploads"
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
-# OpenAI klijent (veći timeout + retry)
 OPENAI_TIMEOUT = float(os.getenv("OPENAI_TIMEOUT", "240"))
 OPENAI_MAX_RETRIES = int(os.getenv("OPENAI_MAX_RETRIES", "2"))
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"), timeout=OPENAI_TIMEOUT, max_retries=OPENAI_MAX_RETRIES)
 
-# Modeli (možeš prepisati kroz .env)
 MODEL_TEXT   = os.getenv("OPENAI_MODEL_TEXT", "gpt-5-mini")
 MODEL_VISION = os.getenv("OPENAI_MODEL_VISION", "gpt-5")
 
-# Google Sheets (opciono)
 try:
     SCOPE = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
     CREDS_FILE = "credentials.json"
@@ -67,9 +58,9 @@ except Exception as e:
     log.warning("Sheets disabled: %s", e)
     sheet = None
 
-# GCS (za server-side upload i potpisane URL-ove)
 GCS_BUCKET = (os.getenv("GCS_BUCKET") or "").strip()
 GCS_SIGNED_GET = os.getenv("GCS_SIGNED_GET", "1") == "1"
+GCS_REQUIRED = os.getenv("GCS_REQUIRED", "1") == "1"  # obavezno na Cloud Runu
 storage_client = None
 if GCS_BUCKET and storage is not None:
     try:
@@ -84,7 +75,6 @@ else:
     else:
         log.warning("google-cloud-storage lib not available, GCS disabled.")
 
-# ===== Globalni prompti po razredu (jedan izvor istine) =====
 PROMPTI_PO_RAZREDU = {
     "5": "Ti si pomoćnik iz matematike za učenike 5. razreda osnovne škole. Objašnjavaj jednostavnim i razumljivim jezikom. Pomaži učenicima da razumiju zadatke iz prirodnih brojeva, osnovnih računskih operacija, jednostavne geometrije i tekstualnih zadataka. Svako rješenje objasni jasno, korak po korak.",
     "6": "Ti si pomoćnik iz matematike za učenike 6. razreda osnovne škole. Odgovaraj detaljno i pedagoški, koristeći primjere primjerene njihovom uzrastu. Pomaži im da razumiju razlomke, decimalne brojeve, procente, geometriju i tekstualne zadatke. Objasni rješenje jasno i korak po korak.",
@@ -94,7 +84,6 @@ PROMPTI_PO_RAZREDU = {
 }
 DOZVOLJENI_RAZREDI = set(PROMPTI_PO_RAZREDU.keys())
 
-# --- parser brojeva zadataka ---
 ORDINAL_WORDS = {
     "prvi": 1, "drugi": 2, "treći": 3, "treci": 3, "četvrti": 4, "cetvrti": 4,
     "peti": 5, "šesti": 6, "sesti": 6, "sedmi": 7, "osmi": 8, "deveti": 9, "deseti": 10
@@ -151,7 +140,6 @@ def should_plot(text: str) -> bool:
         return False
     return _trigger_re.search(text) is not None
 
-# ---------- OpenAI helpers ----------
 def _openai_chat(model: str, messages: list, timeout: float = None):
     try:
         cli = client if timeout is None else client.with_options(timeout=timeout)
@@ -195,7 +183,6 @@ def extract_plot_expression(text, razred=None, history=None):
         log.warning("GPT nije prepoznao funkciju za crtanje: %s", e)
     return None
 
-# ---------- Vision flows ----------
 def _vision_messages_base(razred: str, history, only_clause: str, strict_geom_policy: str):
     prompt_za_razred = PROMPTI_PO_RAZREDU.get(razred, PROMPTI_PO_RAZREDU["5"])
     system_message = {
@@ -269,7 +256,6 @@ def route_image_flow_url(image_url: str, razred: str, history, requested_tasks=N
     return f"<p>{latexify_fractions(raw)}</p>", "vision_url", actual_model
 
 def route_image_flow(slika_bytes: bytes, razred: str, history, requested_tasks=None):
-    """Base64 path — idealno za male slike (≤ ~1.5 MB)."""
     image_b64 = base64.b64encode(slika_bytes).decode()
     only_clause, strict_geom_policy = _vision_clauses(requested_tasks)
     messages = _vision_messages_base(razred, history, only_clause, strict_geom_policy)
@@ -296,7 +282,6 @@ def route_image_flow(slika_bytes: bytes, razred: str, history, requested_tasks=N
     raw = strip_ascii_graph_blocks(raw)
     return f"<p>{latexify_fractions(raw)}</p>", "vision_direct", actual_model
 
-# ----------------- pomoćni parser za historiju (bezbjedan fallback) -----------------
 def get_history_from_request():
     try:
         hx = request.form.get("history_json")
@@ -308,9 +293,7 @@ def get_history_from_request():
         pass
     return None
 
-# ---- GCS helpers ----
 def gcs_upload_filestorage(f):
-    """Server-side upload fajla u GCS i vrati URL za čitanje (signed GET ili public)."""
     if not (storage_client and GCS_BUCKET):
         return None
     ext = os.path.splitext(f.filename or "")[1].lower() or ".jpg"
@@ -331,7 +314,6 @@ def gcs_upload_filestorage(f):
                 blob.make_public()
                 url = blob.public_url
             except Exception:
-                # fallback na signed GET
                 url = blob.generate_signed_url(
                     version="v4",
                     expiration=datetime.timedelta(minutes=45),
@@ -344,7 +326,6 @@ def gcs_upload_filestorage(f):
 
 @app.post("/gcs/signed-upload")
 def gcs_signed_upload():
-    """Frontend traži potpisani URL za direktni PUT u GCS + read URL za kasnije čitanje."""
     if not (storage_client and GCS_BUCKET):
         return jsonify({"error": "GCS not configured"}), 400
     try:
@@ -387,22 +368,17 @@ def gcs_signed_upload():
         log.error("signed-upload error: %s", e)
         return jsonify({"error": "failed to create signed url"}), 500
 
-# ---- Lokalni fallback serviranja uploadovane slike kao URL (/tmp/uploads) ----
 @app.get("/uploads/<name>")
 def uploads(name):
     return send_from_directory(UPLOAD_DIR, name)
 
-# ---- Glavna ruta (MAT-BOT) — BEZ PRIJAVE ----
 @app.route("/", methods=["GET", "POST"])
 def index():
     plot_expression_added = False
     history = get_history_from_request() or session.get("history", [])
-
-    # Uvijek uzmi razred iz forme (ako je POST) ili iz sesije
     razred = (request.form.get("razred") or session.get("razred") or "").strip()
 
     if request.method == "POST":
-        # Validacija razreda
         if razred not in DOZVOLJENI_RAZREDI:
             return render_template("index.html",
                                    history=history, razred=razred,
@@ -412,18 +388,15 @@ def index():
         try:
             pitanje = (request.form.get("pitanje", "") or "").strip()
             slika = request.files.get("slika")
-            image_url = (request.form.get("image_url") or "").strip()  # kad klijent koristi GCS signed upload
+            image_url = (request.form.get("image_url") or "").strip()
             is_ajax = request.form.get("ajax") == "1" or request.headers.get("X-Requested-With") == "XMLHttpRequest"
 
-            # --- slika preko URL-a (preporučeno) ---
             if image_url:
                 combined_text = pitanje
                 requested = extract_requested_tasks(combined_text)
                 odgovor, used_path, used_model = route_image_flow_url(
                     image_url, razred, history, requested_tasks=requested
                 )
-
-                # graf?
                 will_plot = should_plot(combined_text)
                 if (not plot_expression_added) and will_plot:
                     expression = extract_plot_expression(combined_text, razred=razred, history=history)
@@ -445,9 +418,7 @@ def index():
                     return render_template("index.html", history=history, razred=razred)
                 return redirect(url_for("index"))
 
-            # --- slika uploadovana kroz <input type=file> ---
             if slika and slika.filename:
-                # 1) Ako je mala (≤1.5MB) => base64 (nema eksternog fetch-a)
                 slika.stream.seek(0, os.SEEK_END)
                 size_bytes = slika.stream.tell()
                 slika.stream.seek(0)
@@ -461,14 +432,18 @@ def index():
                         body, razred, history, requested_tasks=requested
                     )
                 else:
-                    # 2) Veća slika => pokušaj server-side GCS upload
+                    if not (storage_client and GCS_BUCKET) and (GCS_REQUIRED or os.getenv("K_SERVICE")):
+                        return render_template("index.html", history=history, razred=razred,
+                                               error="GCS nije konfigurisan – upload velikih slika nije moguć."), 400
                     gcs_url = gcs_upload_filestorage(slika)
                     if gcs_url:
                         odgovor, used_path, used_model = route_image_flow_url(
                             gcs_url, razred, history, requested_tasks=requested
                         )
                     else:
-                        # 3) Ako GCS nije dostupan => lokalni /uploads
+                        if GCS_REQUIRED or os.getenv("K_SERVICE"):
+                            return render_template("index.html", history=history, razred=razred,
+                                                   error="GCS upload nije uspio (CORS/permisije)."), 400
                         ext = os.path.splitext(slika.filename)[1].lower() or ".jpg"
                         fname = f"{uuid4().hex}{ext}"
                         path  = os.path.join(UPLOAD_DIR, fname)
@@ -480,7 +455,6 @@ def index():
                             public_url, razred, history, requested_tasks=requested
                         )
 
-                # graf?
                 will_plot = should_plot(combined_text)
                 if (not plot_expression_added) and will_plot:
                     expression = extract_plot_expression(combined_text, razred=razred, history=history)
@@ -502,7 +476,6 @@ def index():
                     return render_template("index.html", history=history, razred=razred)
                 return redirect(url_for("index"))
 
-            # --- tekst ---
             prompt_za_razred = PROMPTI_PO_RAZREDU[razred]
             requested = extract_requested_tasks(pitanje)
             only_clause = ""
@@ -572,10 +545,8 @@ def index():
                 return render_template("index.html", history=history, razred=razred)
             return redirect(url_for("index"))
 
-    # GET
     return render_template("index.html", history=history, razred=razred)
 
-# ---- Error handler za prevelik upload ----
 @app.errorhandler(413)
 def too_large(e):
     msg = f"<p><b>Greška:</b> Fajl je prevelik (limit {MAX_MB} MB). Pokušaj ponovo (npr. fotografija bez Live/HEIC duplih snimaka), ili koristi GCS upload.</p>"
@@ -644,7 +615,6 @@ def app_health():
     }, (200 if not problems else 500)
 
 if __name__ == "__main__":
-    # Lokalno: sluša na PORT ili 8080
     port = int(os.environ.get("PORT", "8080"))
     debug = os.getenv("FLASK_DEBUG", "0") == "1"
     app.run(host="0.0.0.0", port=port, debug=debug)
