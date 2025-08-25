@@ -1,4 +1,4 @@
-# app.py
+# app.py (fixed for Cloud Run + keyless GCS signed URLs)
 from flask import Flask, render_template, request, session, redirect, url_for, send_from_directory, jsonify
 from dotenv import load_dotenv
 import os, re, base64, json, html, datetime, time, logging
@@ -12,9 +12,12 @@ from flask_cors import CORS
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 
+# --- GCP / GCS helpers (keyless signing) ---
 try:
     from google.cloud import storage
-except Exception:
+    import google.auth
+    from google.auth.transport.requests import Request as GoogleAuthRequest
+except Exception:  # local dev or missing libs
     storage = None
 
 load_dotenv(override=True)
@@ -30,7 +33,6 @@ app.config.update(
     SESSION_COOKIE_NAME="matbot_session_v2",
     PERMANENT_SESSION_LIFETIME=timedelta(hours=12),
     SEND_FILE_MAX_AGE_DEFAULT=0,
-    ETAG_DISABLED=True,
 )
 CORS(app, supports_credentials=True)
 app.secret_key = os.getenv("SECRET_KEY", "tajna_lozinka")
@@ -48,6 +50,7 @@ client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"), timeout=OPENAI_TIMEOUT, max
 MODEL_TEXT   = os.getenv("OPENAI_MODEL_TEXT", "gpt-5-mini")
 MODEL_VISION = os.getenv("OPENAI_MODEL_VISION", "gpt-5")
 
+# --- Google Sheets (optional) ---
 try:
     SCOPE = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
     CREDS_FILE = "credentials.json"
@@ -58,6 +61,7 @@ except Exception as e:
     log.warning("Sheets disabled: %s", e)
     sheet = None
 
+# --- GCS config ---
 GCS_BUCKET = (os.getenv("GCS_BUCKET") or "").strip()
 GCS_SIGNED_GET = os.getenv("GCS_SIGNED_GET", "1") == "1"
 GCS_REQUIRED = os.getenv("GCS_REQUIRED", "1") == "1"  # obavezno na Cloud Runu
@@ -75,6 +79,7 @@ else:
     else:
         log.warning("google-cloud-storage lib not available, GCS disabled.")
 
+# ===================== Business logic helpers =====================
 PROMPTI_PO_RAZREDU = {
     "5": "Ti si pomoćnik iz matematike za učenike 5. razreda osnovne škole. Objašnjavaj jednostavnim i razumljivim jezikom. Pomaži učenicima da razumiju zadatke iz prirodnih brojeva, osnovnih računskih operacija, jednostavne geometrije i tekstualnih zadataka. Svako rješenje objasni jasno, korak po korak.",
     "6": "Ti si pomoćnik iz matematike za učenike 6. razreda osnovne škole. Odgovaraj detaljno i pedagoški, koristeći primjere primjerene njihovom uzrastu. Pomaži im da razumiju razlomke, decimalne brojeve, procente, geometriju i tekstualne zadatke. Objasni rješenje jasno i korak po korak.",
@@ -92,6 +97,7 @@ _task_num_re = re.compile(
     r"(?:zadatak\s*(?:broj\s*)?(\d{1,2}))|(?:\b(\d{1,2})\s*\.)|(?:\b(" + "|".join(ORDINAL_WORDS.keys()) + r")\b)",
     flags=re.IGNORECASE
 )
+
 def extract_requested_tasks(text: str):
     if not text:
         return []
@@ -140,6 +146,8 @@ def should_plot(text: str) -> bool:
         return False
     return _trigger_re.search(text) is not None
 
+# ===================== OpenAI helpers =====================
+
 def _openai_chat(model: str, messages: list, timeout: float = None):
     try:
         cli = client if timeout is None else client.with_options(timeout=timeout)
@@ -148,6 +156,8 @@ def _openai_chat(model: str, messages: list, timeout: float = None):
         raise e
     except Exception as e:
         raise e
+
+# ===================== Plot extraction =====================
 
 def extract_plot_expression(text, razred=None, history=None):
     try:
@@ -182,6 +192,8 @@ def extract_plot_expression(text, razred=None, history=None):
     except Exception as e:
         log.warning("GPT nije prepoznao funkciju za crtanje: %s", e)
     return None
+
+# ===================== Vision flows =====================
 
 def _vision_messages_base(razred: str, history, only_clause: str, strict_geom_policy: str):
     prompt_za_razred = PROMPTI_PO_RAZREDU.get(razred, PROMPTI_PO_RAZREDU["5"])
@@ -282,6 +294,8 @@ def route_image_flow(slika_bytes: bytes, razred: str, history, requested_tasks=N
     raw = strip_ascii_graph_blocks(raw)
     return f"<p>{latexify_fractions(raw)}</p>", "vision_direct", actual_model
 
+# ===================== Request helpers =====================
+
 def get_history_from_request():
     try:
         hx = request.form.get("history_json")
@@ -293,6 +307,33 @@ def get_history_from_request():
         pass
     return None
 
+# =============== GCS helpers (keyless signed URLs) ===============
+
+def _gcs_credentials_for_signing():
+    """Obezbijedi access_token + service_account_email za keyless V4 potpisivanje."""
+    creds, project_id = google.auth.default()
+    # Refresh da popuni token
+    creds.refresh(GoogleAuthRequest())
+    # Neke ADC konfiguracije mogu vratiti compute_engine creds bez emaila; pokušaj doći do emaila preko target SA
+    svc_email = getattr(creds, "service_account_email", None) or os.getenv("GOOGLE_SERVICE_ACCOUNT_EMAIL")
+    if not svc_email:
+        raise RuntimeError("No service_account_email available for signing; set GOOGLE_SERVICE_ACCOUNT_EMAIL or use a SA on Cloud Run.")
+    return creds, svc_email
+
+def _signed_url(blob, method: str, minutes: int = 15, content_type: str | None = None):
+    creds, svc_email = _gcs_credentials_for_signing()
+    params = dict(
+        version="v4",
+        expiration=datetime.timedelta(minutes=minutes),
+        method=method,
+        service_account_email=svc_email,
+        access_token=creds.token,
+    )
+    if content_type:
+        params["content_type"] = content_type
+    return blob.generate_signed_url(**params)
+
+# Upload direktno iz Flask FileStorage-a (bez signed URL-a)
 def gcs_upload_filestorage(f):
     if not (storage_client and GCS_BUCKET):
         return None
@@ -304,25 +345,19 @@ def gcs_upload_filestorage(f):
         f.stream.seek(0)
         blob.upload_from_file(f.stream, content_type=f.mimetype or "application/octet-stream")
         if GCS_SIGNED_GET:
-            url = blob.generate_signed_url(
-                version="v4",
-                expiration=datetime.timedelta(minutes=45),
-                method="GET",
-            )
+            url = _signed_url(blob, method="GET", minutes=45)
         else:
             try:
                 blob.make_public()
                 url = blob.public_url
             except Exception:
-                url = blob.generate_signed_url(
-                    version="v4",
-                    expiration=datetime.timedelta(minutes=45),
-                    method="GET",
-                )
+                url = _signed_url(blob, method="GET", minutes=45)
         return url
     except Exception as e:
         log.error("GCS upload failed: %s", e)
         return None
+
+# ===================== Routes =====================
 
 @app.post("/gcs/signed-upload")
 def gcs_signed_upload():
@@ -339,38 +374,29 @@ def gcs_signed_upload():
         bucket = storage_client.bucket(GCS_BUCKET)
         blob = bucket.blob(blob_name)
 
-        upload_url = blob.generate_signed_url(
-            version="v4",
-            expiration=datetime.timedelta(minutes=15),
-            method="PUT",
-            content_type=content_type,
-        )
-
+        upload_url = _signed_url(blob, method="PUT", minutes=15, content_type=content_type)
         if GCS_SIGNED_GET:
-            read_url = blob.generate_signed_url(
-                version="v4",
-                expiration=datetime.timedelta(minutes=45),
-                method="GET",
-            )
+            read_url = _signed_url(blob, method="GET", minutes=45)
         else:
             try:
                 blob.make_public()
                 read_url = blob.public_url
             except Exception:
-                read_url = blob.generate_signed_url(
-                    version="v4",
-                    expiration=datetime.timedelta(minutes=45),
-                    method="GET",
-                )
+                read_url = _signed_url(blob, method="GET", minutes=45)
 
-        return jsonify({"uploadUrl": upload_url, "readUrl": read_url})
+        return jsonify({"uploadUrl": upload_url, "readUrl": read_url, "object": blob_name})
     except Exception as e:
         log.error("signed-upload error: %s", e)
-        return jsonify({"error": "failed to create signed url"}), 500
+        return jsonify({"error": "failed to create signed url", "detail": str(e)}), 500
 
 @app.get("/uploads/<name>")
 def uploads(name):
     return send_from_directory(UPLOAD_DIR, name)
+
+@app.get("/favicon.ico")
+def favicon():
+    # Izbjegni 404 spam u logovima
+    return ("", 204)
 
 @app.route("/", methods=["GET", "POST"])
 def index():
@@ -391,6 +417,7 @@ def index():
             image_url = (request.form.get("image_url") or "").strip()
             is_ajax = request.form.get("ajax") == "1" or request.headers.get("X-Requested-With") == "XMLHttpRequest"
 
+            # --- IMAGE VIA URL ---
             if image_url:
                 combined_text = pitanje
                 requested = extract_requested_tasks(combined_text)
@@ -418,6 +445,7 @@ def index():
                     return render_template("index.html", history=history, razred=razred)
                 return redirect(url_for("index"))
 
+            # --- IMAGE VIA FILE UPLOAD ---
             if slika and slika.filename:
                 slika.stream.seek(0, os.SEEK_END)
                 size_bytes = slika.stream.tell()
@@ -476,6 +504,7 @@ def index():
                     return render_template("index.html", history=history, razred=razred)
                 return redirect(url_for("index"))
 
+            # --- PURE TEXT ---
             prompt_za_razred = PROMPTI_PO_RAZREDU[razred]
             requested = extract_requested_tasks(pitanje)
             only_clause = ""
@@ -512,19 +541,12 @@ def index():
                 messages.append({"role": "assistant", "content": msg["bot"]})
             messages.append({"role": "user", "content": pitanje})
 
+            # Jedan poziv je dovoljan (bio je duplikat ranije)
             response = _openai_chat(MODEL_TEXT, messages, timeout=OPENAI_TIMEOUT)
             actual_model = getattr(response, "model", MODEL_TEXT)
             raw_odgovor = response.choices[0].message.content
             raw_odgovor = strip_ascii_graph_blocks(raw_odgovor)
             odgovor = f"<p>{latexify_fractions(raw_odgovor)}</p>"
-            try:
-                response = _openai_chat(MODEL_TEXT, messages, timeout=OPENAI_TIMEOUT)
-            except (APIConnectionError, APIStatusError, RateLimitError) as e:
-                log.warning("LLM error: %r", e)
-                odgovor = "<p><b>Greška:</b> Model sporo odgovara ili je zauzet. Pokušaj ponovo.</p>"
-                history.append({"user": pitanje, "bot": odgovor})
-                session["history"] = history[-8:]
-                return render_template("index.html", history=history, razred=razred)
 
             will_plot = should_plot(pitanje)
             if (not plot_expression_added) and will_plot:
@@ -582,27 +604,27 @@ def add_no_cache_headers(resp):
     ancestors = os.getenv("FRAME_ANCESTORS", "").strip()
     if ancestors:
         resp.headers["Content-Security-Policy"] = f"frame-ancestors {ancestors}"
-    try:
-        del resp.headers["X-Frame-Options"]
-    except KeyError:
-        pass
+    resp.headers.pop("X-Frame-Options", None)
     return resp
+
+# Ukloni ASCII grafove koji znaju biti ogromni u code fence-u
 
 def strip_ascii_graph_blocks(text: str) -> str:
     fence_re = re.compile(r"```([\s\S]*?)```", flags=re.MULTILINE)
+
     def looks_like_ascii_graph(block: str) -> bool:
         sample = block.strip()
-        if len(sample) == 0: return False
+        if len(sample) == 0:
+            return False
         allowed = set(" \t\r\n-_|*^><().,/\\0123456789xyXY")
         ratio_allowed = sum(c in allowed for c in sample) / len(sample)
         lines = sample.splitlines()
         return (ratio_allowed > 0.9) and (3 <= len(lines) <= 40)
+
     def repl(m):
         block = m.group(1)
         return "" if looks_like_ascii_graph(block) else m.group(0)
-    text = re.sub(r"(Grafički prikaz.*?:\s*)?```[\s\S]*?```",
-                  lambda m: "" if "```" in m.group(0) else m.group(0),
-                  text, flags=re.IGNORECASE)
+
     return fence_re.sub(repl, text)
 
 @app.get("/app-health")
@@ -626,4 +648,3 @@ if __name__ == "__main__":
     port = int(os.environ.get("PORT", "8080"))
     debug = os.getenv("FLASK_DEBUG", "0") == "1"
     app.run(host="0.0.0.0", port=port, debug=debug)
-
