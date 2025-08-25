@@ -173,20 +173,10 @@ def should_plot(text: str) -> bool:
 
 # ===================== OpenAI helpers =====================
 
-def _compat_params(model: str, max_out: int = 800, temperature: float | None = 0.2, seed: int | None = 1234):
-    """
-    Kompat parametri za chat.completions:
-    - UVIJEK koristimo 'max_tokens'
-    - Za gpt-5* ne šaljemo temperature/seed (ti modeli drže default)
-    """
-    params = {"model": model, "max_tokens": max_out}
-    is_gpt5 = str(model).startswith("gpt-5")
-    if not is_gpt5:
-        if temperature is not None:
-            params["temperature"] = temperature
-        if seed is not None:
-            params["seed"] = seed
-    return params
+def _compat_params(model: str, max_out: int = 800):
+    # chat.completions: univerzalno samo max_tokens – bez temperature i seed
+    return {"model": model, "max_tokens": max_out}
+
 
 def log_openai_error(e, ctx=""):
     rid = None; status = None; body = None
@@ -204,34 +194,22 @@ def log_openai_error(e, ctx=""):
               ctx, e.__class__.__name__, status, rid, body)
     log.error("Traceback: %s", traceback.format_exc())
 
+from openai import BadRequestError
+
 def safe_llm_chat(model: str, messages: list, timeout: float | None = None,
-                  max_out: int = 800, temperature: float | None = 0.2, seed: int | None = 1234):
-    """
-    Siguran chat poziv:
-    - Pokuša sa kompat paramima
-    - Ako dobije 400 zbog temperature/seed, ponovi bez njih
-    """
+                  max_out: int = 800):
     try:
         cli = client if timeout is None else client.with_options(timeout=timeout)
-        params = _compat_params(model, max_out=max_out, temperature=temperature, seed=seed)
+        params = _compat_params(model, max_out=max_out)
         params["messages"] = messages
         return cli.chat.completions.create(**params)
     except BadRequestError as e:
-        body = ""
+        # eksplicitno logaj tijelo 400 da se vidi tačan razlog u Cloud Run logu
         try:
-            body = (e.response.text or "")
+            body = e.response.text
         except Exception:
             body = str(e)
-        if ("temperature" in body) or ("seed" in body) or ("unsupported_value" in body):
-            try:
-                cli = client if timeout is None else client.with_options(timeout=timeout)
-                retry_params = _compat_params(model, max_out=max_out, temperature=None, seed=None)
-                retry_params["messages"] = messages
-                return cli.chat.completions.create(**retry_params)
-            except Exception as e2:
-                log_openai_error(e2, ctx="chat.retry-without-temp-seed")
-                return None
-        log_openai_error(e, ctx="chat.badrequest")
+        log.error("OpenAI 400: %s", body)
         return None
     except (APIConnectionError, APIStatusError, RateLimitError,
             httpx.TimeoutException, httpx.ConnectError,
@@ -241,6 +219,7 @@ def safe_llm_chat(model: str, messages: list, timeout: float | None = None,
     except Exception as e:
         log_openai_error(e, ctx="chat.completions-unknown")
         return None
+
 
 # ===================== Plot extraction =====================
 
