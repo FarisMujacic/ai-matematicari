@@ -6,14 +6,13 @@ import os, re, base64, json, html, datetime, logging, traceback
 from datetime import timedelta
 from uuid import uuid4
 
-from openai import OpenAI, APIConnectionError, APIStatusError, RateLimitError
+from openai import OpenAI, APIConnectionError, APIStatusError, RateLimitError, BadRequestError
 from flask_cors import CORS
 
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 
-# httpx je dependency OpenAI SDK-a (za robusnije konekcije / timeoute)
-import httpx
+import httpx  # robusnije konekcije
 
 # --- (opcionalno) HTML sanitizacija; ako bleach nije instaliran, safe_html je NO-OP ---
 try:
@@ -60,7 +59,6 @@ os.makedirs(UPLOAD_DIR, exist_ok=True)
 OPENAI_TIMEOUT = float(os.getenv("OPENAI_TIMEOUT", "240"))
 OPENAI_MAX_RETRIES = int(os.getenv("OPENAI_MAX_RETRIES", "2"))
 
-# Stabilniji http klijent (poželjno na Cloud Run-u)
 http_client = httpx.Client(
     http2=False,
     limits=httpx.Limits(max_keepalive_connections=10, max_connections=100),
@@ -175,15 +173,19 @@ def should_plot(text: str) -> bool:
 
 # ===================== OpenAI helpers =====================
 
-def _compat_params(model: str, max_out: int = 800, temperature: float = 0.2, seed: int | None = 1234):
-    """Kompat parametri: gpt-5 koristi max_completion_tokens, stariji koriste max_tokens."""
-    params = {"model": model, "temperature": temperature}
-    if seed is not None:
-        params["seed"] = seed
-    if "gpt-5" in model:
-        params["max_completion_tokens"] = max_out
-    else:
-        params["max_tokens"] = max_out
+def _compat_params(model: str, max_out: int = 800, temperature: float | None = 0.2, seed: int | None = 1234):
+    """
+    Kompat parametri za chat.completions:
+    - UVIJEK koristimo 'max_tokens'
+    - Za gpt-5* ne šaljemo temperature/seed (ti modeli drže default)
+    """
+    params = {"model": model, "max_tokens": max_out}
+    is_gpt5 = str(model).startswith("gpt-5")
+    if not is_gpt5:
+        if temperature is not None:
+            params["temperature"] = temperature
+        if seed is not None:
+            params["seed"] = seed
     return params
 
 def log_openai_error(e, ctx=""):
@@ -203,13 +205,34 @@ def log_openai_error(e, ctx=""):
     log.error("Traceback: %s", traceback.format_exc())
 
 def safe_llm_chat(model: str, messages: list, timeout: float | None = None,
-                  max_out: int = 800, temperature: float = 0.2, seed: int | None = 1234):
-    """Siguran chat poziv — vraća response ili None (ne diže 500)."""
+                  max_out: int = 800, temperature: float | None = 0.2, seed: int | None = 1234):
+    """
+    Siguran chat poziv:
+    - Pokuša sa kompat paramima
+    - Ako dobije 400 zbog temperature/seed, ponovi bez njih
+    """
     try:
         cli = client if timeout is None else client.with_options(timeout=timeout)
         params = _compat_params(model, max_out=max_out, temperature=temperature, seed=seed)
         params["messages"] = messages
         return cli.chat.completions.create(**params)
+    except BadRequestError as e:
+        body = ""
+        try:
+            body = (e.response.text or "")
+        except Exception:
+            body = str(e)
+        if ("temperature" in body) or ("seed" in body) or ("unsupported_value" in body):
+            try:
+                cli = client if timeout is None else client.with_options(timeout=timeout)
+                retry_params = _compat_params(model, max_out=max_out, temperature=None, seed=None)
+                retry_params["messages"] = messages
+                return cli.chat.completions.create(**retry_params)
+            except Exception as e2:
+                log_openai_error(e2, ctx="chat.retry-without-temp-seed")
+                return None
+        log_openai_error(e, ctx="chat.badrequest")
+        return None
     except (APIConnectionError, APIStatusError, RateLimitError,
             httpx.TimeoutException, httpx.ConnectError,
             httpx.RemoteProtocolError, httpx.TooManyRedirects) as e:
@@ -218,6 +241,44 @@ def safe_llm_chat(model: str, messages: list, timeout: float | None = None,
     except Exception as e:
         log_openai_error(e, ctx="chat.completions-unknown")
         return None
+
+# ===================== Plot extraction =====================
+
+def extract_plot_expression(text, razred=None, history=None):
+    try:
+        system_message = {
+            "role": "system",
+            "content": (
+                "Tvoja uloga je da iz korisničkog pitanja detektuješ da li KORISNIK EKSPPLICITNO TRAŽI CRTEŽ GRAFA. "
+                "Ako korisnik NE traži graf, odgovori tačno 'None'. "
+                "Ako traži graf, i ako je prikladno nacrtati funkciju, odgovori isključivo u obliku 'y = ...'. "
+                "Ako su data jednačina/nejednačina bez traženja grafa, odgovori 'None'. "
+                "Ako je tražen graf nejednačine, takođe odgovori 'None'."
+            )
+        }
+        messages = [system_message]
+        if history:
+            for msg in history[-5:]:
+                messages.append({"role": "user", "content": msg["user"]})
+                messages.append({"role": "assistant", "content": msg["bot"]})
+        messages.append({"role": "user", "content": text})
+
+        resp = safe_llm_chat(MODEL_TEXT, messages, timeout=min(OPENAI_TIMEOUT, 60), max_out=80, temperature=0)
+        if resp is None:
+            return None
+        raw = (resp.choices[0].message.content or "").strip()
+        if raw.lower() == "none":
+            return None
+        cleaned = raw.replace(" ", "")
+        if cleaned.startswith("y="):
+            return cleaned
+        fx_match = re.match(r"f\s*\(\s*x\s*\)\s*=\s*(.+)", raw, flags=re.IGNORECASE)
+        if fx_match:
+            rhs = fx_match.group(1).strip()
+            return "y=" + rhs.replace(" ", "")
+    except Exception as e:
+        log.warning("GPT nije prepoznao funkciju za crtanje: %s", e)
+    return None
 
 # ===================== Vision flows =====================
 
@@ -516,7 +577,6 @@ def index():
                     odgovor, used_path, used_model = route_image_flow(
                         body, razred, history, requested_tasks=requested
                     )
-                    # zapamti URL (best effort) da kasnije može "uradi 3"
                     guessed_ext = os.path.splitext(slika.filename or "")[1].lower() or ".jpg"
                     last_url = gcs_upload_bytes(body, content_type=slika.mimetype or "image/jpeg", ext=guessed_ext)
                     if last_url:
