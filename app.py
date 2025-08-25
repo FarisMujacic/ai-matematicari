@@ -1,7 +1,8 @@
-# app.py (fixed for Cloud Run + keyless GCS signed URLs)
+# app.py — robustnija verzija (Cloud Run friendly, graceful fallback, reuse zadnje slike)
+
 from flask import Flask, render_template, request, session, redirect, url_for, send_from_directory, jsonify
 from dotenv import load_dotenv
-import os, re, base64, json, html, datetime, time, logging
+import os, re, base64, json, html, datetime, time, logging, traceback
 from datetime import timedelta
 from io import BytesIO
 from uuid import uuid4
@@ -12,12 +13,26 @@ from flask_cors import CORS
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 
+# httpx je dependency OpenAI SDK-a (za specifične exceptione)
+import httpx
+
+# --- (opcionalno) HTML sanitizacija; ako bleach nije instaliran, safe_html je NO-OP ---
+try:
+    import bleach
+    ALLOWED_TAGS = ["p","b","i","em","strong","u","sub","sup","ul","ol","li","span","br","code","pre","hr"]
+    ALLOWED_ATTRS = {"span": ["class"], "p": ["class"]}
+    def safe_html(s: str) -> str:
+        return bleach.clean(s, tags=ALLOWED_TAGS, attributes=ALLOWED_ATTRS, strip=True)
+except Exception:
+    def safe_html(s: str) -> str:
+        return s
+
 # --- GCP / GCS helpers (keyless signing) ---
 try:
     from google.cloud import storage
     import google.auth
     from google.auth.transport.requests import Request as GoogleAuthRequest
-except Exception:  # local dev or missing libs
+except Exception:  # local dev ili nedostaju libs
     storage = None
 
 load_dotenv(override=True)
@@ -45,7 +60,20 @@ os.makedirs(UPLOAD_DIR, exist_ok=True)
 
 OPENAI_TIMEOUT = float(os.getenv("OPENAI_TIMEOUT", "240"))
 OPENAI_MAX_RETRIES = int(os.getenv("OPENAI_MAX_RETRIES", "2"))
-client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"), timeout=OPENAI_TIMEOUT, max_retries=OPENAI_MAX_RETRIES)
+
+# Custom httpx.Client za stabilnije konekcije (opcionalno, ali pomaže)
+http_client = httpx.Client(
+    http2=False,
+    limits=httpx.Limits(max_keepalive_connections=10, max_connections=100),
+    timeout=httpx.Timeout(connect=10, read=OPENAI_TIMEOUT, write=30, pool=OPENAI_TIMEOUT),
+)
+
+client = OpenAI(
+    api_key=os.getenv("OPENAI_API_KEY"),
+    timeout=OPENAI_TIMEOUT,
+    max_retries=OPENAI_MAX_RETRIES,
+    http_client=http_client,
+)
 
 MODEL_TEXT   = os.getenv("OPENAI_MODEL_TEXT", "gpt-5-mini")
 MODEL_VISION = os.getenv("OPENAI_MODEL_VISION", "gpt-5")
@@ -146,16 +174,55 @@ def should_plot(text: str) -> bool:
         return False
     return _trigger_re.search(text) is not None
 
-# ===================== OpenAI helpers =====================
+# ===================== LLM helpers (sigurni pozivi) =====================
 
-def _openai_chat(model: str, messages: list, timeout: float = None):
+def _compat_params(model: str, max_out: int = 800, temperature: float = 0.2, seed: int | None = 1234):
+    """Vrati dict kompatibilnih parametara (gpt-5 koristi max_completion_tokens)."""
+    params = {"model": model, "temperature": temperature}
+    if seed is not None:
+        params["seed"] = seed
+    if "gpt-5" in model:
+        params["max_completion_tokens"] = max_out
+    else:
+        params["max_tokens"] = max_out
+    return params
+
+def log_openai_error(e, ctx=""):
+    rid = None; status = None; body = None
+    try:
+        resp = getattr(e, "response", None)
+        if resp is not None:
+            status = getattr(resp, "status_code", None)
+            try:
+                rid = resp.headers.get("x-request-id")
+            except Exception:
+                pass
+            try:
+                body = resp.text[:800]
+            except Exception:
+                body = None
+    except Exception:
+        pass
+    log.error("OpenAI/HTTP error [%s]: %s | status=%s | req_id=%s | body=%s",
+              ctx, e.__class__.__name__, status, rid, body)
+    log.error("Traceback: %s", traceback.format_exc())
+
+def safe_llm_chat(model: str, messages: list, timeout: float | None = None,
+                  max_out: int = 800, temperature: float = 0.2, seed: int | None = 1234):
+    """Siguran chat poziv — vraća response ili None (nikad ne diže 500)."""
     try:
         cli = client if timeout is None else client.with_options(timeout=timeout)
-        return cli.chat.completions.create(model=model, messages=messages)
-    except (APIConnectionError, APIStatusError, RateLimitError) as e:
-        raise e
+        params = _compat_params(model, max_out=max_out, temperature=temperature, seed=seed)
+        params["messages"] = messages
+        return cli.chat.completions.create(**params)
+    except (APIConnectionError, APIStatusError, RateLimitError,
+            httpx.TimeoutException, httpx.ConnectError,
+            httpx.RemoteProtocolError, httpx.TooManyRedirects) as e:
+        log_openai_error(e, ctx="chat.completions")
+        return None
     except Exception as e:
-        raise e
+        log_openai_error(e, ctx="chat.completions-unknown")
+        return None
 
 # ===================== Plot extraction =====================
 
@@ -178,7 +245,9 @@ def extract_plot_expression(text, razred=None, history=None):
                 messages.append({"role": "assistant", "content": msg["bot"]})
         messages.append({"role": "user", "content": text})
 
-        response = _openai_chat(MODEL_TEXT, messages, timeout=min(OPENAI_TIMEOUT, 60))
+        response = safe_llm_chat(MODEL_TEXT, messages, timeout=min(OPENAI_TIMEOUT, 60), max_out=80, temperature=0)
+        if response is None:
+            return None
         raw = response.choices[0].message.content.strip()
         if raw.lower() == "none":
             return None
@@ -246,26 +315,19 @@ def route_image_flow_url(image_url: str, razred: str, history, requested_tasks=N
     user_content.append({"type": "image_url", "image_url": {"url": image_url}})
     messages.append({"role": "user", "content": user_content})
 
-    try:
-        resp = _openai_chat(MODEL_VISION, messages, timeout=OPENAI_TIMEOUT)
-    except (APIConnectionError, APIStatusError, RateLimitError) as e:
-        log.warning("OpenAI vision URL error: %r", e)
-        msg = str(e)
-        if "Timeout while downloading" in msg or "timed out while downloading" in msg:
-            return (
-                "<p><b>Greška:</b> Slika se nije mogla preuzeti dovoljno brzo. "
-                "Pokušaj ponovo ili koristi GCS upload (brže), ili pošalji manju sliku.</p>",
-                "vision_url_error", "n/a"
-            )
-        return "<p><b>Greška:</b> Servis sporo odgovara ili je zauzet. Pokušaj ponovo.</p>", "vision_url_error", "n/a"
-    except Exception as e:
-        log.error("OpenAI vision URL fatal: %s", e)
-        return "<p><b>Greška:</b> Neočekivan problem pri analizi slike.</p>", "vision_url_error", "n/a"
+    resp = safe_llm_chat(MODEL_VISION, messages, timeout=OPENAI_TIMEOUT)
+    if resp is None:
+        return (
+            "<p><b>Greška:</b> Desio se problem pri analizi slike. "
+            "Pošalji nam sliku i broj zadatka na "
+            "<a href='mailto:info@matematicari.com'>info@matematicari.com</a>.</p>",
+            "vision_error", "n/a"
+        )
 
     actual_model = getattr(resp, "model", MODEL_VISION)
     raw = resp.choices[0].message.content
     raw = strip_ascii_graph_blocks(raw)
-    return f"<p>{latexify_fractions(raw)}</p>", "vision_url", actual_model
+    return f"<p>{latexify_fractions(safe_html(raw))}</p>", "vision_url", actual_model
 
 def route_image_flow(slika_bytes: bytes, razred: str, history, requested_tasks=None):
     image_b64 = base64.b64encode(slika_bytes).decode()
@@ -280,19 +342,19 @@ def route_image_flow(slika_bytes: bytes, razred: str, history, requested_tasks=N
     user_content.append({"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image_b64}"}})
     messages.append({"role": "user", "content": user_content})
 
-    try:
-        resp = _openai_chat(MODEL_VISION, messages, timeout=OPENAI_TIMEOUT)
-    except (APIConnectionError, APIStatusError, RateLimitError) as e:
-        log.warning("OpenAI vision base64 error: %r", e)
-        return "<p><b>Greška:</b> Servis sporo odgovara ili je zauzet. Pokušaj ponovo.</p>", "vision_direct_error", "n/a"
-    except Exception as e:
-        log.error("OpenAI vision base64 fatal: %s", e)
-        return "<p><b>Greška:</b> Neočekivan problem pri analizi slike.</p>", "vision_direct_error", "n/a"
+    resp = safe_llm_chat(MODEL_VISION, messages, timeout=OPENAI_TIMEOUT)
+    if resp is None:
+        return (
+            "<p><b>Greška:</b> Servis sporo odgovara ili je zauzet. "
+            "Pošalji nam sliku i broj zadatka na "
+            "<a href='mailto:info@matematicari.com'>info@matematicari.com</a>.</p>",
+            "vision_direct_error", "n/a"
+        )
 
     actual_model = getattr(resp, "model", MODEL_VISION)
     raw = resp.choices[0].message.content
     raw = strip_ascii_graph_blocks(raw)
-    return f"<p>{latexify_fractions(raw)}</p>", "vision_direct", actual_model
+    return f"<p>{latexify_fractions(safe_html(raw))}</p>", "vision_direct", actual_model
 
 # ===================== Request helpers =====================
 
@@ -311,10 +373,10 @@ def get_history_from_request():
 
 def _gcs_credentials_for_signing():
     """Obezbijedi access_token + service_account_email za keyless V4 potpisivanje."""
+    if storage is None:
+        raise RuntimeError("GCS libs not available")
     creds, project_id = google.auth.default()
-    # Refresh da popuni token
     creds.refresh(GoogleAuthRequest())
-    # Neke ADC konfiguracije mogu vratiti compute_engine creds bez emaila; pokušaj doći do emaila preko target SA
     svc_email = getattr(creds, "service_account_email", None) or os.getenv("GOOGLE_SERVICE_ACCOUNT_EMAIL")
     if not svc_email:
         raise RuntimeError("No service_account_email available for signing; set GOOGLE_SERVICE_ACCOUNT_EMAIL or use a SA on Cloud Run.")
@@ -333,7 +395,6 @@ def _signed_url(blob, method: str, minutes: int = 15, content_type: str | None =
         params["content_type"] = content_type
     return blob.generate_signed_url(**params)
 
-# Upload direktno iz Flask FileStorage-a (bez signed URL-a)
 def gcs_upload_filestorage(f):
     if not (storage_client and GCS_BUCKET):
         return None
@@ -356,6 +417,40 @@ def gcs_upload_filestorage(f):
     except Exception as e:
         log.error("GCS upload failed: %s", e)
         return None
+
+def gcs_upload_bytes(data: bytes, content_type: str = "image/jpeg", ext: str = ".jpg"):
+    """Best-effort upload čistih bajtova (za <=1.5MB upload da bismo 'zapamtili' sliku)."""
+    if not (storage_client and GCS_BUCKET):
+        return None
+    try:
+        blob_name = f"uploads/{uuid4().hex}{ext}"
+        bucket = storage_client.bucket(GCS_BUCKET)
+        blob = bucket.blob(blob_name)
+        blob.upload_from_string(data, content_type=content_type)
+        if GCS_SIGNED_GET:
+            return _signed_url(blob, method="GET", minutes=45)
+        try:
+            blob.make_public()
+            return blob.public_url
+        except Exception:
+            return _signed_url(blob, method="GET", minutes=45)
+    except Exception as e:
+        log.warning("gcs_upload_bytes failed: %s", e)
+        return None
+
+# ===================== Reuse zadnje slike =====================
+
+TASK_ONLY_RE = re.compile(
+    r'^\s*(uradi|odradi|riješi|rijesi)?\s*(zadatak|broj)?\s*(' + r'\d{1,2}|' + "|".join(ORDINAL_WORDS.keys()) + r')\s*$',
+    flags=re.IGNORECASE
+)
+def looks_like_task_only(text: str) -> bool:
+    return bool(TASK_ONLY_RE.search(text or ""))
+
+def remember_last_image(url: str):
+    if url:
+        session["last_image_url"] = url
+        session.modified = True
 
 # ===================== Routes =====================
 
@@ -395,8 +490,14 @@ def uploads(name):
 
 @app.get("/favicon.ico")
 def favicon():
-    # Izbjegni 404 spam u logovima
     return ("", 204)
+
+FALLBACK_HTML = (
+    "<p><b>Greška:</b> Imamo tehnički problem pri obradi. "
+    "Pošalji nam sliku i tačan broj zadatka na "
+    "<a href='mailto:info@matematicari.com'>info@matematicari.com</a> "
+    "i odgovorićemo u roku od 24h.</p>"
+)
 
 @app.route("/", methods=["GET", "POST"])
 def index():
@@ -424,6 +525,8 @@ def index():
                 odgovor, used_path, used_model = route_image_flow_url(
                     image_url, razred, history, requested_tasks=requested
                 )
+                remember_last_image(image_url)
+
                 will_plot = should_plot(combined_text)
                 if (not plot_expression_added) and will_plot:
                     expression = extract_plot_expression(combined_text, razred=razred, history=history)
@@ -459,12 +562,18 @@ def index():
                     odgovor, used_path, used_model = route_image_flow(
                         body, razred, history, requested_tasks=requested
                     )
+                    # best-effort: sačuvaj i URL u GCS da bismo kasnije mogli "uradi 3"
+                    guessed_ext = os.path.splitext(slika.filename or "")[1].lower() or ".jpg"
+                    last_url = gcs_upload_bytes(body, content_type=slika.mimetype or "image/jpeg", ext=guessed_ext)
+                    if last_url:
+                        remember_last_image(last_url)
                 else:
                     if not (storage_client and GCS_BUCKET) and (GCS_REQUIRED or os.getenv("K_SERVICE")):
                         return render_template("index.html", history=history, razred=razred,
                                                error="GCS nije konfigurisan – upload velikih slika nije moguć."), 400
                     gcs_url = gcs_upload_filestorage(slika)
                     if gcs_url:
+                        remember_last_image(gcs_url)
                         odgovor, used_path, used_model = route_image_flow_url(
                             gcs_url, razred, history, requested_tasks=requested
                         )
@@ -479,6 +588,7 @@ def index():
                         slika.save(path)
                         public_url = (request.url_root.rstrip("/") + "/uploads/" + fname)
                         log.info("Falling back to /uploads URL: %s", public_url)
+                        remember_last_image(public_url)
                         odgovor, used_path, used_model = route_image_flow_url(
                             public_url, razred, history, requested_tasks=requested
                         )
@@ -505,8 +615,33 @@ def index():
                 return redirect(url_for("index"))
 
             # --- PURE TEXT ---
-            prompt_za_razred = PROMPTI_PO_RAZREDU[razred]
+            # Early: ako korisnik napiše "uradi 3" i imamo zadnju sliku — automatski reuse te slike.
+            last_image_url = session.get("last_image_url")
             requested = extract_requested_tasks(pitanje)
+            if (not request.files.get("slika")) and (not request.form.get("image_url")) \
+               and last_image_url and (requested or looks_like_task_only(pitanje)):
+                odgovor, used_path, used_model = route_image_flow_url(
+                    last_image_url, razred, history, requested_tasks=requested
+                )
+
+                will_plot = should_plot(pitanje)
+                if (not plot_expression_added) and will_plot:
+                    expression = extract_plot_expression(pitanje, razred=razred, history=history)
+                    if expression:
+                        odgovor = add_plot_div_once(odgovor, expression); plot_expression_added = True
+
+                history.append({"user": pitanje, "bot": odgovor.strip()})
+                session["history"] = history[-8:]
+                try:
+                    if sheet: sheet.append_row([f"[REUSE IMG] {pitanje}", odgovor, f"vision_reuse|{MODEL_VISION}"])
+                except Exception as ee:
+                    log.warning("Sheets append error: %s", ee)
+
+                if is_ajax:
+                    return render_template("index.html", history=session["history"], razred=razred)
+                return redirect(url_for("index"))
+
+            prompt_za_razred = PROMPTI_PO_RAZREDU[razred]
             only_clause = ""
             strict_geom_policy_text = (
                 " Ako problem uključuje geometriju iz slike ili teksta: "
@@ -541,12 +676,15 @@ def index():
                 messages.append({"role": "assistant", "content": msg["bot"]})
             messages.append({"role": "user", "content": pitanje})
 
-            # Jedan poziv je dovoljan (bio je duplikat ranije)
-            response = _openai_chat(MODEL_TEXT, messages, timeout=OPENAI_TIMEOUT)
-            actual_model = getattr(response, "model", MODEL_TEXT)
-            raw_odgovor = response.choices[0].message.content
-            raw_odgovor = strip_ascii_graph_blocks(raw_odgovor)
-            odgovor = f"<p>{latexify_fractions(raw_odgovor)}</p>"
+            response = safe_llm_chat(MODEL_TEXT, messages, timeout=OPENAI_TIMEOUT, max_out=900, temperature=0.2)
+            if response is None:
+                odgovor = FALLBACK_HTML
+                actual_model = MODEL_TEXT
+            else:
+                actual_model = getattr(response, "model", MODEL_TEXT)
+                raw_odgovor = response.choices[0].message.content
+                raw_odgovor = strip_ascii_graph_blocks(raw_odgovor)
+                odgovor = f"<p>{latexify_fractions(safe_html(raw_odgovor))}</p>"
 
             will_plot = should_plot(pitanje)
             if (not plot_expression_added) and will_plot:
@@ -567,7 +705,7 @@ def index():
 
         except Exception as e:
             log.error("FATAL index.POST: %r", e)
-            err_html = f"<p><b>Greška servera:</b> {html.escape(str(e))}</p>"
+            err_html = FALLBACK_HTML  # uvijek kontrolisana poruka
             history.append({"user": request.form.get('pitanje') or "[SLIKA]", "bot": err_html})
             history = history[-8:]
             session["history"] = history
@@ -582,11 +720,19 @@ def too_large(e):
     msg = f"<p><b>Greška:</b> Fajl je prevelik (limit {MAX_MB} MB). Pokušaj ponovo (npr. fotografija bez Live/HEIC duplih snimaka), ili koristi GCS upload.</p>"
     return render_template("index.html", history=[{"user":"[SLIKA]", "bot": msg}], razred=session.get("razred")), 413
 
+@app.errorhandler(500)
+def handle_500(e):
+    history = session.get("history", [])
+    history.append({"user": "[SYSTEM]", "bot": FALLBACK_HTML})
+    session["history"] = history[-8:]
+    return render_template("index.html", history=session["history"], razred=session.get("razred")), 200
+
 @app.route("/clear", methods=["POST"])
 def clear():
     if request.form.get("confirm_clear") == "1":
         session.pop("history", None)
         session.pop("razred", None)
+        session.pop("last_image_url", None)
     if request.form.get("ajax") == "1":
         return render_template("index.html", history=[], razred=None)
     return redirect("/")
@@ -608,23 +754,19 @@ def add_no_cache_headers(resp):
     return resp
 
 # Ukloni ASCII grafove koji znaju biti ogromni u code fence-u
-
 def strip_ascii_graph_blocks(text: str) -> str:
     fence_re = re.compile(r"```([\s\S]*?)```", flags=re.MULTILINE)
-
     def looks_like_ascii_graph(block: str) -> bool:
         sample = block.strip()
         if len(sample) == 0:
             return False
-        allowed = set(" \t\r\n-_|*^><().,/\\0123456789xyXY")
-        ratio_allowed = sum(c in allowed for c in sample) / len(sample)
+        allowed = set(" \t\r\n-_|*^><().,/\\0123456789xyXY+=")
+        ratio_allowed = sum(c in allowed for c in sample) / max(len(sample), 1)
         lines = sample.splitlines()
-        return (ratio_allowed > 0.9) and (3 <= len(lines) <= 40)
-
+        return (ratio_allowed > 0.9) and (3 <= len(lines) <= 60)
     def repl(m):
         block = m.group(1)
         return "" if looks_like_ascii_graph(block) else m.group(0)
-
     return fence_re.sub(repl, text)
 
 @app.get("/app-health")
@@ -632,15 +774,21 @@ def app_health():
     problems = []
     llm_ok = False
     try:
-        test = _openai_chat(MODEL_TEXT, [{"role":"user","content":"ping"}], timeout=15)
-        llm_ok = True if getattr(test, "choices", None) else False
+        test = safe_llm_chat(MODEL_TEXT, [{"role":"user","content":"ping"}], timeout=15, max_out=10, temperature=0)
+        llm_ok = True if (test and getattr(test, "choices", None)) else False
     except Exception as e:
         problems.append(f"OpenAI: {e}")
+    base_url = None
+    try:
+        base_url = str(getattr(getattr(client, "_client", None), "base_url", None))
+    except Exception:
+        pass
     return {
         "llm_ok": llm_ok,
         "MODEL_TEXT": MODEL_TEXT,
         "MODEL_VISION": MODEL_VISION,
         "has_api_key": bool(os.getenv("OPENAI_API_KEY")),
+        "base_url": base_url,
         "problems": problems
     }, (200 if not problems else 500)
 
