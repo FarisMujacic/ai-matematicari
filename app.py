@@ -4,11 +4,7 @@ from dotenv import load_dotenv
 import os, re, base64, json, html, datetime, time, logging
 from datetime import timedelta
 from io import BytesIO
-from functools import wraps
 from uuid import uuid4
-
-import psycopg2
-from psycopg2.extras import RealDictCursor
 
 from openai import OpenAI, APIConnectionError, APIStatusError, RateLimitError
 from flask_cors import CORS
@@ -28,28 +24,6 @@ load_dotenv(override=True)
 
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
 log = logging.getLogger("matbot")
-
-# Admin kredencijali iz ENV-a (prima i lower i upper ključeve)
-ADMIN_EMAIL = (os.getenv("ADMIN_EMAIL") or os.getenv("adminEmail") or "").strip().lower()
-ADMIN_PASS  = (os.getenv("ADMIN_PASS")  or os.getenv("adminPass")  or "").strip()
-
-# Access code (ENV ili fallback)
-ACCESS_CODE = os.getenv("ACCESS_CODE", "MATH-2025")
-
-# Ako nema DB, koristi se fallback skup (memorija)
-ALLOWED_EMAILS_FALLBACK = {
-    "ucenik1@example.com",
-    # "ucenik2@example.com",
-}
-
-DB_URL = os.getenv("DATABASE_URL") or os.getenv("EXTERNAL_DATABASE_URL")
-
-def _with_sslmode(url: str) -> str:
-    if not url:
-        return url
-    if "sslmode=" in url:
-        return url
-    return url + ("&" if "?" in url else "?") + "sslmode=require"
 
 # -------- Flask app / session --------
 SECURE_COOKIES = os.getenv("COOKIE_SECURE", "0") == "1"  # lokalno False; na Render/Cloud Run postavi 1 po potrebi
@@ -73,90 +47,6 @@ app.config["MAX_CONTENT_LENGTH"] = MAX_MB * 1024 * 1024
 UPLOAD_DIR = "/tmp/uploads"
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
-# ---------- Guard-ovi ----------
-def require_login(fn):
-    @wraps(fn)
-    def w(*a, **kw):
-        if not session.get("user_email"):
-            return redirect(url_for("prijava"))
-        return fn(*a, **kw)
-    return w
-
-def require_admin(fn):
-    @wraps(fn)
-    def w(*a, **kw):
-        if not session.get("is_admin"):
-            return redirect(url_for("prijava"))
-        return fn(*a, **kw)
-    return w
-# --------------------------------
-
-# ---------- DB helper-i i whitelist ----------
-def db():
-    """Vrati konekciju ili None ako DB_URL nije postavljen."""
-    if not DB_URL:
-        return None
-    return psycopg2.connect(_with_sslmode(DB_URL), cursor_factory=RealDictCursor)
-
-def is_email_allowed(email: str) -> bool:
-    """Provjera whiteliste iz baze (fallback na ALLOWED_EMAILS_FALLBACK)."""
-    email = (email or "").strip().lower()
-    conn = db()
-    if conn:
-        try:
-            with conn, conn.cursor() as cur:
-                cur.execute("select 1 from allowed_emails where email=%s", (email,))
-                return cur.fetchone() is not None
-        finally:
-            conn.close()
-    return email in ALLOWED_EMAILS_FALLBACK
-
-def list_allowed_emails():
-    conn = db()
-    if conn:
-        try:
-            with conn, conn.cursor() as cur:
-                cur.execute("select email from allowed_emails order by email asc;")
-                rows = cur.fetchall()              # [{'email': '...'}, ...]
-                return [r["email"] for r in rows]  # ['...', ...]
-        finally:
-            conn.close()
-    return sorted(list(ALLOWED_EMAILS_FALLBACK))
-
-def add_allowed_email(email: str) -> bool:
-    email = (email or "").strip().lower()
-    if not email or "@" not in email or len(email) > 200:
-        return False
-    conn = db()
-    if conn:
-        try:
-            with conn, conn.cursor() as cur:
-                cur.execute(
-                    "insert into allowed_emails(email) values (%s) on conflict do nothing;",
-                    (email,)
-                )
-            return True
-        finally:
-            conn.close()
-    ALLOWED_EMAILS_FALLBACK.add(email)
-    return True
-
-def delete_allowed_email(email: str) -> None:
-    email = (email or "").strip().lower()
-    conn = db()
-    if conn:
-        try:
-            with conn, conn.cursor() as cur:
-                cur.execute("delete from allowed_emails where email=%s", (email,))
-        finally:
-            conn.close()
-        return
-    try:
-        ALLOWED_EMAILS_FALLBACK.remove(email)
-    except KeyError:
-        pass
-# ---------------------------------------------
-
 # OpenAI klijent (veći timeout + retry)
 OPENAI_TIMEOUT = float(os.getenv("OPENAI_TIMEOUT", "240"))
 OPENAI_MAX_RETRIES = int(os.getenv("OPENAI_MAX_RETRIES", "2"))
@@ -177,7 +67,7 @@ except Exception as e:
     log.warning("Sheets disabled: %s", e)
     sheet = None
 
-# GCS (za server-side upload)
+# GCS (za server-side upload i potpisane URL-ove)
 GCS_BUCKET = (os.getenv("GCS_BUCKET") or "").strip()
 GCS_SIGNED_GET = os.getenv("GCS_SIGNED_GET", "1") == "1"
 storage_client = None
@@ -406,71 +296,17 @@ def route_image_flow(slika_bytes: bytes, razred: str, history, requested_tasks=N
     raw = strip_ascii_graph_blocks(raw)
     return f"<p>{latexify_fractions(raw)}</p>", "vision_direct", actual_model
 
-# ----------------- LOGIN & ADMIN -----------------
-@app.route("/prijava", methods=["GET", "POST"])
-def prijava():
-    if request.method == "GET":
-        return render_template("prijava.html", error=None)
-
-    email = (request.form.get("email") or "").strip().lower()
-    code  = (request.form.get("code")  or "").strip()
-
-    # 1) ADMIN login (ENV)
-    if ADMIN_EMAIL and ADMIN_PASS and email == ADMIN_EMAIL and code == ADMIN_PASS:
-        session["user_email"] = email
-        session["is_admin"]  = True
-        return redirect(url_for("admin_panel"))
-
-    # 2) OBIČAN KORISNIK: whitelist + access code
-    if is_email_allowed(email) and code == ACCESS_CODE:
-        session["user_email"] = email
-        session["is_admin"]  = False
-        return redirect(url_for("index"))
-
-    return render_template("prijava.html", error="Pogrešan email ili kod. Pokušaj ponovo.")
-
-@app.get("/admin")
-@require_login
-@require_admin
-def admin_panel():
-    emails = list_allowed_emails()
-    db_active = bool(DB_URL)
-    return render_template("admin.html",
-                           emails=emails, db_active=db_active,
-                           message=request.args.get("m"))
-
-@app.post("/admin/add")
-@require_login
-@require_admin
-def admin_add():
-    email = (request.form.get("email") or "").strip().lower()
-    ok = add_allowed_email(email)
-    msg = "OK" if ok else "Neispravan email."
-    return redirect(url_for("admin_panel") + (f"?m={msg}" if msg else ""))
-
-@app.post("/admin/delete")
-@require_login
-@require_admin
-def admin_delete():
-    email = (request.form.get("email") or "").strip().lower()
-    delete_allowed_email(email)
-    return redirect(url_for("admin_panel"))
-
-@app.get("/admin/list.json")
-@require_login
-@require_admin
-def admin_list_json():
-    return {"db_active": bool(DB_URL), "emails": list_allowed_emails()}
-
-@app.post("/odjava")
-def odjava():
-    session.clear()
-    return redirect(url_for("prijava"))
-
-# ---- Health (korisno za Cloud Run) ----
-@app.get("/healthz")
-def healthz():
-    return {"ok": True}, 200
+# ----------------- pomoćni parser za historiju (bezbjedan fallback) -----------------
+def get_history_from_request():
+    try:
+        hx = request.form.get("history_json")
+        if hx:
+            data = json.loads(hx)
+            if isinstance(data, list):
+                return data
+    except Exception:
+        pass
+    return None
 
 # ---- GCS helpers ----
 def gcs_upload_filestorage(f):
@@ -495,7 +331,7 @@ def gcs_upload_filestorage(f):
                 blob.make_public()
                 url = blob.public_url
             except Exception:
-                # ako ne može make_public, fallback na signed
+                # fallback na signed GET
                 url = blob.generate_signed_url(
                     version="v4",
                     expiration=datetime.timedelta(minutes=45),
@@ -506,14 +342,58 @@ def gcs_upload_filestorage(f):
         log.error("GCS upload failed: %s", e)
         return None
 
+@app.post("/gcs/signed-upload")
+def gcs_signed_upload():
+    """Frontend traži potpisani URL za direktni PUT u GCS + read URL za kasnije čitanje."""
+    if not (storage_client and GCS_BUCKET):
+        return jsonify({"error": "GCS not configured"}), 400
+    try:
+        data = request.get_json(force=True, silent=True) or {}
+        content_type = (data.get("contentType") or "image/jpeg").strip()
+        ext = ".jpg"
+        if "png" in content_type: ext = ".png"
+        if "heic" in content_type: ext = ".heic"
+        blob_name = f"uploads/{uuid4().hex}{ext}"
+
+        bucket = storage_client.bucket(GCS_BUCKET)
+        blob = bucket.blob(blob_name)
+
+        upload_url = blob.generate_signed_url(
+            version="v4",
+            expiration=datetime.timedelta(minutes=15),
+            method="PUT",
+            content_type=content_type,
+        )
+
+        if GCS_SIGNED_GET:
+            read_url = blob.generate_signed_url(
+                version="v4",
+                expiration=datetime.timedelta(minutes=45),
+                method="GET",
+            )
+        else:
+            try:
+                blob.make_public()
+                read_url = blob.public_url
+            except Exception:
+                read_url = blob.generate_signed_url(
+                    version="v4",
+                    expiration=datetime.timedelta(minutes=45),
+                    method="GET",
+                )
+
+        return jsonify({"uploadUrl": upload_url, "readUrl": read_url})
+    except Exception as e:
+        log.error("signed-upload error: %s", e)
+        return jsonify({"error": "failed to create signed url"}), 500
+
 # ---- Lokalni fallback serviranja uploadovane slike kao URL (/tmp/uploads) ----
 @app.get("/uploads/<name>")
 def uploads(name):
     return send_from_directory(UPLOAD_DIR, name)
 
-# ---- Glavna ruta (MAT-BOT) ----
+# ---- Glavna ruta (MAT-BOT) — BEZ PRIJAVE ----
 @app.route("/", methods=["GET", "POST"])
-@require_login
 def index():
     plot_expression_added = False
     history = get_history_from_request() or session.get("history", [])
@@ -522,7 +402,7 @@ def index():
     razred = (request.form.get("razred") or session.get("razred") or "").strip()
 
     if request.method == "POST":
-        # ✅ Server-side validacija razreda (obavezno)
+        # Validacija razreda
         if razred not in DOZVOLJENI_RAZREDI:
             return render_template("index.html",
                                    history=history, razred=razred,
@@ -588,7 +468,7 @@ def index():
                             gcs_url, razred, history, requested_tasks=requested
                         )
                     else:
-                        # 3) Ako GCS nije dostupan => lokalni /uploads (potreban Cloud Run concurrency > 1)
+                        # 3) Ako GCS nije dostupan => lokalni /uploads
                         ext = os.path.splitext(slika.filename)[1].lower() or ".jpg"
                         fname = f"{uuid4().hex}{ext}"
                         path  = os.path.join(UPLOAD_DIR, fname)
@@ -599,8 +479,6 @@ def index():
                         odgovor, used_path, used_model = route_image_flow_url(
                             public_url, razred, history, requested_tasks=requested
                         )
-
-                # NEMA više brzog brisanja fajla iz /tmp/uploads – ostaje do gašenja instance
 
                 # graf?
                 will_plot = should_plot(combined_text)
@@ -704,7 +582,6 @@ def too_large(e):
     return render_template("index.html", history=[{"user":"[SLIKA]", "bot": msg}], razred=session.get("razred")), 413
 
 @app.route("/clear", methods=["POST"])
-@require_login
 def clear():
     if request.form.get("confirm_clear") == "1":
         session.pop("history", None)
@@ -712,6 +589,10 @@ def clear():
     if request.form.get("ajax") == "1":
         return render_template("index.html", history=[], razred=None)
     return redirect("/")
+
+@app.get("/healthz")
+def healthz():
+    return {"ok": True}, 200
 
 @app.after_request
 def add_no_cache_headers(resp):
@@ -745,34 +626,9 @@ def strip_ascii_graph_blocks(text: str) -> str:
                   text, flags=re.IGNORECASE)
     return fence_re.sub(repl, text)
 
-@app.get("/db-health")
-def db_health():
-    try:
-        conn = db()
-        if not conn:
-            return "DB_URL not set", 500
-        with conn, conn.cursor() as cur:
-            cur.execute("select count(*) as n from allowed_emails;")
-            row = cur.fetchone()
-            n = row["n"] if row and "n" in row else 0
-        return f"OK, allowed_emails={n}", 200
-    except Exception as e:
-        return f"DB error: {e}", 500
-
 @app.get("/app-health")
 def app_health():
     problems = []
-    # DB
-    db_ok = False
-    try:
-        conn = db()
-        if conn:
-            with conn, conn.cursor() as cur:
-                cur.execute("select 1;")
-            db_ok = True
-    except Exception as e:
-        problems.append(f"DB: {e}")
-    # OpenAI
     llm_ok = False
     try:
         test = _openai_chat(MODEL_TEXT, [{"role":"user","content":"ping"}], timeout=15)
@@ -780,7 +636,6 @@ def app_health():
     except Exception as e:
         problems.append(f"OpenAI: {e}")
     return {
-        "db_ok": db_ok,
         "llm_ok": llm_ok,
         "MODEL_TEXT": MODEL_TEXT,
         "MODEL_VISION": MODEL_VISION,
