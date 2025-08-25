@@ -1,8 +1,8 @@
-# app.py — robustnija verzija (Cloud Run friendly, graceful fallback, reuse zadnje slike)
+# app.py — robustnija verzija (Cloud Run friendly, graceful fallback, reuse zadnje slike, lokalni evaluator za računske izraze)
 
 from flask import Flask, render_template, request, session, redirect, url_for, send_from_directory, jsonify
 from dotenv import load_dotenv
-import os, re, base64, json, html, datetime, time, logging, traceback
+import os, re, base64, json, html, datetime, time, logging, traceback, ast
 from datetime import timedelta
 from io import BytesIO
 from uuid import uuid4
@@ -15,6 +15,7 @@ from oauth2client.service_account import ServiceAccountCredentials
 
 # httpx je dependency OpenAI SDK-a (za specifične exceptione)
 import httpx
+from fractions import Fraction
 
 # --- (opcionalno) HTML sanitizacija; ako bleach nije instaliran, safe_html je NO-OP ---
 try:
@@ -76,7 +77,7 @@ client = OpenAI(
 )
 
 MODEL_TEXT   = os.getenv("OPENAI_MODEL_TEXT", "gpt-5-mini")
-MODEL_VISION = os.getenv("OPENAI_MODEL_VISION", "gpt-5")
+MODEL_VISION = os.getenv("OPENAI_MODEL_VISION", "gpt-4o")  # default vizija = gpt-4o
 
 # --- Google Sheets (optional) ---
 try:
@@ -222,6 +223,80 @@ def safe_llm_chat(model: str, messages: list, timeout: float | None = None,
         return None
     except Exception as e:
         log_openai_error(e, ctx="chat.completions-unknown")
+        return None
+
+# ===================== MALENI DETERM. EVALUATOR ZA RAČUNE =====================
+
+SAFE_EXPR_RE = re.compile(r'^[\s0-9\+\-\*/\.\,\(\)\^:×÷·∙/]+$')
+
+def _normalize_expr(expr: str) -> str:
+    # decimal coma -> tačka; razni znakovi množenja/dijeljenja u standardne
+    return (expr.replace(",", ".")
+                .replace("×", "*").replace("∙", "*").replace("·", "*")
+                .replace("÷", "/").replace(":", "/")
+                .replace("^", "**"))
+
+def _eval_ast(node) -> Fraction:
+    if isinstance(node, ast.Expression):
+        return _eval_ast(node.body)
+    if isinstance(node, ast.Constant) and isinstance(node.value, (int, float)):
+        # float pretvori u razlomak (ako je došao iz "1.5" nakon zamjene zareza)
+        if isinstance(node.value, float):
+            return Fraction(str(node.value))
+        return Fraction(node.value, 1)
+    if isinstance(node, ast.UnaryOp):
+        val = _eval_ast(node.operand)
+        if isinstance(node.op, ast.UAdd):
+            return +val
+        if isinstance(node.op, ast.USub):
+            return -val
+        raise ValueError("Nepodržan unarni operator")
+    if isinstance(node, ast.BinOp):
+        L = _eval_ast(node.left)
+        R = _eval_ast(node.right)
+        if isinstance(node.op, ast.Add):  return L + R
+        if isinstance(node.op, ast.Sub):  return L - R
+        if isinstance(node.op, ast.Mult): return L * R
+        if isinstance(node.op, ast.Div):  return L / R
+        if isinstance(node.op, ast.Pow):
+            if R.denominator == 1 and R.numerator >= 0:
+                return L ** R.numerator
+            raise ValueError("Eksponent mora biti nenegativan cijeli broj")
+        raise ValueError("Nepodržan operator")
+    raise ValueError("Nedozvoljen izraz")
+
+def try_eval_simple_expression(text: str):
+    """
+    Pokušava bez LLM-a riješiti čisto aritmetički izraz (brojevi, + - * / ^ zagrade, razlomci).
+    Vraća (html_string) ili None ako izraz nije “čist”.
+    """
+    if not text:
+        return None
+    s = text.strip()
+    # odbaci ako postoji jednako bilo kakvo slovo (da ne hvatamo algebru)
+    if re.search(r'[A-Za-zšđčćžŠĐČĆŽ]', s):
+        return None
+    if not SAFE_EXPR_RE.match(s):
+        return None
+    try:
+        norm = _normalize_expr(s)
+        tree = ast.parse(norm, mode="eval")
+        result = _eval_ast(tree)
+        # Uredi prikaz: skraćeni razlomak i decimalno
+        num, den = result.numerator, result.denominator
+        if den == 1:
+            frac_tex = f"\\({num}\\)"
+            dec_str = f"{float(result):.10g}"
+        else:
+            frac_tex = f"\\(\\frac{{{num}}}{{{den}}}\\)"
+            dec_str = f"{num/den:.10g}"
+        html_out = (
+            f"<p><b>Rezultat:</b> {frac_tex}"
+            f" <span style='color:#888'>(≈ {dec_str})</span></p>"
+        )
+        return html_out
+    except Exception as e:
+        log.info("Local eval nije uspio (%s), prelazim na LLM.", e)
         return None
 
 # ===================== Plot extraction =====================
@@ -615,7 +690,22 @@ def index():
                 return redirect(url_for("index"))
 
             # --- PURE TEXT ---
-            # Early: ako korisnik napiše "uradi 3" i imamo zadnju sliku — automatski reuse te slike.
+
+            # 0) PROBAJ LOKALNI EVALUATOR (da jednostavni izrazi ne ovise o LLM-u)
+            local = try_eval_simple_expression(pitanje)
+            if local:
+                odgovor = local
+                history.append({"user": pitanje, "bot": odgovor.strip()})
+                session["history"] = history[-8:]
+                try:
+                    if sheet: sheet.append_row([f"[LOCAL] {pitanje}", odgovor, "local_eval"])
+                except Exception as ee:
+                    log.warning("Sheets append error: %s", ee)
+                if is_ajax:
+                    return render_template("index.html", history=session["history"], razred=razred)
+                return redirect(url_for("index"))
+
+            # 1) Ako korisnik napiše "uradi 3" i imamo zadnju sliku — automatski reuse te slike.
             last_image_url = session.get("last_image_url")
             requested = extract_requested_tasks(pitanje)
             if (not request.files.get("slika")) and (not request.form.get("image_url")) \
@@ -641,6 +731,7 @@ def index():
                     return render_template("index.html", history=session["history"], razred=razred)
                 return redirect(url_for("index"))
 
+            # 2) Inače normalan tekstualni LLM odgovor
             prompt_za_razred = PROMPTI_PO_RAZREDU[razred]
             only_clause = ""
             strict_geom_policy_text = (
