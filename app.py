@@ -44,6 +44,9 @@ app.config["MAX_CONTENT_LENGTH"] = MAX_MB * 1024 * 1024
 UPLOAD_DIR = "/tmp/uploads"
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
+# >>> Novi prag za "preveliku" sliku (bez GCS): sve preko ovoga lijepo odbijamo
+MAX_IMAGE_BYTES = int(os.getenv("MAX_IMAGE_BYTES", "1500000"))  # ~1.5 MB
+
 OPENAI_TIMEOUT = float(os.getenv("OPENAI_TIMEOUT", "240"))
 OPENAI_MAX_RETRIES = int(os.getenv("OPENAI_MAX_RETRIES", "2"))
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"), timeout=OPENAI_TIMEOUT, max_retries=OPENAI_MAX_RETRIES)
@@ -71,19 +74,16 @@ sheet = None
 try:
     b64 = os.getenv("GOOGLE_SHEETS_CREDENTIALS_B64", "").strip()
     if b64:
-        # 1) Prod: ENV base64 od JSON ključa
         info  = json.loads(base64.b64decode(b64).decode("utf-8"))
         creds = SACreds.from_service_account_info(info, scopes=SHEETS_SCOPES)
         gc = gspread.authorize(creds)
         sa_email = info.get("client_email")
         log.info("Sheets via service_account_b64 (sa=%s)", sa_email)
     elif os.path.exists("credentials.json"):
-        # 2) Dev: lokalni fajl
         creds = SACreds.from_service_account_file("credentials.json", scopes=SHEETS_SCOPES)
         gc = gspread.authorize(creds)
         log.info("Sheets via service_account_file")
     else:
-        # 3) Cloud Run ADC (bez JSON-a)
         adc_creds, _ = google.auth.default(scopes=SHEETS_SCOPES)
         gc = gspread.authorize(adc_creds)
         log.info("Sheets via ADC default credentials")
@@ -573,54 +573,48 @@ def index():
 
             # --- IMAGE via FILE UPLOAD ---
             if slika and slika.filename:
+                # mjeri veličinu fajla
                 slika.stream.seek(0, os.SEEK_END)
                 size_bytes = slika.stream.tell()
                 slika.stream.seek(0)
+                log.info("Upload image size: %d bytes (limit=%d)", size_bytes, MAX_IMAGE_BYTES)
 
                 combined_text = pitanje
                 requested = extract_requested_tasks(combined_text)
 
-                if size_bytes <= 1_500_000:
-                    body = slika.read()
-                    odgovor, used_path, used_model = route_image_flow(
-                        body, razred, history, requested_tasks=requested, user_text=combined_text
-                    )
-                    # persistiraj kopiju male slike za follow-up
-                    try:
-                        ext = os.path.splitext(slika.filename or "")[1].lower() or ".jpg"
-                        fname = f"{uuid4().hex}{ext}"
-                        path  = os.path.join(UPLOAD_DIR, fname)
-                        with open(path, "wb") as fp:
-                            fp.write(body)
-                        public_url = (request.url_root.rstrip("/") + "/uploads/" + fname)
-                        session["last_image_url"] = public_url
-                    except Exception as _e:
-                        log.warning("Couldn't persist small image for follow-up: %s", _e)
-                else:
-                    if not (storage_client and GCS_BUCKET) and (GCS_REQUIRED or os.getenv("K_SERVICE")):
-                        return render_template("index.html", history=history, razred=razred,
-                                               error="GCS nije konfigurisan – upload velikih slika nije moguć."), 400
-                    gcs_url = gcs_upload_filestorage(slika)
-                    if gcs_url:
-                        session["last_image_url"] = gcs_url
-                        odgovor, used_path, used_model = route_image_flow_url(
-                            gcs_url, razred, history, requested_tasks=requested, user_text=combined_text
-                        )
-                    else:
-                        if GCS_REQUIRED or os.getenv("K_SERVICE"):
-                            return render_template("index.html", history=history, razred=razred,
-                                                   error="GCS upload nije uspio (CORS/permisije)."), 400
-                        ext = os.path.splitext(slika.filename)[1].lower() or ".jpg"
-                        fname = f"{uuid4().hex}{ext}"
-                        path  = os.path.join(UPLOAD_DIR, fname)
-                        slika.stream.seek(0)
-                        slika.save(path)
-                        public_url = (request.url_root.rstrip("/") + "/uploads/" + fname)
-                        log.info("Falling back to /uploads URL: %s", public_url)
-                        session["last_image_url"] = public_url
-                        odgovor, used_path, used_model = route_image_flow_url(
-                            public_url, razred, history, requested_tasks=requested, user_text=combined_text
-                        )
+                # >>> Ako je slika PREKO praga: odmah poruka u chat (bez GCS pokušaja)
+                if size_bytes > MAX_IMAGE_BYTES:
+                    kb = size_bytes // 1024
+                    max_kb = MAX_IMAGE_BYTES // 1024
+                    display_user = (combined_text + " [SLIKA]") if combined_text else "[SLIKA]"
+                    bot_msg = (f"<p><b>Slika je prevelika kvaliteta ({kb} KB).</b> "
+                               f"Molim smanji rezoluciju/veličinu (max {max_kb} KB) i pokušaj ponovo.</p>")
+                    history.append({"user": display_user, "bot": bot_msg})
+                    history = history[-8:]
+                    session["history"] = history
+                    # ne zapisujemo u Sheets za grešku, ali možeš ako želiš:
+                    # sheets_append_row_safe([display_user, bot_msg, "error|image_too_large"])
+                    if is_ajax:
+                        return render_template("index.html", history=history, razred=razred)
+                    return redirect(url_for("index"))
+
+                # inače obradi direktno (base64 u Vision)
+                body = slika.read()
+                odgovor, used_path, used_model = route_image_flow(
+                    body, razred, history, requested_tasks=requested, user_text=combined_text
+                )
+
+                # persistiraj kopiju male slike za follow-up
+                try:
+                    ext = os.path.splitext(slika.filename or "")[1].lower() or ".jpg"
+                    fname = f"{uuid4().hex}{ext}"
+                    path  = os.path.join(UPLOAD_DIR, fname)
+                    with open(path, "wb") as fp:
+                        fp.write(body)
+                    public_url = (request.url_root.rstrip("/") + "/uploads/" + fname)
+                    session["last_image_url"] = public_url
+                except Exception as _e:
+                    log.warning("Couldn't persist small image for follow-up: %s", _e)
 
                 if (not plot_expression_added) and should_plot(combined_text):
                     expression = extract_plot_expression(combined_text, razred=razred, history=history)
@@ -643,7 +637,7 @@ def index():
             requested = extract_requested_tasks(pitanje)
             last_url = session.get("last_image_url")
 
-            # ako je follow-up (npr. "497a") ili su traženi zadaci, a imamo zadnju sliku -> preusmjeri na vision
+            # follow-up na zadnju sliku (npr. “497a” ili sl. uz već uploadovanu sliku)
             if last_url and (requested or (pitanje and FOLLOWUP_TASK_RE.match(pitanje))):
                 odgovor, used_path, used_model = route_image_flow_url(
                     last_url, razred, history, requested_tasks=requested, user_text=pitanje
@@ -659,13 +653,14 @@ def index():
                 session["history"] = history
 
                 mod_str = f"{used_path}|{used_model}"
+                # BUGFIX: ovdje koristimo pitanje (display_user nije definisan u ovoj grani)
                 sheets_append_row_safe([pitanje, odgovor, mod_str])
 
                 if is_ajax:
                     return render_template("index.html", history=history, razred=razred)
                 return redirect(url_for("index"))
 
-            # inače standardni TEXT pipeline
+            # standardni TEXT pipeline
             odgovor, actual_model = answer_with_text_pipeline(pitanje, razred, history, requested)
 
             if (not plot_expression_added) and should_plot(pitanje):
@@ -694,7 +689,8 @@ def index():
 
 @app.errorhandler(413)
 def too_large(e):
-    msg = f"<p><b>Greška:</b> Fajl je prevelik (limit {MAX_MB} MB). Pokušaj ponovo (npr. fotografija bez Live/HEIC duplih snimaka), ili koristi GCS upload.</p>"
+    msg = (f"<p><b>Greška:</b> Fajl je prevelik (limit {MAX_MB} MB). "
+           f"Pokušaj ponovo (npr. fotografija bez Live/HEIC duplih snimaka) ili smanji kvalitet.</p>")
     return render_template("index.html", history=[{"user":"[SLIKA]", "bot": msg}], razred=session.get("razred")), 413
 
 @app.route("/clear", methods=["POST"])
@@ -702,6 +698,7 @@ def clear():
     if request.form.get("confirm_clear") == "1":
         session.pop("history", None)
         session.pop("razred", None)
+        session.pop("last_image_url", None)
     if request.form.get("ajax") == "1":
         return render_template("index.html", history=[], razred=None)
     return redirect("/")
