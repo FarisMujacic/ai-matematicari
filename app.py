@@ -1,4 +1,4 @@
-# app.py — slika+tekst u istoj poruci, reuse zadnje slike, Mathpix OCR kao pomoć
+# app.py — Mathpix + bolje rukovanje tekst+slika, mapiranje "prvi/drugi/zadnji" -> 497/498/…
 
 from flask import Flask, render_template, request, session, redirect, url_for, send_from_directory, jsonify
 from dotenv import load_dotenv
@@ -57,7 +57,7 @@ MATHPIX_MODE    = os.getenv("MATHPIX_MODE", "fallback").lower().strip()  # fallb
 MATHPIX_ENABLED = bool(MATHPIX_API_ID and MATHPIX_API_KEY and MATHPIX_MODE != "off")
 MATHPIX_TIMEOUT = float(os.getenv("MATHPIX_TIMEOUT", "30"))
 
-# ---------------- Google Sheets -----------------
+# ---------------- Sheets ----------------
 try:
     SCOPE = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
     CREDS_FILE = "credentials.json"
@@ -68,7 +68,7 @@ except Exception as e:
     log.warning("Sheets disabled: %s", e)
     sheet = None
 
-# ---------------- GCS ---------------------------
+# ---------------- GCS ----------------
 GCS_BUCKET = (os.getenv("GCS_BUCKET") or "").strip()
 GCS_SIGNED_GET = os.getenv("GCS_SIGNED_GET", "1") == "1"
 GCS_REQUIRED = os.getenv("GCS_REQUIRED", "1") == "1"
@@ -86,7 +86,7 @@ else:
     else:
         log.warning("google-cloud-storage lib not available, GCS disabled.")
 
-# ===================== Biz logika =====================
+# ===================== Business logic helpers =====================
 PROMPTI_PO_RAZREDU = {
     "5": "Ti si pomoćnik iz matematike za učenike 5. razreda osnovne škole. Objašnjavaj jednostavnim i razumljivim jezikom. Pomaži učenicima da razumiju zadatke iz prirodnih brojeva, osnovnih računskih operacija, jednostavne geometrije i tekstualnih zadataka. Svako rješenje objasni jasno, korak po korak.",
     "6": "Ti si pomoćnik iz matematike za učenike 6. razreda osnovne škole. Odgovaraj detaljno i pedagoški, koristeći primjere primjerene njihovom uzrastu. Pomaži im da razumiju razlomke, decimalne brojeve, procente, geometriju i tekstualne zadatke. Objasni rješenje jasno i korak po korak.",
@@ -96,12 +96,14 @@ PROMPTI_PO_RAZREDU = {
 }
 DOZVOLJENI_RAZREDI = set(PROMPTI_PO_RAZREDU.keys())
 
+# + ordinals uključuju "zadnji/posljednji"
 ORDINAL_WORDS = {
     "prvi": 1, "drugi": 2, "treći": 3, "treci": 3, "četvrti": 4, "cetvrti": 4,
-    "peti": 5, "šesti": 6, "sesti": 6, "sedmi": 7, "osmi": 8, "deveti": 9, "deseti": 10
+    "peti": 5, "šesti": 6, "sesti": 6, "sedmi": 7, "osmi": 8, "deveti": 9, "deseti": 10,
+    "zadnji": -1, "posljednji": -1
 }
 _task_num_re = re.compile(
-    r"(?:zadatak\s*(?:broj\s*)?(\d{1,2}))|(?:\b(\d{1,2})\s*\.)|(?:\b(" + "|".join(ORDINAL_WORDS.keys()) + r")\b)",
+    r"(?:zadatak\s*(?:broj\s*)?(\d{1,4}))|(?:\b(\d{1,4})\s*\.)|(?:\b(" + "|".join(ORDINAL_WORDS.keys()) + r")\b)",
     flags=re.IGNORECASE
 )
 
@@ -118,7 +120,7 @@ def extract_requested_tasks(text: str):
             tasks.append(ORDINAL_WORDS.get(m.group(3).lower()))
     out, seen = [], set()
     for n in tasks:
-        if n and n not in seen:
+        if n not in seen:
             out.append(n); seen.add(n)
     return out
 
@@ -209,18 +211,15 @@ def answer_with_text_pipeline(pure_text: str, razred: str, history, requested):
 
 # ===================== Mathpix helpers =====================
 def _mathpix_headers():
-    return {
-        "app_id": MATHPIX_API_ID,
-        "app_key": MATHPIX_API_KEY,
-        "Content-Type": "application/json"
-    }
+    return {"app_id": MATHPIX_API_ID, "app_key": MATHPIX_API_KEY, "Content-Type": "application/json"}
 
 def mathpix_from_src(src: str):
     if not MATHPIX_ENABLED:
         return {"ok": False, "text": "", "latex": "", "raw": None}
     payload = {
         "src": src,
-        "formats": ["text"],   # plain text je dovoljno za pomoć
+        "formats": ["text", "latex_styled"],
+        "math_inline_delims": ["$", "$"],
         "rm_spaces": True,
         "confidence_threshold": 0.1,
     }
@@ -231,8 +230,9 @@ def mathpix_from_src(src: str):
                           timeout=MATHPIX_TIMEOUT)
         j = r.json()
         text  = (j.get("text") or "").strip()
-        ok = bool(text)
-        return {"ok": ok, "text": text, "latex": "", "raw": j}
+        latex = (j.get("latex_styled") or j.get("latex") or "").strip()
+        ok = bool(text) or bool(latex)
+        return {"ok": ok, "text": text, "latex": latex, "raw": j}
     except Exception as e:
         log.warning("Mathpix OCR error: %s", e)
         return {"ok": False, "text": "", "latex": "", "raw": None}
@@ -241,7 +241,7 @@ def mathpix_from_bytes(image_bytes: bytes, mime="image/jpeg"):
     b64 = base64.b64encode(image_bytes).decode()
     return mathpix_from_src(f"data:{mime};base64,{b64}")
 
-# ===================== Vision poruke i pomoć =====================
+# ===================== Vision prompts/helpers =====================
 def _vision_messages_base(razred: str, history, only_clause: str, strict_geom_policy: str):
     prompt_za_razred = PROMPTI_PO_RAZREDU.get(razred, PROMPTI_PO_RAZREDU["5"])
     system_message = {
@@ -266,29 +266,27 @@ def _vision_clauses(requested_tasks):
     only_clause = ""
     if requested_tasks:
         only_clause = (
-            " Riješi ISKLJUČIVO sljedeće zadatke (ignoriši sve ostale koji su vidljivi na slici), "
-            f"tačno ove brojeve: {', '.join(map(str, requested_tasks))}. "
-            "Ako je korisnik koristio riječi tipa 'prvi/drugi/treći', tumači ih relativno na redoslijed vidljivih brojeva na stranici."
+            " Riješi ISKLJUČIVO sljedeće zadatke (ignoriši ostale koji su vidljivi na slici): "
+            f"{', '.join(map(str, requested_tasks))}."
         )
     strict_geom_policy = (
         " Radi tačno i oprezno:\n"
         "1) PRVO, jasno prepiši koje brojeve zadataka i oznake podzadataka vidiš (npr. 497; a), b), c)).\n"
         "2) Nemoj pretpostavljati paralelnost, jednakokrakost, jednake uglove ili sličnost trokuta ako to nije eksplicitno označeno.\n"
-        "3) Ako korisnik uz sliku da tekstualne podatke, ONI SU ISTINITI i imaju prioritet nad onim što vidiš.\n"
-        "4) Daj konačan odgovor ako je moguće; inače navedi šta još treba da bi se zadatak zaključio."
+        "3) Ako korisnik uz sliku da tekstualne podatke, ONI imaju prioritet nad onim što vidiš.\n"
+        "4) Daj konačan odgovor ako je moguće; inače navedi šta još treba."
     )
     return only_clause, strict_geom_policy
 
-# Heuristika: izvući glavne brojeve zadataka sa slike
+# --- izdvajanje vidljivih glavnih brojeva zadataka sa slike ---
 def _detect_exercise_numbers_from_image(user_content):
     try:
         sys = {
             "role": "system",
             "content": (
-                "Pročitaj sliku i izdvoji sve VIDljive glavne brojeve zadataka "
-                "(npr. 497, 498, 499...), odozgo prema dolje. "
-                "Odgovori SAMO brojevima razdvojenim zarezom (npr. '497, 498, 499'). "
-                "Ako ne vidiš, odgovori 'NONE'."
+                "Pročitaj sliku i izdvoji sve VIDljive glavne brojeve zadataka (npr. 497, 498, 499...), "
+                "poredane odozgo prema dolje. Odgovori ISKLJUČIVO brojevima odvojenim zarezom "
+                "(npr. '497, 498, 499'). Ako nema brojeva, odgovori 'NONE'."
             )
         }
         msgs = [sys, {"role": "user", "content": user_content}]
@@ -302,79 +300,94 @@ def _detect_exercise_numbers_from_image(user_content):
         log.warning("Detect numbers fail: %s", e)
         return []
 
-# ===================== Vision flows (GENERIČKI) =====================
-def route_image_with_src(image_src: str, razred: str, history, requested_tasks=None, user_text: str | None = None):
-    """
-    image_src: https://... ili data:image/...;base64,...
-    """
-    only_clause, strict_geom_policy = _vision_clauses(requested_tasks)
-    messages = _vision_messages_base(razred, history, only_clause, strict_geom_policy)
+def _map_ordinals_to_detected(requested, detected):
+    """requested npr. [1, -1, 498]; detected npr. [497, 498, 499, 500]"""
+    if not requested:
+        return []
+    out = []
+    for t in requested:
+        if t <= 0:  # zadnji / posljednji
+            if detected:
+                out.append(detected[-1])
+        elif t <= 10 and detected and t <= len(detected):  # ordinal (1..10)
+            out.append(detected[t-1])
+        else:
+            out.append(t)
+    # uniq zadrži redoslijed
+    dedup, seen = [], set()
+    for n in out:
+        if n not in seen:
+            dedup.append(n); seen.add(n)
+    return dedup
 
+# ===================== Vision flows (TEXT + SLIKA u istom poruke) =====================
+def route_image_flow_url(image_url: str, razred: str, history, requested_tasks=None, user_text=None):
+    # složi jedan user content sa tekstom i slikom
     user_content = []
-
-    # 1) korisnički tekst (ako postoji)
     if user_text:
         user_content.append({"type": "text", "text": f"Korisnički tekst: {user_text}"})
-
-    # 2) okvirna instrukcija
     base_text = "Na slici je matematički zadatak."
-    if requested_tasks:
-        base_text += f" Riješi isključivo zadatak(e): {', '.join(map(str, requested_tasks))}."
-    else:
-        base_text += " Riješi samo ono što korisnik izričito traži."
     user_content.append({"type": "text", "text": base_text})
+    user_content.append({"type": "image_url", "image_url": {"url": image_url}})
 
-    # 3) (opcionalno) Mathpix OCR kao pomoćni tekst
-    if MATHPIX_ENABLED:
-        try:
-            mp = mathpix_from_src(image_src)
-            if mp.get("ok") and (MATHPIX_MODE in ("prefer", "fallback")) and mp.get("text"):
-                user_content.append({"type": "text", "text": f"OCR (Mathpix) — prepoznati tekst sa slike:\n{mp['text'][:4000]}"})
-        except Exception as e:
-            log.warning("Mathpix help skipped: %s", e)
+    # prvo detektuj listu vidljivih glavnih brojeva pa mapiraj “prvi/drugi/zadnji”
+    detected = _detect_exercise_numbers_from_image(user_content)
+    mapped = _map_ordinals_to_detected(requested_tasks or [], detected)
+    only_clause, strict_geom_policy = _vision_clauses(mapped or requested_tasks)
 
-    # 4) sama slika
-    user_content.append({"type": "image_url", "image_url": {"url": image_src}})
-
+    messages = _vision_messages_base(razred, history, only_clause, strict_geom_policy)
     messages.append({"role": "user", "content": user_content})
-
-    # sačuvaj prepoznate brojeve (za kasniju poruku bez slike)
-    try:
-        detected = _detect_exercise_numbers_from_image(user_content)
-        if detected:
-            session["last_task_numbers"] = detected
-    except Exception as e:
-        log.debug("detect store skip: %s", e)
 
     try:
         resp = _openai_chat(MODEL_VISION, messages, timeout=OPENAI_TIMEOUT)
     except (APIConnectionError, APIStatusError, RateLimitError) as e:
-        log.warning("OpenAI vision error: %r", e)
+        log.warning("OpenAI vision URL error: %r", e)
         msg = str(e)
         if "Timeout while downloading" in msg or "timed out while downloading" in msg:
             return (
                 "<p><b>Greška:</b> Slika se nije mogla preuzeti dovoljno brzo. "
                 "Pokušaj ponovo ili koristi GCS upload (brže), ili pošalji manju sliku.</p>",
-                "vision_error", "n/a"
+                "vision_url_error", "n/a"
             )
-        return "<p><b>Greška:</b> Servis sporo odgovara ili je zauzet. Pokušaj ponovo.</p>", "vision_error", "n/a"
+        return "<p><b>Greška:</b> Servis sporo odgovara ili je zauzet. Pokušaj ponovo.</p>", "vision_url_error", "n/a"
     except Exception as e:
-        log.error("OpenAI vision fatal: %s", e)
-        return "<p><b>Greška:</b> Neočekivan problem pri analizi slike.</p>", "vision_error", "n/a"
+        log.error("OpenAI vision URL fatal: %s", e)
+        return "<p><b>Greška:</b> Neočekivan problem pri analizi slike.</p>", "vision_url_error", "n/a"
 
     actual_model = getattr(resp, "model", MODEL_VISION)
     raw = resp.choices[0].message.content
     raw = strip_ascii_graph_blocks(raw)
-    return f"<p>{latexify_fractions(raw)}</p>", "vision", actual_model
+    return f"<p>{latexify_fractions(raw)}</p>", "vision_url", actual_model
 
-# kompatibilni wrapperi
-def route_image_flow_url(image_url: str, razred: str, history, requested_tasks=None, user_text=None):
-    return route_image_with_src(image_url, razred, history, requested_tasks, user_text)
-
-def route_image_flow(slika_bytes: bytes, razred: str, history, requested_tasks=None, user_text=None, mime="image/jpeg"):
+def route_image_flow(slika_bytes: bytes, razred: str, history, requested_tasks=None, user_text=None):
     image_b64 = base64.b64encode(slika_bytes).decode()
-    data_url = f"data:{mime};base64,{image_b64}"
-    return route_image_with_src(data_url, razred, history, requested_tasks, user_text)
+
+    user_content = []
+    if user_text:
+        user_content.append({"type": "text", "text": f"Korisnički tekst: {user_text}"})
+    user_content.append({"type": "text", "text": "Na slici je matematički zadatak."})
+    user_content.append({"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image_b64}"}})
+
+    detected = _detect_exercise_numbers_from_image(user_content)
+    mapped = _map_ordinals_to_detected(requested_tasks or [], detected)
+    only_clause, strict_geom_policy = _vision_clauses(mapped or requested_tasks)
+
+    messages = _vision_messages_base(razred, history, only_clause, strict_geom_policy)
+    messages.append({"role": "user", "content": user_content})
+
+    try:
+        resp = _openai_chat(MODEL_VISION, messages, timeout=OPENAI_TIMEOUT)
+    except (APIConnectionError, APIStatusError, RateLimitError) as e:
+        log.warning("OpenAI vision base64 error: %r", e)
+        return "<p><b>Greška:</b> Servis sporo odgovara ili je zauzet. Pokušaj ponovo.</p>", "vision_direct_error", "n/a"
+    except Exception as e:
+        log.error("OpenAI vision base64 fatal: %s", e)
+        return "<p><b>Greška:</b> Neočekivan problem pri analizi slike.</p>", "vision_direct_error", "n/a"
+
+    actual_model = getattr(resp, "model", MODEL_VISION)
+    raw = resp.choices[0].message.content
+    raw = strip_ascii_graph_blocks(raw)
+    return f"<p>{latexify_fractions(raw)}</p>", "vision_direct", actual_model
 
 # ===================== Request helpers =====================
 def get_history_from_request():
@@ -388,6 +401,7 @@ def get_history_from_request():
         pass
     return None
 
+# ===================== GCS helpers =====================
 def gcs_upload_filestorage(f):
     if not (storage_client and GCS_BUCKET):
         return None
@@ -400,7 +414,7 @@ def gcs_upload_filestorage(f):
         blob.upload_from_file(f.stream, content_type=f.mimetype or "application/octet-stream")
         if GCS_SIGNED_GET:
             url = blob.generate_signed_url(
-                version="v4",
+                version="V4",
                 expiration=datetime.timedelta(minutes=45),
                 method="GET",
             )
@@ -410,7 +424,7 @@ def gcs_upload_filestorage(f):
                 url = blob.public_url
             except Exception:
                 url = blob.generate_signed_url(
-                    version="v4",
+                    version="V4",
                     expiration=datetime.timedelta(minutes=45),
                     method="GET",
                 )
@@ -435,7 +449,7 @@ def gcs_signed_upload():
         blob = bucket.blob(blob_name)
 
         upload_url = blob.generate_signed_url(
-            version="v4",
+            version="V4",
             expiration=datetime.timedelta(minutes=15),
             method="PUT",
             content_type=content_type,
@@ -443,7 +457,7 @@ def gcs_signed_upload():
 
         if GCS_SIGNED_GET:
             read_url = blob.generate_signed_url(
-                version="v4",
+                version="V4",
                 expiration=datetime.timedelta(minutes=45),
                 method="GET",
             )
@@ -453,7 +467,7 @@ def gcs_signed_upload():
                 read_url = blob.public_url
             except Exception:
                 read_url = blob.generate_signed_url(
-                    version="v4",
+                    version="V4",
                     expiration=datetime.timedelta(minutes=45),
                     method="GET",
                 )
@@ -467,7 +481,7 @@ def gcs_signed_upload():
 def uploads(name):
     return send_from_directory(UPLOAD_DIR, name)
 
-# ===================== GLAVNA RUTA =====================
+# ===================== Main route =====================
 @app.route("/", methods=["GET", "POST"])
 def index():
     plot_expression_added = False
@@ -491,16 +505,11 @@ def index():
             if image_url:
                 combined_text = pitanje
                 requested = extract_requested_tasks(combined_text)
-
                 odgovor, used_path, used_model = route_image_flow_url(
                     image_url, razred, history, requested_tasks=requested, user_text=combined_text
                 )
 
-                # sačuvaj posljednju sliku (za naredne tekst-only poruke)
-                session["last_image_src"] = image_url
-
-                will_plot = should_plot(combined_text)
-                if (not plot_expression_added) and will_plot:
+                if (not plot_expression_added) and should_plot(combined_text):
                     expression = extract_plot_expression(combined_text, razred=razred, history=history)
                     if expression:
                         odgovor = add_plot_div_once(odgovor, expression); plot_expression_added = True
@@ -530,15 +539,11 @@ def index():
                 combined_text = pitanje
                 requested = extract_requested_tasks(combined_text)
 
-                used_src = None
                 if size_bytes <= 1_500_000:
                     body = slika.read()
                     odgovor, used_path, used_model = route_image_flow(
-                        body, razred, history, requested_tasks=requested, user_text=combined_text, mime=slika.mimetype or "image/jpeg"
+                        body, razred, history, requested_tasks=requested, user_text=combined_text
                     )
-                    # spremi data: URL
-                    b64 = base64.b64encode(body).decode()
-                    used_src = f"data:{slika.mimetype or 'image/jpeg'};base64,{b64}"
                 else:
                     if not (storage_client and GCS_BUCKET) and (GCS_REQUIRED or os.getenv("K_SERVICE")):
                         return render_template("index.html", history=history, razred=razred,
@@ -548,7 +553,6 @@ def index():
                         odgovor, used_path, used_model = route_image_flow_url(
                             gcs_url, razred, history, requested_tasks=requested, user_text=combined_text
                         )
-                        used_src = gcs_url
                     else:
                         if GCS_REQUIRED or os.getenv("K_SERVICE"):
                             return render_template("index.html", history=history, razred=razred,
@@ -563,18 +567,13 @@ def index():
                         odgovor, used_path, used_model = route_image_flow_url(
                             public_url, razred, history, requested_tasks=requested, user_text=combined_text
                         )
-                        used_src = public_url
 
-                if used_src:
-                    session["last_image_src"] = used_src
-
-                will_plot = should_plot(combined_text)
-                if (not plot_expression_added) and will_plot:
+                if (not plot_expression_added) and should_plot(combined_text):
                     expression = extract_plot_expression(combined_text, razred=razred, history=history)
                     if expression:
                         odgovor = add_plot_div_once(odgovor, expression); plot_expression_added = True
 
-                display_user = (combined_text + " [slika]") if combined_text else "[slika]"
+                display_user = (combined_text + " [SLIKA]") if combined_text else "[SLIKA]"
                 history.append({"user": display_user, "bot": odgovor.strip()})
                 history = history[-8:]
                 session["history"] = history
@@ -590,41 +589,11 @@ def index():
                     return render_template("index.html", history=history, razred=razred)
                 return redirect(url_for("index"))
 
-            # --- TEKST (ali možda se referiše na zadnju sliku) ---
+            # --- PURE TEXT ---
             requested = extract_requested_tasks(pitanje)
-            last_src = session.get("last_image_src")
-
-            if last_src and requested:
-                # Ako ima zadnja slika i korisnik spominje brojeve/ordinale -> koristi sliku
-                odgovor, used_path, used_model = route_image_with_src(
-                    last_src, razred, history, requested_tasks=requested, user_text=pitanje
-                )
-                will_plot = should_plot(pitanje)
-                if (not plot_expression_added) and will_plot:
-                    expression = extract_plot_expression(pitanje, razred=razred, history=history)
-                    if expression:
-                        odgovor = add_plot_div_once(odgovor, expression); plot_expression_added = True
-
-                history.append({"user": pitanje, "bot": odgovor.strip()})
-                history = history[-8:]
-                session["history"] = history
-
-                try:
-                    if sheet:
-                        mod_str = f"vision-reuse|{used_model}"
-                        sheet.append_row([pitanje, odgovor, mod_str])
-                except Exception as ee:
-                    log.warning("Sheets append error: %s", ee)
-
-                if is_ajax:
-                    return render_template("index.html", history=history, razred=razred)
-                return redirect(url_for("index"))
-
-            # inače — čisti tekst pipeline
             odgovor, actual_model = answer_with_text_pipeline(pitanje, razred, history, requested)
 
-            will_plot = should_plot(pitanje)
-            if (not plot_expression_added) and will_plot:
+            if (not plot_expression_added) and should_plot(pitanje):
                 expression = extract_plot_expression(pitanje, razred=razred, history=history)
                 if expression:
                     odgovor = add_plot_div_once(odgovor, expression); plot_expression_added = True
@@ -643,7 +612,7 @@ def index():
         except Exception as e:
             log.error("FATAL index.POST: %r", e)
             err_html = f"<p><b>Greška servera:</b> {html.escape(str(e))}</p>"
-            history.append({"user": request.form.get('pitanje') or "[slika]", "bot": err_html})
+            history.append({"user": request.form.get('pitanje') or "[SLIKA]", "bot": err_html})
             history = history[-8:]
             session["history"] = history
             if request.form.get("ajax") == "1":
@@ -652,19 +621,16 @@ def index():
 
     return render_template("index.html", history=history, razred=razred)
 
-# ===================== Ostalo =====================
 @app.errorhandler(413)
 def too_large(e):
     msg = f"<p><b>Greška:</b> Fajl je prevelik (limit {MAX_MB} MB). Pokušaj ponovo (npr. fotografija bez Live/HEIC duplih snimaka), ili koristi GCS upload.</p>"
-    return render_template("index.html", history=[{"user":"[slika]", "bot": msg}], razred=session.get("razred")), 413
+    return render_template("index.html", history=[{"user":"[SLIKA]", "bot": msg}], razred=session.get("razred")), 413
 
 @app.route("/clear", methods=["POST"])
 def clear():
     if request.form.get("confirm_clear") == "1":
         session.pop("history", None)
         session.pop("razred", None)
-        session.pop("last_image_src", None)
-        session.pop("last_task_numbers", None)
     if request.form.get("ajax") == "1":
         return render_template("index.html", history=[], razred=None)
     return redirect("/")
