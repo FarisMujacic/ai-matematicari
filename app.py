@@ -565,7 +565,7 @@ def index():
                 session["history"] = history
 
                 mod_str = f"{used_path}|{used_model}"
-                sheets_append_row_safe([display_user, odgovor, mod_str])
+                sheets_append_row_safe([pitanje, odgovor, mod_str])
 
                 if is_ajax:
                     return render_template("index.html", history=history, razred=razred)
@@ -627,7 +627,7 @@ def index():
                 session["history"] = history
 
                 mod_str = f"{used_path}|{used_model}"
-                sheets_append_row_safe([display_user, odgovor, mod_str])
+                sheets_append_row_safe([pitanje, odgovor, mod_str])
 
                 if is_ajax:
                     return render_template("index.html", history=history, razred=razred)
