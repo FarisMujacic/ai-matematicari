@@ -1,7 +1,7 @@
-
+# app.py (optimized: no double LLM call + async Sheets + OpenAI keep-alive)
 from flask import Flask, render_template, request, session, redirect, url_for, send_from_directory, jsonify
 from dotenv import load_dotenv
-import os, re, base64, json, html, datetime, time, logging
+import os, re, base64, json, html, datetime, time, logging, threading, queue, random
 from datetime import timedelta
 from io import BytesIO
 from uuid import uuid4
@@ -16,6 +16,12 @@ try:
     from google.cloud import storage
 except Exception:
     storage = None
+
+# --- HTTP client pooling for OpenAI
+try:
+    import httpx
+except Exception:
+    httpx = None
 
 load_dotenv(override=True)
 
@@ -43,20 +49,81 @@ os.makedirs(UPLOAD_DIR, exist_ok=True)
 
 OPENAI_TIMEOUT = float(os.getenv("OPENAI_TIMEOUT", "240"))
 OPENAI_MAX_RETRIES = int(os.getenv("OPENAI_MAX_RETRIES", "2"))
-client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"), timeout=OPENAI_TIMEOUT, max_retries=OPENAI_MAX_RETRIES)
+
+# Pooled HTTPX client za OpenAI (keep-alive)
+http_client = None
+if httpx is not None:
+    http_client = httpx.Client(
+        timeout=OPENAI_TIMEOUT,
+        limits=httpx.Limits(max_connections=100, max_keepalive_connections=20),
+        headers={"Connection": "keep-alive"},
+    )
+
+client = OpenAI(
+    api_key=os.getenv("OPENAI_API_KEY"),
+    timeout=OPENAI_TIMEOUT,
+    max_retries=OPENAI_MAX_RETRIES,
+    http_client=http_client,
+)
 
 MODEL_TEXT   = os.getenv("OPENAI_MODEL_TEXT", "gpt-5-mini")
 MODEL_VISION = os.getenv("OPENAI_MODEL_VISION", "gpt-5")
 
+# --- Google Sheets (optional) + async queue
+sheet = None
+sheets_q = queue.Queue(maxsize=200)
+
+def _sheets_worker():
+    """Pozadinski worker: čita redove iz queue i append-a u Sheet sa retry/backoffom."""
+    while True:
+        try:
+            payload = sheets_q.get()
+            if payload is None:
+                break
+            rows = payload.get("rows")
+            if sheet and rows:
+                # Append po redu radi preglednosti; može i batch_update, ali čuvam originalnu semantiku
+                for row in rows:
+                    # retry 3x sa jitterom
+                    ok = False
+                    delay = 0.8
+                    for attempt in range(3):
+                        try:
+                            sheet.append_row(row)
+                            ok = True
+                            break
+                        except Exception as e:
+                            log.warning("Sheets append failed (attempt %s/3): %s", attempt+1, e)
+                            time.sleep(delay + random.random()*0.3)
+                            delay *= 1.7
+                    if not ok:
+                        log.error("Sheets append permanently failed for row: %r", row)
+            sheets_q.task_done()
+        except Exception as e:
+            log.error("Sheets worker error: %s", e)
+
+sheets_thread = None
 try:
     SCOPE = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
     CREDS_FILE = "credentials.json"
     creds = ServiceAccountCredentials.from_json_keyfile_name(CREDS_FILE, SCOPE)
     gs_client = gspread.authorize(creds)
     sheet = gs_client.open("matematika-bot").sheet1
+    sheets_thread = threading.Thread(target=_sheets_worker, daemon=True)
+    sheets_thread.start()
+    log.info("Sheets enabled (async worker started).")
 except Exception as e:
     log.warning("Sheets disabled: %s", e)
     sheet = None
+
+def enqueue_sheet_row(row):
+    """Non-blocking enqueue; drop ako je queue pun (da ne blokira response i billing)."""
+    if not sheet:
+        return
+    try:
+        sheets_q.put_nowait({"rows": [row]})
+    except queue.Full:
+        log.warning("Sheets queue full; dropping row.")
 
 GCS_BUCKET = (os.getenv("GCS_BUCKET") or "").strip()
 GCS_SIGNED_GET = os.getenv("GCS_SIGNED_GET", "1") == "1"
@@ -410,9 +477,9 @@ def index():
                 try:
                     if sheet:
                         mod_str = f"{used_path}|{used_model}"
-                        sheet.append_row([combined_text if combined_text else "[SLIKA-URL]", odgovor, mod_str])
+                        enqueue_sheet_row([combined_text if combined_text else "[SLIKA-URL]", odgovor, mod_str])
                 except Exception as ee:
-                    log.warning("Sheets append error: %s", ee)
+                    log.warning("Sheets enqueue error: %s", ee)
 
                 if is_ajax:
                     return render_template("index.html", history=history, razred=razred)
@@ -468,9 +535,9 @@ def index():
                 try:
                     if sheet:
                         mod_str = f"{used_path}|{used_model}"
-                        sheet.append_row([combined_text if combined_text else "[SLIKA]", odgovor, mod_str])
+                        enqueue_sheet_row([combined_text if combined_text else "[SLIKA]", odgovor, mod_str])
                 except Exception as ee:
-                    log.warning("Sheets append error: %s", ee)
+                    log.warning("Sheets enqueue error: %s", ee)
 
                 if is_ajax:
                     return render_template("index.html", history=history, razred=razred)
@@ -512,19 +579,12 @@ def index():
                 messages.append({"role": "assistant", "content": msg["bot"]})
             messages.append({"role": "user", "content": pitanje})
 
+            # Jedan poziv je dovoljan (uklonjen duplikat)
             response = _openai_chat(MODEL_TEXT, messages, timeout=OPENAI_TIMEOUT)
             actual_model = getattr(response, "model", MODEL_TEXT)
             raw_odgovor = response.choices[0].message.content
             raw_odgovor = strip_ascii_graph_blocks(raw_odgovor)
             odgovor = f"<p>{latexify_fractions(raw_odgovor)}</p>"
-            try:
-                response = _openai_chat(MODEL_TEXT, messages, timeout=OPENAI_TIMEOUT)
-            except (APIConnectionError, APIStatusError, RateLimitError) as e:
-                log.warning("LLM error: %r", e)
-                odgovor = "<p><b>Greška:</b> Model sporo odgovara ili je zauzet. Pokušaj ponovo.</p>"
-                history.append({"user": pitanje, "bot": odgovor})
-                session["history"] = history[-8:]
-                return render_template("index.html", history=history, razred=razred)
 
             will_plot = should_plot(pitanje)
             if (not plot_expression_added) and will_plot:
@@ -539,9 +599,9 @@ def index():
             try:
                 if sheet:
                     mod_str = f"text|{actual_model}"
-                    sheet.append_row([pitanje, odgovor, mod_str])
+                    enqueue_sheet_row([pitanje, odgovor, mod_str])
             except Exception as ee:
-                log.warning("Sheets append error: %s", ee)
+                log.warning("Sheets enqueue error: %s", ee)
 
         except Exception as e:
             log.error("FATAL index.POST: %r", e)
@@ -619,10 +679,13 @@ def app_health():
         "MODEL_TEXT": MODEL_TEXT,
         "MODEL_VISION": MODEL_VISION,
         "has_api_key": bool(os.getenv("OPENAI_API_KEY")),
-        "problems": problems
+        "problems": problems,
+        "sheets_queue_size": (sheets_q.qsize() if sheet else None)
     }, (200 if not problems else 500)
 
 if __name__ == "__main__":
+    # Lokalno pokretanje (dev server). U produkciji koristi Gunicorn, npr:
+    # gunicorn -k gthread -w 1 --threads 8 -b :$PORT app:app
     port = int(os.environ.get("PORT", "8080"))
     debug = os.getenv("FLASK_DEBUG", "0") == "1"
     app.run(host="0.0.0.0", port=port, debug=debug)
