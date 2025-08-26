@@ -141,6 +141,8 @@
       <form id="ask-form" method="POST" enctype="multipart/form-data" autocomplete="off" action="/">
         <input type="hidden" name="history_json" id="history_json_main" value='{{ history|tojson|safe }}'>
         <input type="hidden" name="ajax" value="1">
+        <!-- NEW: rezervisano polje za image_url kad GCS uspije -->
+        <input type="hidden" name="image_url" id="image_url_hidden" value="">
 
         <div id="razred-wrapper" {% if razred %}style="display: none;"{% endif %}>
           <label for="razred">Koji si razred?</label>
@@ -162,8 +164,9 @@
           <div class="left">
             <label for="slika">Ili učitaj / uslikaj sliku:</label>
             <div class="file-row">
+              <!-- accept + capture -> na telefonu nudi i kameru i galeriju -->
               <input class="file-input" id="slika" type="file" name="slika" accept="image/*" capture="environment" />
-              <label for="slika" class="btn secondary">📎 Izaberi fajl</label>
+              <label for="slika" class="btn secondary">📎 Izaberi fajl / Kamera</label>
 
               <span id="file-chip" class="file-chip">
                 <span id="file-name">Nije odabran fajl</span>
@@ -274,19 +277,21 @@ async function uploadToGCS(file){
     return su.readUrl;
   }catch(err){
     console.warn('GCS upload fallback:', err);
-    return null;
+    return null; // server će primiti sam fajl
   }
 }
 
 document.addEventListener('DOMContentLoaded', () => {
   initDarkToggle();
 
-  const askForm = document.getElementById('ask-form');
+  const askForm   = document.getElementById('ask-form');
   const clearForm = document.getElementById('clear-form');
-  const hiddenMain = document.getElementById('history_json_main');
+  const hiddenMain= document.getElementById('history_json_main');
   const fileInput = document.getElementById('slika');
   const removeBtn = document.getElementById('remove-file');
-  const textarea = document.getElementById('pitanje');
+  const textarea  = document.getElementById('pitanje');
+  const razredSel = document.getElementById('razred');
+  const imageUrlHidden = document.getElementById('image_url_hidden');
 
   const cid = getCID();
   const HIST_KEY = 'matbot_history_' + cid;
@@ -300,9 +305,7 @@ document.addEventListener('DOMContentLoaded', () => {
     resetHistory(HIST_KEY, hiddenMain);
   }
 
-  if (fileInput){
-    fileInput.addEventListener('change', updateFileUI);
-  }
+  if (fileInput){ fileInput.addEventListener('change', updateFileUI); }
   if (removeBtn) removeBtn.addEventListener('click', clearFile);
 
   if (askForm){
@@ -314,18 +317,25 @@ document.addEventListener('DOMContentLoaded', () => {
         alert("Unesi matematičko pitanje ili učitaj sliku.");
         return;
       }
-      if (hiddenMain) hiddenMain.value = getTrimmedHistoryForSubmit(HIST_KEY);
       showTyping();
 
-      const fd = new FormData(askForm);
-
+      let readUrl = null;
       if (hasFile){
-        const f = fileInput.files[0];
-        const readUrl = await uploadToGCS(f);
-        if (readUrl){
-          fd.append('image_url', readUrl);
-          fd.delete('slika');
-        }
+        readUrl = await uploadToGCS(fileInput.files[0]); // pokušaj GCS
+        imageUrlHidden.value = readUrl || "";            // da i server vidi vrijednost
+      }
+
+      // >>> RUČNO pravimo FormData tek nakon što znamo readUrl/fajl
+      const fd = new FormData();
+      fd.append('ajax','1');
+      if (hiddenMain) fd.append('history_json', getTrimmedHistoryForSubmit(HIST_KEY));
+      if (razredSel && razredSel.value) fd.append('razred', razredSel.value);
+      if (textarea) fd.append('pitanje', textarea.value || '');
+
+      if (readUrl){
+        fd.append('image_url', readUrl);
+      } else if (hasFile){
+        fd.append('slika', fileInput.files[0], fileInput.files[0].name);
       }
 
       try{
@@ -355,6 +365,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
 window.onload = ()=> setTimeout(scrollToBottom, 150);
 
+// ------- Plot helpers (isto kao prije) -------
 function transformExpression(expr){
   return expr.replace(/\s+/g,'')
     .replace(/([0-9])([a-zA-Z])/g,'$1*$2')
