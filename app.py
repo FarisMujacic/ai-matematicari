@@ -146,6 +146,9 @@ _task_num_re = re.compile(
     flags=re.IGNORECASE
 )
 
+# follow-up tipa "497a", "498 b)" itd.
+FOLLOWUP_TASK_RE = re.compile(r"^\s*\d{2,5}\s*[a-z]\)?\s*$", re.IGNORECASE)
+
 def extract_requested_tasks(text: str):
     if not text:
         return []
@@ -548,6 +551,9 @@ def index():
                     image_url, razred, history, requested_tasks=requested, user_text=combined_text
                 )
 
+                # zapamti zadnju sliku
+                session["last_image_url"] = image_url
+
                 if (not plot_expression_added) and should_plot(combined_text):
                     expression = extract_plot_expression(combined_text, razred=razred, history=history)
                     if expression:
@@ -579,12 +585,24 @@ def index():
                     odgovor, used_path, used_model = route_image_flow(
                         body, razred, history, requested_tasks=requested, user_text=combined_text
                     )
+                    # persistiraj kopiju male slike za follow-up
+                    try:
+                        ext = os.path.splitext(slika.filename or "")[1].lower() or ".jpg"
+                        fname = f"{uuid4().hex}{ext}"
+                        path  = os.path.join(UPLOAD_DIR, fname)
+                        with open(path, "wb") as fp:
+                            fp.write(body)
+                        public_url = (request.url_root.rstrip("/") + "/uploads/" + fname)
+                        session["last_image_url"] = public_url
+                    except Exception as _e:
+                        log.warning("Couldn't persist small image for follow-up: %s", _e)
                 else:
                     if not (storage_client and GCS_BUCKET) and (GCS_REQUIRED or os.getenv("K_SERVICE")):
                         return render_template("index.html", history=history, razred=razred,
                                                error="GCS nije konfigurisan – upload velikih slika nije moguć."), 400
                     gcs_url = gcs_upload_filestorage(slika)
                     if gcs_url:
+                        session["last_image_url"] = gcs_url
                         odgovor, used_path, used_model = route_image_flow_url(
                             gcs_url, razred, history, requested_tasks=requested, user_text=combined_text
                         )
@@ -599,6 +617,7 @@ def index():
                         slika.save(path)
                         public_url = (request.url_root.rstrip("/") + "/uploads/" + fname)
                         log.info("Falling back to /uploads URL: %s", public_url)
+                        session["last_image_url"] = public_url
                         odgovor, used_path, used_model = route_image_flow_url(
                             public_url, razred, history, requested_tasks=requested, user_text=combined_text
                         )
@@ -622,6 +641,31 @@ def index():
 
             # --- PURE TEXT ---
             requested = extract_requested_tasks(pitanje)
+            last_url = session.get("last_image_url")
+
+            # ako je follow-up (npr. "497a") ili su traženi zadaci, a imamo zadnju sliku -> preusmjeri na vision
+            if last_url and (requested or (pitanje and FOLLOWUP_TASK_RE.match(pitanje))):
+                odgovor, used_path, used_model = route_image_flow_url(
+                    last_url, razred, history, requested_tasks=requested, user_text=pitanje
+                )
+
+                if (not plot_expression_added) and should_plot(pitanje):
+                    expression = extract_plot_expression(pitanje, razred=razred, history=history)
+                    if expression:
+                        odgovor = add_plot_div_once(odgovor, expression); plot_expression_added = True
+
+                history.append({"user": pitanje, "bot": odgovor.strip()})
+                history = history[-8:]
+                session["history"] = history
+
+                mod_str = f"{used_path}|{used_model}"
+                sheets_append_row_safe([pitanje, odgovor, mod_str])
+
+                if is_ajax:
+                    return render_template("index.html", history=history, razred=razred)
+                return redirect(url_for("index"))
+
+            # inače standardni TEXT pipeline
             odgovor, actual_model = answer_with_text_pipeline(pitanje, razred, history, requested)
 
             if (not plot_expression_added) and should_plot(pitanje):
