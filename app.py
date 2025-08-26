@@ -44,7 +44,7 @@ app.config["MAX_CONTENT_LENGTH"] = MAX_MB * 1024 * 1024
 UPLOAD_DIR = "/tmp/uploads"
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
-# >>> Novi prag za "preveliku" sliku (bez GCS): sve preko ovoga lijepo odbijamo
+# Prag za “preveliku” sliku kad NE želimo koristiti GCS fallback:
 MAX_IMAGE_BYTES = int(os.getenv("MAX_IMAGE_BYTES", "1500000"))  # ~1.5 MB
 
 OPENAI_TIMEOUT = float(os.getenv("OPENAI_TIMEOUT", "240"))
@@ -364,7 +364,21 @@ def _map_ordinals_to_detected(requested, detected):
 
 # ===================== Vision flows (TEXT + SLIKA u istom poruke) =====================
 def route_image_flow_url(image_url: str, razred: str, history, requested_tasks=None, user_text=None):
-    # složi jedan user content sa tekstom i slikom
+    # Ako je uključen Mathpix i mod je "prefer", probaj OCR -> TEXT pipeline prije Vision-a
+    if MATHPIX_ENABLED and MATHPIX_MODE == "prefer":
+        try:
+            mp = mathpix_from_src(image_url)
+            if mp.get("ok"):
+                pure = (mp.get("text") or mp.get("latex") or "").strip()
+                if pure:
+                    html_out, text_model = answer_with_text_pipeline(
+                        pure, razred, history, requested_tasks or []
+                    )
+                    return html_out, "mathpix_text", text_model
+        except Exception as e:
+            log.warning("Mathpix prefer (URL) fail: %s", e)
+
+    # standardni VISION tok
     user_content = []
     if user_text:
         user_content.append({"type": "text", "text": f"Korisnički tekst: {user_text}"})
@@ -372,7 +386,6 @@ def route_image_flow_url(image_url: str, razred: str, history, requested_tasks=N
     user_content.append({"type": "text", "text": base_text})
     user_content.append({"type": "image_url", "image_url": {"url": image_url}})
 
-    # prvo detektuj listu vidljivih glavnih brojeva pa mapiraj “prvi/drugi/zadnji”
     detected = _detect_exercise_numbers_from_image(user_content)
     mapped = _map_ordinals_to_detected(requested_tasks or [], detected)
     only_clause, strict_geom_policy = _vision_clauses(mapped or requested_tasks)
@@ -382,8 +395,26 @@ def route_image_flow_url(image_url: str, razred: str, history, requested_tasks=N
 
     try:
         resp = _openai_chat(MODEL_VISION, messages, timeout=OPENAI_TIMEOUT)
+        actual_model = getattr(resp, "model", MODEL_VISION)
+        raw = resp.choices[0].message.content
+        raw = strip_ascii_graph_blocks(raw)
+        return f"<p>{latexify_fractions(raw)}</p>", "vision_url", actual_model
     except (APIConnectionError, APIStatusError, RateLimitError) as e:
         log.warning("OpenAI vision URL error: %r", e)
+        # Ako smo u fallback modu, pokušaj Mathpix kada Vision ne uspije
+        if MATHPIX_ENABLED and MATHPIX_MODE == "fallback":
+            try:
+                mp = mathpix_from_src(image_url)
+                if mp.get("ok"):
+                    pure = (mp.get("text") or mp.get("latex") or "").strip()
+                    if pure:
+                        html_out, text_model = answer_with_text_pipeline(
+                            pure, razred, history, requested_tasks or []
+                        )
+                        return html_out, "mathpix_text", text_model
+            except Exception as ee:
+                log.warning("Mathpix fallback (URL) fail: %s", ee)
+
         msg = str(e)
         if "Timeout while downloading" in msg or "timed out while downloading" in msg:
             return (
@@ -396,14 +427,22 @@ def route_image_flow_url(image_url: str, razred: str, history, requested_tasks=N
         log.error("OpenAI vision URL fatal: %s", e)
         return "<p><b>Greška:</b> Neočekivan problem pri analizi slike.</p>", "vision_url_error", "n/a"
 
-    actual_model = getattr(resp, "model", MODEL_VISION)
-    raw = resp.choices[0].message.content
-    raw = strip_ascii_graph_blocks(raw)
-    return f"<p>{latexify_fractions(raw)}</p>", "vision_url", actual_model
-
 def route_image_flow(slika_bytes: bytes, razred: str, history, requested_tasks=None, user_text=None):
-    image_b64 = base64.b64encode(slika_bytes).decode()
+    # Ako je uključen Mathpix i mod je "prefer", probaj prvo OCR -> TEXT
+    if MATHPIX_ENABLED and MATHPIX_MODE == "prefer":
+        try:
+            mp = mathpix_from_bytes(slika_bytes)
+            if mp.get("ok"):
+                pure = (mp.get("text") or mp.get("latex") or "").strip()
+                if pure:
+                    html_out, text_model = answer_with_text_pipeline(
+                        pure, razred, history, requested_tasks or []
+                    )
+                    return html_out, "mathpix_text", text_model
+        except Exception as e:
+            log.warning("Mathpix prefer (bytes) fail: %s", e)
 
+    image_b64 = base64.b64encode(slika_bytes).decode()
     user_content = []
     if user_text:
         user_content.append({"type": "text", "text": f"Korisnički tekst: {user_text}"})
@@ -419,17 +458,29 @@ def route_image_flow(slika_bytes: bytes, razred: str, history, requested_tasks=N
 
     try:
         resp = _openai_chat(MODEL_VISION, messages, timeout=OPENAI_TIMEOUT)
+        actual_model = getattr(resp, "model", MODEL_VISION)
+        raw = resp.choices[0].message.content
+        raw = strip_ascii_graph_blocks(raw)
+        return f"<p>{latexify_fractions(raw)}</p>", "vision_direct", actual_model
     except (APIConnectionError, APIStatusError, RateLimitError) as e:
         log.warning("OpenAI vision base64 error: %r", e)
+        # Fallback na Mathpix kad Vision ne uspije
+        if MATHPIX_ENABLED and MATHPIX_MODE == "fallback":
+            try:
+                mp = mathpix_from_bytes(slika_bytes)
+                if mp.get("ok"):
+                    pure = (mp.get("text") or mp.get("latex") or "").strip()
+                    if pure:
+                        html_out, text_model = answer_with_text_pipeline(
+                            pure, razred, history, requested_tasks or []
+                        )
+                        return html_out, "mathpix_text", text_model
+            except Exception as ee:
+                log.warning("Mathpix fallback (bytes) fail: %s", ee)
         return "<p><b>Greška:</b> Servis sporo odgovara ili je zauzet. Pokušaj ponovo.</p>", "vision_direct_error", "n/a"
     except Exception as e:
         log.error("OpenAI vision base64 fatal: %s", e)
         return "<p><b>Greška:</b> Neočekivan problem pri analizi slike.</p>", "vision_direct_error", "n/a"
-
-    actual_model = getattr(resp, "model", MODEL_VISION)
-    raw = resp.choices[0].message.content
-    raw = strip_ascii_graph_blocks(raw)
-    return f"<p>{latexify_fractions(raw)}</p>", "vision_direct", actual_model
 
 # ===================== Request helpers =====================
 def get_history_from_request():
@@ -582,7 +633,7 @@ def index():
                 combined_text = pitanje
                 requested = extract_requested_tasks(combined_text)
 
-                # >>> Ako je slika PREKO praga: odmah poruka u chat (bez GCS pokušaja)
+                # Ako je slika PREKO praga: odmah poruka u chat (bez GCS pokušaja)
                 if size_bytes > MAX_IMAGE_BYTES:
                     kb = size_bytes // 1024
                     max_kb = MAX_IMAGE_BYTES // 1024
@@ -592,8 +643,6 @@ def index():
                     history.append({"user": display_user, "bot": bot_msg})
                     history = history[-8:]
                     session["history"] = history
-                    # ne zapisujemo u Sheets za grešku, ali možeš ako želiš:
-                    # sheets_append_row_safe([display_user, bot_msg, "error|image_too_large"])
                     if is_ajax:
                         return render_template("index.html", history=history, razred=razred)
                     return redirect(url_for("index"))
@@ -637,7 +686,7 @@ def index():
             requested = extract_requested_tasks(pitanje)
             last_url = session.get("last_image_url")
 
-            # follow-up na zadnju sliku (npr. “497a” ili sl. uz već uploadovanu sliku)
+            # follow-up na zadnju sliku (npr. “497a”) ili ako su traženi zadaci
             if last_url and (requested or (pitanje and FOLLOWUP_TASK_RE.match(pitanje))):
                 odgovor, used_path, used_model = route_image_flow_url(
                     last_url, razred, history, requested_tasks=requested, user_text=pitanje
@@ -653,7 +702,6 @@ def index():
                 session["history"] = history
 
                 mod_str = f"{used_path}|{used_model}"
-                # BUGFIX: ovdje koristimo pitanje (display_user nije definisan u ovoj grani)
                 sheets_append_row_safe([pitanje, odgovor, mod_str])
 
                 if is_ajax:
