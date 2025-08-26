@@ -12,7 +12,8 @@ from flask_cors import CORS
 import requests  # Mathpix
 
 import gspread
-from oauth2client.service_account import ServiceAccountCredentials
+from google.oauth2.service_account import Credentials as SACreds
+import google.auth
 
 try:
     from google.cloud import storage
@@ -57,16 +58,54 @@ MATHPIX_MODE    = os.getenv("MATHPIX_MODE", "fallback").lower().strip()  # fallb
 MATHPIX_ENABLED = bool(MATHPIX_API_ID and MATHPIX_API_KEY and MATHPIX_MODE != "off")
 MATHPIX_TIMEOUT = float(os.getenv("MATHPIX_TIMEOUT", "30"))
 
-# ---------------- Sheets ----------------
+# ---------------- Sheets (ENV/ADC friendly) ----------------
+SHEETS_SCOPES = [
+    "https://www.googleapis.com/auth/spreadsheets",
+    "https://www.googleapis.com/auth/drive",
+]
+
+GSHEET_ID   = os.getenv("GSHEET_ID", "").strip()
+GSHEET_NAME = os.getenv("GSHEET_NAME", "matematika-bot").strip()
+
+sheet = None
 try:
-    SCOPE = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
-    CREDS_FILE = "credentials.json"
-    creds = ServiceAccountCredentials.from_json_keyfile_name(CREDS_FILE, SCOPE)
-    gs_client = gspread.authorize(creds)
-    sheet = gs_client.open("matematika-bot").sheet1
+    b64 = os.getenv("GOOGLE_SHEETS_CREDENTIALS_B64", "").strip()
+    if b64:
+        # 1) Prod: ENV base64 od JSON ključa
+        info  = json.loads(base64.b64decode(b64).decode("utf-8"))
+        creds = SACreds.from_service_account_info(info, scopes=SHEETS_SCOPES)
+        gc = gspread.authorize(creds)
+        sa_email = info.get("client_email")
+        log.info("Sheets via service_account_b64 (sa=%s)", sa_email)
+    elif os.path.exists("credentials.json"):
+        # 2) Dev: lokalni fajl
+        creds = SACreds.from_service_account_file("credentials.json", scopes=SHEETS_SCOPES)
+        gc = gspread.authorize(creds)
+        log.info("Sheets via service_account_file")
+    else:
+        # 3) Cloud Run ADC (bez JSON-a)
+        adc_creds, _ = google.auth.default(scopes=SHEETS_SCOPES)
+        gc = gspread.authorize(adc_creds)
+        log.info("Sheets via ADC default credentials")
+
+    ss = gc.open_by_key(GSHEET_ID) if GSHEET_ID else gc.open(GSHEET_NAME)
+    sheet = ss.sheet1
+    log.info("Sheets enabled (title=%s id=%s)", getattr(ss, "title", "?"), getattr(ss, "id", "?"))
 except Exception as e:
     log.warning("Sheets disabled: %s", e)
     sheet = None
+
+def sheets_append_row_safe(values):
+    """Sigurno dodavanje reda u Sheets bez rušenja requesta."""
+    if not sheet:
+        log.warning("Sheets not configured; skipping append.")
+        return False
+    try:
+        sheet.append_row(values, value_input_option="USER_ENTERED")
+        return True
+    except Exception as e:
+        log.warning("Sheets append error: %s", e)
+        return False
 
 # ---------------- GCS ----------------
 GCS_BUCKET = (os.getenv("GCS_BUCKET") or "").strip()
@@ -519,12 +558,8 @@ def index():
                 history = history[-8:]
                 session["history"] = history
 
-                try:
-                    if sheet:
-                        mod_str = f"{used_path}|{used_model}"
-                        sheet.append_row([display_user, odgovor, mod_str])
-                except Exception as ee:
-                    log.warning("Sheets append error: %s", ee)
+                mod_str = f"{used_path}|{used_model}"
+                sheets_append_row_safe([display_user, odgovor, mod_str])
 
                 if is_ajax:
                     return render_template("index.html", history=history, razred=razred)
@@ -578,12 +613,8 @@ def index():
                 history = history[-8:]
                 session["history"] = history
 
-                try:
-                    if sheet:
-                        mod_str = f"{used_path}|{used_model}"
-                        sheet.append_row([display_user, odgovor, mod_str])
-                except Exception as ee:
-                    log.warning("Sheets append error: %s", ee)
+                mod_str = f"{used_path}|{used_model}"
+                sheets_append_row_safe([display_user, odgovor, mod_str])
 
                 if is_ajax:
                     return render_template("index.html", history=history, razred=razred)
@@ -602,12 +633,8 @@ def index():
             history = history[-8:]
             session["history"] = history
 
-            try:
-                if sheet:
-                    mod_str = f"text|{actual_model}"
-                    sheet.append_row([pitanje, odgovor, mod_str])
-            except Exception as ee:
-                log.warning("Sheets append error: %s", ee)
+            mod_str = f"text|{actual_model}"
+            sheets_append_row_safe([pitanje, odgovor, mod_str])
 
         except Exception as e:
             log.error("FATAL index.POST: %r", e)
