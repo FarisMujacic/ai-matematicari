@@ -377,54 +377,51 @@ document.querySelectorAll('.plot-request').forEach(plotDiv=>{
   const log = (t) => { if (logEl) logEl.textContent += t + "\n"; };
 
   btn?.addEventListener('click', async () => {
-    const fileInput = document.querySelector('input[name="slika"]');
-    const f = fileInput?.files?.[0] || null;
+  const fileInput = document.querySelector('input[name="slika"]');
+  const f = fileInput?.files?.[0];
 
-    const razred  = document.querySelector('select[name="razred"]')?.value || '';
-    const pitanje = document.querySelector('textarea[name="pitanje"]')?.value?.trim() || '';
+  const razred  = document.querySelector('select[name="razred"]')?.value || '';
+  const pitanje = document.querySelector('textarea[name="pitanje"]')?.value?.trim() || '';
 
-    if (!f && !pitanje) { alert('Unesi tekst ili odaberi sliku.'); return; }
-
+  let r;
+  if (f) {
+    // šaljemo FormData kad ima fajla
     const fd = new FormData();
-    if (f)        fd.append('file', f, f.name);
-    if (razred)   fd.append('razred', razred);
-    if (pitanje)  fd.append('pitanje', pitanje);  // server ga čita kao user_text
+    fd.append('file', f, f.name);
+    fd.append('razred', razred);
+    fd.append('pitanje', pitanje);
+    r = await fetch('/submit', { method: 'POST', body: fd });
+  } else {
+    // tekst-only ide kao JSON
+    r = await fetch('/submit', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ razred, pitanje })
+    });
+  }
 
-    let r;
-    try {
-      r = await fetch('/submit', { method: 'POST', body: fd, credentials: 'include' });
-    } catch {
-      log('Greška na /submit (mreža).'); return;
-    }
-    if (!r.ok) { log('Greška na /submit'); return; }
+  if (!r.ok) { log('Greška na /submit'); return; }
+  const j = await r.json();
+  const job = j.job_id;
+  log('JOB_ID: ' + job);
 
-    const j = await r.json();
-    const job = j.job_id;
-    log('JOB_ID: ' + job);
-
-    // poll status
-    while (true) {
-      await new Promise(rs => setTimeout(rs, 1000));
-      const s = await fetch('/status/' + job);
-      if (!s.ok) { log('Greška na /status'); break; }
-      const sj = await s.json();
-      log(JSON.stringify(sj));
-      if (sj.status === 'done' || sj.status === 'error') {
-        if (sj.result?.html) {
-          // ubaci odgovor u chat izgled (umjesto pre)
-          const chat = document.getElementById('chat-container') || document.body;
-          const wrap = document.createElement('div');
-          wrap.className = 'qa-pair';
-          wrap.innerHTML =
-            `<div class="chat-message user-message"><div class="bubble user"><p>${pitanje ? pitanje : (f ? '[SLIKA]' : '')}</p></div></div>
-             <div class="chat-message bot-message"><div class="bubble">${sj.result.html}</div></div>`;
-          chat.appendChild(wrap);
-          window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' });
-        }
-        break;
+  while (true) {
+    await new Promise(rs => setTimeout(rs, 1000));
+    const s = await fetch('/status/' + job);
+    if (!s.ok) { log('Greška na /status'); break; }
+    const sj = await s.json();
+    log(JSON.stringify(sj));
+    if (sj.status === 'done' || sj.status === 'error') {
+      if (sj.result?.html) {
+        const box = document.createElement('div');
+        box.innerHTML = sj.result.html;
+        document.getElementById('asyncLog').appendChild(box);
       }
+      break;
     }
-  });
+  }
+});
+
 })();
 </script>
 
