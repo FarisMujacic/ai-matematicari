@@ -102,6 +102,12 @@ def sheets_append_row_safe(values):
         log.warning("Sheets append error: %s", e)
         return False
 
+
+def log_to_sheet(job_id, razred, user_text, odgovor_html, source_tag, model_name):
+    # Kolone: vrijeme, razred, pitanje, odgovor(HTML), izvor|model, job_id
+    ts = datetime.datetime.utcnow().isoformat()
+    sheets_append_row_safe([ts, razred, user_text, odgovor_html, f"{source_tag}|{model_name}", job_id])
+
 # ---------------- GCS ----------------
 GCS_BUCKET = (os.getenv("GCS_BUCKET") or "").strip()
 GCS_SIGNED_GET = os.getenv("GCS_SIGNED_GET", "1") == "1"
@@ -825,6 +831,8 @@ def tasks_process():
                     "user_text": user_text,
                     "requested": [],
                 }, merge=True)
+                log_to_sheet(job_id, razred, user_text, html_msg, "triage", MODEL_VISION_LIGHT)
+                log_to_sheet(job_id, razred, user_text, odgovor_html, used_path, used_model)
                 return "OK", 200
 
             # Ako je korisnik napisao “prvi / zadnji / 2.” → mapiraj na stvarne brojeve
