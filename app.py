@@ -20,7 +20,8 @@ try:
 except Exception:
     storage = None
 
-load_dotenv(override=True)
+# --- VAŽNO: ne pregazi Cloud Run env varijable .env fajlom ---
+load_dotenv(override=False)
 
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
 log = logging.getLogger("matbot")
@@ -49,7 +50,12 @@ MAX_IMAGE_BYTES = int(os.getenv("MAX_IMAGE_BYTES", "1500000"))  # ~1.5 MB
 
 OPENAI_TIMEOUT = float(os.getenv("OPENAI_TIMEOUT", "240"))
 OPENAI_MAX_RETRIES = int(os.getenv("OPENAI_MAX_RETRIES", "2"))
-client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"), timeout=OPENAI_TIMEOUT, max_retries=OPENAI_MAX_RETRIES)
+
+# --- Sigurno čitanje API ključa (trim whitespace/newline) ---
+_OPENAI_API_KEY = (os.getenv("OPENAI_API_KEY") or "").strip()
+if not _OPENAI_API_KEY:
+    log.error("OPENAI_API_KEY nije postavljen u okruženju.")
+client = OpenAI(api_key=_OPENAI_API_KEY, timeout=OPENAI_TIMEOUT, max_retries=OPENAI_MAX_RETRIES)
 
 MODEL_TEXT   = os.getenv("OPENAI_MODEL_TEXT", "gpt-5-mini")
 MODEL_VISION = os.getenv("OPENAI_MODEL_VISION", "gpt-5")
@@ -196,6 +202,22 @@ def should_plot(text: str) -> bool:
     if _negation_re.search(text):
         return False
     return _trigger_re.search(text) is not None
+
+# ---- Jednostavan ekstraktor izraza za graf (ako je tražen) ----
+_FUNC_PAT = re.compile(
+    r"(?:y\s*=\s*[^;,\n]+)|(?:[fFgG]\s*\(\s*x\s*\)\s*=\s*[^;,\n]+)",
+    flags=re.IGNORECASE
+)
+def extract_plot_expression(user_text: str, razred: str = "", history=None) -> str | None:
+    if not user_text:
+        return None
+    m = _FUNC_PAT.search(user_text)
+    if m:
+        expr = m.group(0).strip()
+        # ukloni nepotrebne razmake
+        expr = re.sub(r"\s+", " ", expr)
+        return expr
+    return None
 
 # ===================== OpenAI helpers =====================
 def _openai_chat(model: str, messages: list, timeout: float = None):
@@ -770,8 +792,9 @@ def add_no_cache_headers(resp):
         pass
     return resp
 
+# --- popravka: bez zabranjenog flags= u re.sub; koristimo kompajlirani regex ---
 def strip_ascii_graph_blocks(text: str) -> str:
-    fence_re = re.compile(r"```([\s\S]*?)```", flags=re.MULTILINE)
+    fence = re.compile(r"```([\s\S]*?)```", flags=re.MULTILINE)
     def looks_like_ascii_graph(block: str) -> bool:
         sample = block.strip()
         if len(sample) == 0: return False
@@ -782,10 +805,10 @@ def strip_ascii_graph_blocks(text: str) -> str:
     def repl(m):
         block = m.group(1)
         return "" if looks_like_ascii_graph(block) else m.group(0)
-    text = re.sub(r"(Grafički prikaz.*?:\s*)?```[\s\S]*?```",
-                  lambda m: "" if "```" in m.group(0) else m.group(0),
-                  text, flags=re.IGNORECASE)
-    return fence_re.sub(repl, text)
+    # skini česte "Grafički prikaz: ```...```" blokove
+    graf_re = re.compile(r"(Grafički prikaz.*?:\s*)?```[\s\S]*?```", re.IGNORECASE)
+    text = graf_re.sub(lambda m: "" if "```" in m.group(0) else m.group(0), text)
+    return fence.sub(repl, text)
 
 @app.get("/app-health")
 def app_health():
@@ -800,7 +823,7 @@ def app_health():
         "llm_ok": llm_ok,
         "MODEL_TEXT": MODEL_TEXT,
         "MODEL_VISION": MODEL_VISION,
-        "has_api_key": bool(os.getenv("OPENAI_API_KEY")),
+        "has_api_key": bool(_OPENAI_API_KEY),
         "MATHPIX_ENABLED": MATHPIX_ENABLED,
         "MATHPIX_MODE": MATHPIX_MODE,
         "problems": problems
@@ -808,7 +831,8 @@ def app_health():
 
 # ===================== ASINHRONO: Cloud Tasks + Firestore + GCS =====================
 
-PROJECT_ID        = os.getenv("GCP_PROJECT")
+# Cloud Run izloži GOOGLE_CLOUD_PROJECT; dopusti i GCP_PROJECT kao fallback
+PROJECT_ID        = (os.getenv("GOOGLE_CLOUD_PROJECT") or os.getenv("GCP_PROJECT") or "").strip()
 REGION            = os.getenv("REGION", "europe-west1")
 TASKS_QUEUE       = os.getenv("TASKS_QUEUE", "matbot-queue")
 TASKS_TARGET_URL  = os.getenv("TASKS_TARGET_URL")  # npr. https://<run-url>/tasks/process
@@ -816,7 +840,7 @@ TASKS_SECRET      = os.getenv("TASKS_SECRET", "super-secret")
 
 def _firestore_client():
     from google.cloud import firestore  # type: ignore
-    return firestore.Client()
+    return firestore.Client(project=PROJECT_ID or None)
 
 def _tasks_client():
     from google.cloud import tasks_v2  # type: ignore
@@ -826,7 +850,7 @@ def _create_task(payload: dict):
     if not TASKS_TARGET_URL:
         raise RuntimeError("TASKS_TARGET_URL is not set")
     if not PROJECT_ID:
-        raise RuntimeError("GCP_PROJECT is not set")
+        raise RuntimeError("GOOGLE_CLOUD_PROJECT/GCP_PROJECT is not set")
     tc = _tasks_client()
     parent = tc.queue_path(PROJECT_ID, REGION, TASKS_QUEUE)
     from google.cloud import tasks_v2  # type: ignore
