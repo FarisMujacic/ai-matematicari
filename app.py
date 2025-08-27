@@ -882,22 +882,31 @@ def submit_async():
     fs = _firestore_client()
     from google.cloud import firestore as gcf  # type: ignore
 
-    # meta iz forme ili JSON-a
-    form_mode = ("file" in request.files)
-    if form_mode:
-        razred = (request.form.get("razred") or "").strip() or "8"
-        pitanje = (request.form.get("pitanje") or "").strip()
+    job_id = str(uuid4())
+
+    # polja iz forme / JSON-a
+    # napomena: dozvoli i JSON i multipart/form-data
+    user_text = ""
+    razred = ""
+    requested = []
+
+    if request.content_type and request.content_type.startswith("multipart/form-data"):
+        user_text = (request.form.get("pitanje") or "").strip()
+        razred = (request.form.get("razred") or "").strip()
     else:
         data = request.get_json(silent=True) or {}
-        razred = (data.get("razred") or "").strip() or "8"
-        pitanje = (data.get("pitanje") or "").strip()
+        user_text = (data.get("pitanje") or data.get("user_text") or "").strip()
+        razred = (data.get("razred") or "").strip()
 
-    job_id = str(uuid4())
+    requested = extract_requested_tasks(user_text)
+
+    # inicijalni zapis u Firestore
     fs.collection("jobs").document(job_id).set({
         "status": "pending",
         "created_at": gcf.SERVER_TIMESTAMP,
         "razred": razred,
-        "pitanje": pitanje
+        "user_text": user_text,
+        "requested": requested,
     })
 
     if not (storage_client and GCS_BUCKET):
@@ -905,37 +914,40 @@ def submit_async():
 
     # upload slike u GCS
     image_gcs_path = None
-    bucket = storage_client.bucket(GCS_BUCKET)
-
-    if form_mode and "file" in request.files:
+    if "file" in request.files:
         f = request.files["file"]
         name = f"uploads/{job_id}/{f.filename or 'image.bin'}"
+        bucket = storage_client.bucket(GCS_BUCKET)
         blob = bucket.blob(name)
-        blob.upload_from_file(f.stream, content_type=f.mimetype or "application/octet-stream")
+        blob.upload_from_file(f, content_type=f.mimetype or "application/octet-stream")
         image_gcs_path = name
     else:
-        image_b64 = (data.get("image_b64") if not form_mode else None)
+        data = request.get_json(silent=True) or {}
+        image_b64 = data.get("image_b64")
         if image_b64:
             if "," in image_b64:
                 image_b64 = image_b64.split(",", 1)[1]
             raw = base64.b64decode(image_b64)
             name = f"uploads/{job_id}/image.bin"
+            bucket = storage_client.bucket(GCS_BUCKET)
             blob = bucket.blob(name)
             blob.upload_from_string(raw, content_type="application/octet-stream")
             image_gcs_path = name
         else:
             return jsonify({"error": "No image provided"}), 400
 
-    # kreiraj task
+    # kreiraj Cloud Task s dodatnim poljima
     _create_task({
         "job_id": job_id,
         "bucket": GCS_BUCKET,
         "image_path": image_gcs_path,
         "razred": razred,
-        "pitanje": pitanje
+        "user_text": user_text,
+        "requested": requested,
     })
 
     return jsonify({"job_id": job_id, "status": "queued"}), 202
+
 
 @app.post("/tasks/process")
 def tasks_process():
@@ -943,41 +955,43 @@ def tasks_process():
         return "Forbidden", 403
 
     payload = request.get_json(force=True)
-    job_id      = payload.get("job_id")
-    bucket_name = payload.get("bucket")
-    image_path  = payload.get("image_path")
-    razred      = (payload.get("razred") or "8").strip()
-    pitanje     = (payload.get("pitanje") or "").strip()
+    job_id = payload["job_id"]
+    bucket_name = payload["bucket"]
+    image_path = payload["image_path"]
+    razred = (payload.get("razred") or "").strip()
+    user_text = (payload.get("user_text") or "").strip()
+    requested = payload.get("requested") or []
 
     fs = _firestore_client()
     from google.cloud import firestore as gcf  # type: ignore
 
     try:
-        if not (storage_client and bucket_name and image_path):
-            raise RuntimeError("GCS storage not ready")
+        if not storage_client:
+            raise RuntimeError("GCS storage client not initialized")
 
         blob = storage_client.bucket(bucket_name).blob(image_path)
         image_bytes = blob.download_as_bytes()
 
-        # Pripremi requested_tasks iz tekstualnog pitanja (npr. "zadnji", "498", ...)
-        requested = extract_requested_tasks(pitanje) if pitanje else []
-
-        # Pozovi postojeći vision flow na bytes; history prazno, user_text = pitanje
+        # POKRENI TVOJ VISION PIPELINE umjesto placeholdera:
+        # - koristi isti helper kao u sync dijelu: route_image_flow(...)
+        # - history može biti prazan u async tasku
         odgovor_html, used_path, used_model = route_image_flow(
-            image_bytes, razred, history=[], requested_tasks=requested, user_text=pitanje or None
+            image_bytes,
+            razred if razred in DOZVOLJENI_RAZREDI else "7",
+            history=[],
+            requested_tasks=requested,
+            user_text=user_text
         )
 
         fs.collection("jobs").document(job_id).set({
             "status": "done",
             "result": {
                 "html": odgovor_html,
-                "path": used_path,
                 "model": used_model,
-                "bytes": len(image_bytes)
+                "path": used_path,
             },
             "finished_at": gcf.SERVER_TIMESTAMP
         }, merge=True)
-
         return "OK", 200
 
     except Exception as e:
@@ -988,6 +1002,7 @@ def tasks_process():
             "finished_at": gcf.SERVER_TIMESTAMP
         }, merge=True)
         return "ERROR", 500
+
 
 @app.get("/status/<job_id>")
 def async_status(job_id):
