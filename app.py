@@ -55,7 +55,7 @@ _OPENAI_API_KEY = (os.getenv("OPENAI_API_KEY") or "").strip()
 if not _OPENAI_API_KEY:
     log.error("OPENAI_API_KEY nije postavljen u okruženju.")
 client = OpenAI(api_key=_OPENAI_API_KEY, timeout=OPENAI_TIMEOUT, max_retries=OPENAI_MAX_RETRIES)
-
+MODEL_VISION_LIGHT = os.getenv("OPENAI_MODEL_VISION_LIGHT") or os.getenv("OPENAI_MODEL_VISION", "gpt-5")
 MODEL_TEXT   = os.getenv("OPENAI_MODEL_TEXT", "gpt-5-mini")
 MODEL_VISION = os.getenv("OPENAI_MODEL_VISION", "gpt-5")
 
@@ -287,25 +287,23 @@ def _vision_clauses(requested_tasks):
     return only_clause, strict_geom_policy
 
 def _detect_exercise_numbers_from_image(user_content):
-    """Pokušaj vidjeti brojeve zadataka sa slike — čisto da 'prvi/drugi/zadnji' možemo mapirati."""
     try:
         sys = {
             "role": "system",
-            "content": (
-                "Pročitaj sliku i izdvoji VIDljive glavne brojeve zadataka (npr. 497, 498...). "
-                "Odgovori isključivo brojevima odvojenim zarezom (npr. '497, 498'). Ako nema, reci 'NONE'."
-            )
+            "content": ("Pročitaj sliku i izdvoji vidljive brojeve zadataka (npr. 497, 498...). "
+                        "Odgovori isključivo brojevima odvojenim zarezom (npr. '497, 498'). "
+                        "Ako nema brojeva odgovori 'NONE'.")
         }
         msgs = [sys, {"role": "user", "content": user_content}]
-        resp = _openai_chat(MODEL_VISION, msgs, timeout=min(OPENAI_TIMEOUT, 30))
+        resp = _openai_chat(MODEL_VISION_LIGHT, msgs, timeout=20)  # kratko
         txt = (resp.choices[0].message.content or "").strip()
         if txt.upper() == "NONE":
             return []
-        nums = [int(n) for n in re.findall(r"\d{2,5}", txt)]
-        return nums
+        return [int(n) for n in re.findall(r"\d{2,5}", txt)]
     except Exception as e:
         log.warning("Detect numbers fail: %s", e)
         return []
+
 
 def _map_ordinals_to_detected(requested, detected):
     if not requested:
@@ -324,6 +322,12 @@ def _map_ordinals_to_detected(requested, detected):
         if n not in seen:
             dedup.append(n); seen.add(n)
     return dedup
+
+
+
+
+   
+
 
 def route_image_flow_url(image_url: str, razred: str, history, requested_tasks=None, user_text=None):
     user_content = []
@@ -738,19 +742,21 @@ def submit_async():
     _create_task(payload)
     return jsonify({"job_id": job_id, "status": "queued"}), 202
 
+
+
 @app.post("/tasks/process")
 def tasks_process():
     if request.headers.get("X-Tasks-Secret") != TASKS_SECRET:
         return "Forbidden", 403
 
     payload = request.get_json(force=True)
-    job_id = payload["job_id"]
-    bucket_name = payload.get("bucket")
+    job_id     = payload["job_id"]
+    bucket     = payload.get("bucket")
     image_path = payload.get("image_path")
     image_url  = payload.get("image_url")
-    razred = (payload.get("razred") or "").strip()
-    user_text = (payload.get("user_text") or "").strip()
-    requested = payload.get("requested") or []
+    razred     = (payload.get("razred") or "").strip()
+    user_text  = (payload.get("user_text") or "").strip()
+    requested  = payload.get("requested") or []
     if razred not in DOZVOLJENI_RAZREDI:
         razred = "5"
 
@@ -758,13 +764,57 @@ def tasks_process():
     from google.cloud import firestore as gcf  # type: ignore
 
     try:
-        history = []  # async nema sesijsku historiju
+        history = []
 
-        # 1) Odredi mod: čista slika / slika-url / samo tekst
+        # ---------------- TRIAGE: brzo detektuj brojeve zadataka ----------------
+        detected = []
+        if (image_path or image_url):
+            # pripremi user_content za brzu detekciju brojeva (light model, mali timeout)
+            if image_path:
+                if not storage_client:
+                    raise RuntimeError("GCS storage client not initialized")
+                blob = storage_client.bucket(bucket).blob(image_path)
+                img_bytes = blob.download_as_bytes()
+                img_b64 = base64.b64encode(img_bytes).decode()
+                user_content = [
+                    {"type":"text","text":"Na slici je matematički zadatak."},
+                    {"type":"image_url","image_url":{"url": f"data:image/jpeg;base64,{img_b64}"}}
+                ]
+            else:
+                user_content = [
+                    {"type":"text","text":"Na slici je matematički zadatak."},
+                    {"type":"image_url","image_url":{"url": image_url}}
+                ]
+
+            detected = _detect_exercise_numbers_from_image(user_content)
+
+            # Ako korisnik NIJE precizirao, a na slici ima više zadataka → pitaj koji želi
+            if not requested and len(detected) >= 2:
+                html_msg = (
+                    "<p>Vidim više zadataka na slici: <b>"
+                    + ", ".join(map(str, detected))
+                    + "</b>.</p><p>Napiši koje tačno želiš da riješim "
+                    "(npr. <code>497</code> ili <code>497, 498</code> ili "
+                    "<code>prvi</code>/<code>zadnji</code>), pa ću riješiti samo njih.</p>"
+                )
+                fs.collection("jobs").document(job_id).set({
+                    "status": "done",
+                    "result": {"html": html_msg, "path": "triage", "model": MODEL_VISION_LIGHT},
+                    "finished_at": gcf.SERVER_TIMESTAMP,
+                    "razred": razred,
+                    "user_text": user_text,
+                    "requested": [],
+                }, merge=True)
+                return "OK", 200
+
+            # Ako je korisnik napisao “prvi / zadnji / 2.” → mapiraj na stvarne brojeve
+            if requested and detected:
+                requested = _map_ordinals_to_detected(requested, detected)
+
+        # ---------------- GLAVNA OBRADA ----------------
         if image_path:
-            if not storage_client:
-                raise RuntimeError("GCS storage client not initialized")
-            blob = storage_client.bucket(bucket_name).blob(image_path)
+            # već smo skinuli bytes za triage; skini opet (jednostavno)
+            blob = storage_client.bucket(bucket).blob(image_path)
             image_bytes = blob.download_as_bytes()
             odgovor_html, used_path, used_model = route_image_flow(
                 image_bytes, razred, history=history, requested_tasks=requested, user_text=user_text
@@ -778,7 +828,7 @@ def tasks_process():
             odgovor_html, used_model = answer_with_text_pipeline(user_text, razred, history, requested)
             used_path = "text"
 
-        # 2) rezultat u Firestore
+        # ---------------- SPREMI REZULTAT ----------------
         fs.collection("jobs").document(job_id).set({
             "status": "done",
             "result": {"html": odgovor_html, "path": used_path, "model": used_model},
@@ -797,16 +847,9 @@ def tasks_process():
             "error": str(e),
             "finished_at": gcf.SERVER_TIMESTAMP
         }, merge=True)
-        # vrati 500 da Cloud Tasks proba retry ako je podešeno
+        # vrati 500 ako želiš da Cloud Tasks pokuša retry
         return "ERROR", 500
 
-@app.get("/status/<job_id>")
-def async_status(job_id):
-    fs = _firestore_client()
-    doc = fs.collection("jobs").document(job_id).get()
-    if not doc.exists:
-        return jsonify({"error": "job not found"}), 404
-    return jsonify(doc.to_dict()), 200
 
 # ===================== Run =====================
 if __name__ == "__main__":
