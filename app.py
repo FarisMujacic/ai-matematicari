@@ -238,18 +238,35 @@ def is_geometry_like(text: str) -> bool:
 
 # ===================== OpenAI helpers =====================
 def _openai_chat(model: str, messages: list, timeout: float = None, max_tokens: int | None = None):
+    """
+    Kompat wrapper: novi modeli očekuju max_completion_tokens (ne max_tokens).
+    Ako to ne podrže, fallback na max_tokens.
+    """
     try:
         cli = client if timeout is None else client.with_options(timeout=timeout)
-        return cli.chat.completions.create(
-            model=model,
-            messages=messages,
-            temperature=OPENAI_TEMPERATURE,
-            max_tokens=max_tokens
-        )
-    except (APIConnectionError, APIStatusError, RateLimitError) as e:
-        raise e
-    except Exception as e:
-        raise e
+        params = {
+            "model": model,
+            "messages": messages,
+            "temperature": OPENAI_TEMPERATURE,
+        }
+        if max_tokens is not None:
+            params["max_completion_tokens"] = max_tokens
+        return cli.chat.completions.create(**params)
+
+    except APIStatusError as e:
+        # Ako model ne podrži max_completion_tokens, probaj ponovo sa max_tokens
+        if "max_completion_tokens" in str(e) or "Unsupported parameter: 'max_completion_tokens'" in str(e):
+            cli = client if timeout is None else client.with_options(timeout=timeout)
+            params = {
+                "model": model,
+                "messages": messages,
+                "temperature": OPENAI_TEMPERATURE,
+            }
+            if max_tokens is not None:
+                params["max_tokens"] = max_tokens
+            return cli.chat.completions.create(**params)
+        raise
+
 
 def _short_system_prompt(razred: str, only_clause: str = "", strict_geom_policy: str = ""):
     base = PROMPTI_PO_RAZREDU.get(razred, PROMPTI_PO_RAZREDU["5"])
