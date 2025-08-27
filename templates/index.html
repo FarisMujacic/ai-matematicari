@@ -104,7 +104,6 @@
   #to-bottom{position:fixed;right:18px;bottom:22px;z-index:1001;display:none;padding:.6rem .8rem;border-radius:12px;font-weight:600;background:var(--btn-bg);color:#fff;border:none;cursor:pointer;box-shadow:0 6px 18px rgba(0,0,0,.18);}
   #to-bottom:hover{background:var(--btn-bg-hover);}
 
-  /* mali spinner/labela za async */
   .muted{color:var(--muted);font-size:.95rem}
   .hidden{display:none}
   </style>
@@ -126,7 +125,7 @@
     </div>
   </header>
 
-{% if error %}<div class="error-banner">{{ error }}</div>{% endif %}
+  {% if error %}<div class="error-banner">{{ error }}</div>{% endif %}
 
   <main class="stack">
     {% if history and history|length > 0 %}
@@ -198,6 +197,9 @@
         <input type="hidden" name="confirm_clear" value="1" />
       </form>
     </div>
+
+    <!-- Mjesto za asinhroni rezultat -->
+    <div id="async-result" class="card" style="display:none;"></div>
   </main>
 
   <button id="to-bottom" onclick="scrollToBottom()">⬇ Do dna</button>
@@ -289,6 +291,7 @@ document.addEventListener('DOMContentLoaded', () => {
   if (fileInput){ fileInput.addEventListener('change', updateFileUI); }
   if (removeBtn) removeBtn.addEventListener('click', clearFile);
 
+  // --- Sync (postojeće dugme Pošalji) ---
   if (askForm){
     askForm.addEventListener('submit', async (e)=>{
       e.preventDefault();
@@ -316,6 +319,7 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   }
 
+  // --- Clear ---
   if (clearForm){
     clearForm.addEventListener('submit', async (e)=>{
       e.preventDefault();
@@ -328,6 +332,83 @@ document.addEventListener('DOMContentLoaded', () => {
       resetHistory(HIST_KEY, hiddenMain);
     });
   }
+
+  // --- ASINHRONO ---
+  const asyncBtn = document.getElementById('asyncSend');
+  const asyncSpinner = document.getElementById('asyncSpinner');
+  const asyncOut = document.getElementById('async-result');
+
+  function showAsync(html){
+    if (!asyncOut) return;
+    asyncOut.style.display = 'block';
+    asyncOut.innerHTML = `<div class="bubble">${html}</div>`;
+    // Math + grafovi u novom sadržaju
+    if (window.MathJax && MathJax.typesetPromise) { MathJax.typesetPromise([asyncOut]); }
+    applyPlotsIn(asyncOut);
+    window.scrollTo({top: document.body.scrollHeight, behavior: 'smooth'});
+  }
+  function setSpinner(v){ if (asyncSpinner) asyncSpinner.classList.toggle('hidden', !v); }
+
+  async function poll(jobId){
+    let tries=0, maxTries=180; // ~6min @ 2s
+    const sleep = (ms)=> new Promise(r=>setTimeout(r, ms));
+    while(tries++ < maxTries){
+      await sleep(2000);
+      try{
+        const r = await fetch(`/status/${jobId}`, {cache:'no-store', credentials:'include'});
+        if (!r.ok) throw new Error('status http '+r.status);
+        const data = await r.json();
+        if (data.status === 'done'){
+          setSpinner(false);
+          const html = (data.result && data.result.html) || '<i>Nema rezultata.</i>';
+          showAsync(html);
+          return;
+        }
+        if (data.status === 'error'){
+          setSpinner(false);
+          showAsync(`<div class="alert alert-danger">Greška: ${data.error || 'nepoznato'}</div>`);
+          return;
+        }
+      }catch(err){
+        setSpinner(false);
+        showAsync('<div class="alert alert-danger">Greška pri provjeri statusa.</div>');
+        return;
+      }
+    }
+    setSpinner(false);
+    showAsync('<div class="alert alert-warning">Istek vremena čekanja na rezultat.</div>');
+  }
+
+  asyncBtn?.addEventListener('click', async ()=>{
+    // priprema podataka
+    const f = fileInput?.files?.[0] || null;
+    const razred  = razredSel?.value || '';
+    const tekst   = textarea?.value?.trim() || '';
+
+    if (!razred){ alert('Odaberi razred.'); return; }
+    if (!f && !tekst){ alert('Unesi pitanje ili dodaj sliku.'); return; }
+
+    setSpinner(true);
+    if (asyncOut){ asyncOut.style.display='block'; asyncOut.innerHTML = '<span class="muted">Zahtjev poslan…</span>'; }
+
+    // UVIJEK šaljemo kao FormData (backend čita request.form i request.files)
+    const fd = new FormData();
+    fd.append('razred', razred);
+    fd.append('user_text', tekst);     // backend prima 'user_text' ili 'pitanje'
+    if (f) fd.append('file', f, f.name);
+
+    try{
+      const r = await fetch('/submit', { method:'POST', body: fd, credentials:'include' });
+      if (!r.ok){ setSpinner(false); showAsync('Greška na /submit.'); return; }
+      const j = await r.json();
+      if (!j.job_id){ setSpinner(false); showAsync('Nije vraćen job_id.'); return; }
+      showAsync('<span class="muted">Zahtjev prihvaćen, obrađujem…</span>');
+      poll(j.job_id);
+    }catch(err){
+      setSpinner(false);
+      showAsync('Greška pri slanju zahtjeva.');
+    }
+  });
 });
 
 window.onload = ()=> setTimeout(scrollToBottom, 150);
@@ -359,73 +440,24 @@ function drawPlot(expression, container){
   container.appendChild(graphDiv);
   Plotly.newPlot(graphDiv,data,layout);
 }
+function applyPlotsIn(root){
+  root.querySelectorAll('.plot-request').forEach(plotDiv=>{
+    let expression=plotDiv.getAttribute("data-expression");
+    const parent=plotDiv.closest(".bubble") || root;
+    if(!expression||!parent) return;
+    if(expression.trim().startsWith("y=")) expression=expression.replace(/^y\s*=\s*/i,"").trim();
+    drawPlot(expression,parent);
+    plotDiv.remove();
+  });
+}
+// primjena na već renderovani sadržaj
 document.querySelectorAll('.plot-request').forEach(plotDiv=>{
-  let expression=plotDiv.getAttribute("data-expression");
-  const parent=plotDiv.closest(".bubble");
-  if(!expression||!parent) return;
+  const parent=plotDiv.closest(".bubble") || document.body;
+  let expression=plotDiv.getAttribute("data-expression")||'';
   if(expression.trim().startsWith("y=")) expression=expression.replace(/^y\s*=\s*/i,"").trim();
   drawPlot(expression,parent);
   plotDiv.remove();
 });
 </script>
-
-
-<script>
-(async function () {
-  const btn = document.getElementById('asyncSend');
-  const logEl = document.getElementById('asyncLog');
-  const log = (t) => { if (logEl) logEl.textContent += t + "\n"; };
-
-  btn?.addEventListener('click', async () => {
-  const fileInput = document.querySelector('input[name="slika"]');
-  const f = fileInput?.files?.[0];
-
-  const razred  = document.querySelector('select[name="razred"]')?.value || '';
-  const pitanje = document.querySelector('textarea[name="pitanje"]')?.value?.trim() || '';
-
-  let r;
-  if (f) {
-    // šaljemo FormData kad ima fajla
-    const fd = new FormData();
-    fd.append('file', f, f.name);
-    fd.append('razred', razred);
-    fd.append('pitanje', pitanje);
-    r = await fetch('/submit', { method: 'POST', body: fd });
-  } else {
-    // tekst-only ide kao JSON
-    r = await fetch('/submit', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ razred, pitanje })
-    });
-  }
-
-  if (!r.ok) { log('Greška na /submit'); return; }
-  const j = await r.json();
-  const job = j.job_id;
-  log('JOB_ID: ' + job);
-
-  while (true) {
-    await new Promise(rs => setTimeout(rs, 1000));
-    const s = await fetch('/status/' + job);
-    if (!s.ok) { log('Greška na /status'); break; }
-    const sj = await s.json();
-    log(JSON.stringify(sj));
-    if (sj.status === 'done' || sj.status === 'error') {
-      if (sj.result?.html) {
-        const box = document.createElement('div');
-        box.innerHTML = sj.result.html;
-        document.getElementById('asyncLog').appendChild(box);
-      }
-      break;
-    }
-  }
-});
-
-})();
-</script>
-
-
-
 </body>
 </html>
