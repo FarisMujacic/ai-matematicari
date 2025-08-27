@@ -890,7 +890,7 @@ def submit_async():
         name = f"uploads/{job_id}/{f.filename or 'image.bin'}"
         bucket = storage_client.bucket(GCS_BUCKET)
         blob = bucket.blob(name)
-        blob.upload_from_file(f, content_type=f.mimetype or "application/octet-stream")
+        blob.upload_from_file(f.stream, content_type=f.mimetype or "application/octet-stream")
         image_gcs_path = name
     else:
         data = request.get_json(silent=True) or {}
@@ -968,3 +968,4 @@ if __name__ == "__main__":
     port = int(os.environ.get("PORT", "8080"))
     debug = os.getenv("FLASK_DEBUG", "0") == "1"
     app.run(host="0.0.0.0", port=port, debug=debug)
+
