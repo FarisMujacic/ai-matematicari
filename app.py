@@ -882,25 +882,12 @@ def submit_async():
     fs = _firestore_client()
     from google.cloud import firestore as gcf  # type: ignore
 
-    job_id = str(uuid4())
-
-    # polja iz forme / JSON-a
-    # napomena: dozvoli i JSON i multipart/form-data
-    user_text = ""
-    razred = ""
-    requested = []
-
-    if request.content_type and request.content_type.startswith("multipart/form-data"):
-        user_text = (request.form.get("pitanje") or "").strip()
-        razred = (request.form.get("razred") or "").strip()
-    else:
-        data = request.get_json(silent=True) or {}
-        user_text = (data.get("pitanje") or data.get("user_text") or "").strip()
-        razred = (data.get("razred") or "").strip()
-
+    # dodatni kontekst iz forme (ako stiže iz web UI-ja ili iz klijenta)
+    razred = (request.form.get("razred") or request.args.get("razred") or "").strip()
+    user_text = (request.form.get("user_text") or request.form.get("pitanje") or "").strip()
     requested = extract_requested_tasks(user_text)
 
-    # inicijalni zapis u Firestore
+    job_id = str(uuid4())
     fs.collection("jobs").document(job_id).set({
         "status": "pending",
         "created_at": gcf.SERVER_TIMESTAMP,
@@ -912,7 +899,7 @@ def submit_async():
     if not (storage_client and GCS_BUCKET):
         return jsonify({"error": "GCS not configured (GCS_BUCKET)"}), 400
 
-    # upload slike u GCS
+    # upload u GCS
     image_gcs_path = None
     if "file" in request.files:
         f = request.files["file"]
@@ -936,7 +923,7 @@ def submit_async():
         else:
             return jsonify({"error": "No image provided"}), 400
 
-    # kreiraj Cloud Task s dodatnim poljima
+    # enqueue task (PROSLIJEDI sve što treba workerskom endpointu)
     _create_task({
         "job_id": job_id,
         "bucket": GCS_BUCKET,
@@ -947,6 +934,8 @@ def submit_async():
     })
 
     return jsonify({"job_id": job_id, "status": "queued"}), 202
+
+  
 
 
 @app.post("/tasks/process")
@@ -961,6 +950,9 @@ def tasks_process():
     razred = (payload.get("razred") or "").strip()
     user_text = (payload.get("user_text") or "").strip()
     requested = payload.get("requested") or []
+    # mala zaštita
+    if razred not in DOZVOLJENI_RAZREDI:
+        razred = "5"
 
     fs = _firestore_client()
     from google.cloud import firestore as gcf  # type: ignore
@@ -969,29 +961,27 @@ def tasks_process():
         if not storage_client:
             raise RuntimeError("GCS storage client not initialized")
 
+        # 1) skini sliku
         blob = storage_client.bucket(bucket_name).blob(image_path)
         image_bytes = blob.download_as_bytes()
 
-        # POKRENI TVOJ VISION PIPELINE umjesto placeholdera:
-        # - koristi isti helper kao u sync dijelu: route_image_flow(...)
-        # - history može biti prazan u async tasku
+        # 2) ODRADI stvarnu obradu (Vision -> odgovor)
+        #    koristi postojeće funkcije iz koda
         odgovor_html, used_path, used_model = route_image_flow(
-            image_bytes,
-            razred if razred in DOZVOLJENI_RAZREDI else "7",
-            history=[],
-            requested_tasks=requested,
-            user_text=user_text
+            image_bytes, razred, history=[], requested_tasks=requested, user_text=user_text
         )
 
+        # 3) spremi rezultat
         fs.collection("jobs").document(job_id).set({
             "status": "done",
-            "result": {
-                "html": odgovor_html,
-                "model": used_model,
-                "path": used_path,
-            },
-            "finished_at": gcf.SERVER_TIMESTAMP
+            "result": {"html": odgovor_html, "path": used_path, "model": used_model},
+            "finished_at": gcf.SERVER_TIMESTAMP,
+            "razred": razred,
+            "user_text": user_text,
+            "requested": requested,
         }, merge=True)
+
+        # Vrati 200 -> Cloud Tasks NE retry-a
         return "OK", 200
 
     except Exception as e:
@@ -1001,6 +991,7 @@ def tasks_process():
             "error": str(e),
             "finished_at": gcf.SERVER_TIMESTAMP
         }, merge=True)
+        # 200 ili 500? Ako želiš retry, vrati 500.
         return "ERROR", 500
 
 
