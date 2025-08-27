@@ -806,6 +806,140 @@ def app_health():
         "problems": problems
     }, (200 if not problems else 500)
 
+# ===================== ASINHRONO: Cloud Tasks + Firestore + GCS =====================
+
+PROJECT_ID        = os.getenv("GCP_PROJECT")
+REGION            = os.getenv("REGION", "europe-west1")
+TASKS_QUEUE       = os.getenv("TASKS_QUEUE", "matbot-queue")
+TASKS_TARGET_URL  = os.getenv("TASKS_TARGET_URL")  # npr. https://<run-url>/tasks/process
+TASKS_SECRET      = os.getenv("TASKS_SECRET", "super-secret")
+
+def _firestore_client():
+    from google.cloud import firestore  # type: ignore
+    return firestore.Client()
+
+def _tasks_client():
+    from google.cloud import tasks_v2  # type: ignore
+    return tasks_v2.CloudTasksClient()
+
+def _create_task(payload: dict):
+    if not TASKS_TARGET_URL:
+        raise RuntimeError("TASKS_TARGET_URL is not set")
+    if not PROJECT_ID:
+        raise RuntimeError("GCP_PROJECT is not set")
+    tc = _tasks_client()
+    parent = tc.queue_path(PROJECT_ID, REGION, TASKS_QUEUE)
+    from google.cloud import tasks_v2  # type: ignore
+    task = {
+        "http_request": {
+            "http_method": tasks_v2.HttpMethod.POST,
+            "url": TASKS_TARGET_URL,
+            "headers": {
+                "Content-Type": "application/json",
+                "X-Tasks-Secret": TASKS_SECRET
+            },
+            "body": json.dumps(payload).encode(),
+        }
+    }
+    return tc.create_task(request={"parent": parent, "task": task})
+
+@app.route("/submit", methods=["POST", "OPTIONS"])
+def submit_async():
+    if request.method == "OPTIONS":
+        return ("", 204)
+
+    fs = _firestore_client()
+    from google.cloud import firestore as gcf  # type: ignore
+
+    job_id = str(uuid4())
+    fs.collection("jobs").document(job_id).set({
+        "status": "pending",
+        "created_at": gcf.SERVER_TIMESTAMP
+    })
+
+    if not (storage_client and GCS_BUCKET):
+        return jsonify({"error": "GCS not configured (GCS_BUCKET)"}), 400
+
+    image_gcs_path = None
+    if "file" in request.files:
+        f = request.files["file"]
+        name = f"uploads/{job_id}/{f.filename or 'image.bin'}"
+        bucket = storage_client.bucket(GCS_BUCKET)
+        blob = bucket.blob(name)
+        blob.upload_from_file(f, content_type=f.mimetype or "application/octet-stream")
+        image_gcs_path = name
+    else:
+        data = request.get_json(silent=True) or {}
+        image_b64 = data.get("image_b64")
+        if image_b64:
+            if "," in image_b64:
+                image_b64 = image_b64.split(",", 1)[1]
+            raw = base64.b64decode(image_b64)
+            name = f"uploads/{job_id}/image.bin"
+            bucket = storage_client.bucket(GCS_BUCKET)
+            blob = bucket.blob(name)
+            blob.upload_from_string(raw, content_type="application/octet-stream")
+            image_gcs_path = name
+        else:
+            return jsonify({"error": "No image provided"}), 400
+
+    _create_task({
+        "job_id": job_id,
+        "bucket": GCS_BUCKET,
+        "image_path": image_gcs_path
+    })
+
+    return jsonify({"job_id": job_id, "status": "queued"}), 202
+
+@app.post("/tasks/process")
+def tasks_process():
+    if request.headers.get("X-Tasks-Secret") != TASKS_SECRET:
+        return "Forbidden", 403
+
+    payload = request.get_json(force=True)
+    job_id = payload["job_id"]
+    bucket_name = payload["bucket"]
+    image_path = payload["image_path"]
+
+    fs = _firestore_client()
+    from google.cloud import firestore as gcf  # type: ignore
+
+    try:
+        if not storage_client:
+            raise RuntimeError("GCS storage client not initialized")
+
+        blob = storage_client.bucket(bucket_name).blob(image_path)
+        image_bytes = blob.download_as_bytes()
+
+        # OVDJE ubaci svoju pravu obradu (Mathpix/OpenAI) po potrebi.
+        result_text = f"Primljeno {len(image_bytes)} bajtova. Obrada OK."
+
+        fs.collection("jobs").document(job_id).set({
+            "status": "done",
+            "result": {"text": result_text},
+            "finished_at": gcf.SERVER_TIMESTAMP
+        }, merge=True)
+        return "OK", 200
+
+    except Exception as e:
+        log.exception("Task processing failed")
+        fs.collection("jobs").document(job_id).set({
+            "status": "error",
+            "error": str(e),
+            "finished_at": gcf.SERVER_TIMESTAMP
+        }, merge=True)
+        return "ERROR", 500
+
+@app.get("/status/<job_id>")
+def async_status(job_id):
+    fs = _firestore_client()
+    doc = fs.collection("jobs").document(job_id).get()
+    if not doc.exists:
+        return jsonify({"error": "job not found"}), 404
+    return jsonify(doc.to_dict()), 200
+
+# ===================== /ASINHRONO =====================
+
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", "8080"))
     debug = os.getenv("FLASK_DEBUG", "0") == "1"
