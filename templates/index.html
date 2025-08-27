@@ -99,6 +99,16 @@
     .form-actions .right .btn{width:100%}
   }
 
+  .error-banner{
+  max-width:900px;margin:12px auto 0;
+  background:#ffe9e9;border:1px solid #f3b8b8;color:#7a1e1e;
+  padding:.8rem 1rem;border-radius:10px;
+}
+body.dark .error-banner{
+  background:#3b1f1f;border-color:#7a3838;color:#ffd7d7;
+}
+
+
   #to-bottom{position:fixed;right:18px;bottom:22px;z-index:1001;display:none;padding:.6rem .8rem;border-radius:12px;font-weight:600;background:var(--btn-bg);color:#fff;border:none;cursor:pointer;box-shadow:0 6px 18px rgba(0,0,0,.18);}
   #to-bottom:hover{background:var(--btn-bg-hover);}
   </style>
@@ -119,6 +129,9 @@
       </div>
     </div>
   </header>
+{% if error %}
+<div class="error-banner">{{ error }}</div>
+{% endif %}
 
   <main class="stack">
     {% if history and history|length > 0 %}
@@ -144,7 +157,8 @@
         <!-- NEW: rezervisano polje za image_url kad GCS uspije -->
         <input type="hidden" name="image_url" id="image_url_hidden" value="">
 
-        <div id="razred-wrapper" {% if razred %}style="display: none;"{% endif %}>
+        <div id="razred-wrapper" {% if razred and not error %}style="display: none;"{% endif %}>
+
           <label for="razred">Koji si razred?</label>
           <select name="razred" id="razred" required>
             <option value="" disabled {% if not razred %}selected{% endif %}>-- Odaberi razred --</option>
@@ -175,6 +189,10 @@
               </span>
             </div>
           </div>
+          <div class="mt-3">
+  <button id="asyncSend" type="button">Pošalji ASINHRONO (beta)</button>
+  <pre id="asyncLog" style="white-space:pre-wrap;"></pre>
+</div>
 
           <div class="right">
             <button type="submit" class="btn">✉️ Pošalji</button>
@@ -401,6 +419,49 @@ document.querySelectorAll('.plot-request').forEach(plotDiv=>{
   drawPlot(expression,parent);
   plotDiv.remove();
 });
+</script>
+<script>
+(async function () {
+  const btn = document.getElementById('asyncSend');
+  const log = (t) => document.getElementById('asyncLog').textContent += t + "\n";
+
+  btn?.addEventListener('click', async () => {
+    const fileInput = document.querySelector('input[name="slika"]');
+    const f = fileInput?.files?.[0];
+    if (!f) { alert('Odaberi sliku.'); return; }
+
+    // pokupi i razred/tekst ako postoje u formi
+    const razred = document.querySelector('select[name="razred"]')?.value || '';
+    const pitanje = document.querySelector('textarea[name="pitanje"]')?.value || '';
+
+    const fd = new FormData();
+    fd.append('file', f, f.name);
+    fd.append('razred', razred);
+    fd.append('pitanje', pitanje);
+
+    const r = await fetch('/submit', { method: 'POST', body: fd });
+    if (!r.ok) { log('Greška na /submit'); return; }
+    const j = await r.json();
+    const job = j.job_id;
+    log('JOB_ID: ' + job);
+
+    while (true) {
+      await new Promise(rs => setTimeout(rs, 1000));
+      const s = await fetch('/status/' + job);
+      if (!s.ok) { log('Greška na /status'); break; }
+      const sj = await s.json();
+      log(JSON.stringify(sj));
+      if (sj.status === 'done' || sj.status === 'error') {
+        if (sj.result?.html) {
+          const box = document.createElement('div');
+          box.innerHTML = sj.result.html;
+          document.getElementById('asyncLog').appendChild(box);
+        }
+        break;
+      }
+    }
+  });
+})();
 </script>
 </body>
 </html>
