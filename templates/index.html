@@ -52,7 +52,9 @@
   .toggle-row{display:flex;align-items:center;justify-content:space-between;gap:.75rem;}
   .toggle-slider{position:relative;width:64px;height:32px;background:#cfd8dc;border-radius:32px;cursor:pointer;transition:background .25s;}
   .toggle-slider::before{content:"";position:absolute;top:3px;left:3px;width:26px;height:26px;background:#fff;border-radius:50%;box-shadow:0 2px 6px rgba(0,0,0,.25);transition:transform .25s;}
-  #darkToggle{display:none;} #darkToggle:checked + .toggle-slider{background:#4caf50;} #darkToggle:checked + .toggle-slider::before{transform: translateX(32px);}
+  #darkToggle{display:none;}
+  #darkToggle:checked + .toggle-slider{background:#4caf50;}
+  #darkToggle:checked + .toggle-slider::before{transform: translateX(32px);}
 
   main{max-width:900px;margin:0 auto;padding:16px;}
   .card{background:var(--card-bg);border:1px solid var(--card-border);border-radius:16px;padding:1.25rem;box-shadow:0 8px 30px rgba(0,0,0,.08);backdrop-filter: blur(10px);}
@@ -88,10 +90,7 @@
   .btn.secondary{background:transparent;color:var(--btn-bg);border:2px solid var(--btn-bg);}
   .btn.danger{background:var(--danger);}
 
-  .form-actions{
-    display:flex;align-items:center;justify-content:space-between;gap:1rem;flex-wrap:wrap;
-    padding-top:.75rem;border-top:1px solid var(--card-border);
-  }
+  .form-actions{display:flex;align-items:center;justify-content:space-between;gap:1rem;flex-wrap:wrap;padding-top:.75rem;border-top:1px solid var(--card-border);}
   .form-actions .left{display:flex;align-items:center;gap:.75rem;flex-wrap:wrap;}
   .form-actions .right{display:flex;align-items:center;gap:.6rem;flex-wrap:wrap;}
   @media (max-width:700px){
@@ -99,18 +98,15 @@
     .form-actions .right .btn{width:100%}
   }
 
-  .error-banner{
-  max-width:900px;margin:12px auto 0;
-  background:#ffe9e9;border:1px solid #f3b8b8;color:#7a1e1e;
-  padding:.8rem 1rem;border-radius:10px;
-}
-body.dark .error-banner{
-  background:#3b1f1f;border-color:#7a3838;color:#ffd7d7;
-}
-
+  .error-banner{max-width:900px;margin:12px auto 0;background:#ffe9e9;border:1px solid #f3b8b8;color:#7a1e1e;padding:.8rem 1rem;border-radius:10px;}
+  body.dark .error-banner{background:#3b1f1f;border-color:#7a3838;color:#ffd7d7;}
 
   #to-bottom{position:fixed;right:18px;bottom:22px;z-index:1001;display:none;padding:.6rem .8rem;border-radius:12px;font-weight:600;background:var(--btn-bg);color:#fff;border:none;cursor:pointer;box-shadow:0 6px 18px rgba(0,0,0,.18);}
   #to-bottom:hover{background:var(--btn-bg-hover);}
+
+  /* mali spinner/labela za async */
+  .muted{color:var(--muted);font-size:.95rem}
+  .hidden{display:none}
   </style>
 </head>
 <body>
@@ -129,9 +125,8 @@ body.dark .error-banner{
       </div>
     </div>
   </header>
-{% if error %}
-<div class="error-banner">{{ error }}</div>
-{% endif %}
+
+{% if error %}<div class="error-banner">{{ error }}</div>{% endif %}
 
   <main class="stack">
     {% if history and history|length > 0 %}
@@ -154,11 +149,9 @@ body.dark .error-banner{
       <form id="ask-form" method="POST" enctype="multipart/form-data" autocomplete="off" action="/">
         <input type="hidden" name="history_json" id="history_json_main" value='{{ history|tojson|safe }}'>
         <input type="hidden" name="ajax" value="1">
-        <!-- NEW: rezervisano polje za image_url kad GCS uspije -->
         <input type="hidden" name="image_url" id="image_url_hidden" value="">
 
         <div id="razred-wrapper" {% if razred and not error %}style="display: none;"{% endif %}>
-
           <label for="razred">Koji si razred?</label>
           <select name="razred" id="razred" required>
             <option value="" disabled {% if not razred %}selected{% endif %}>-- Odaberi razred --</option>
@@ -178,21 +171,20 @@ body.dark .error-banner{
           <div class="left">
             <label for="slika">Ili učitaj / uslikaj sliku:</label>
             <div class="file-row">
-              <!-- accept + capture -> na telefonu nudi i kameru i galeriju -->
               <input class="file-input" id="slika" type="file" name="slika" accept="image/*" />
-
               <label for="slika" class="btn secondary">📎 Izaberi fajl / Kamera</label>
-
               <span id="file-chip" class="file-chip">
                 <span id="file-name">Nije odabran fajl</span>
                 <button type="button" class="remove" id="remove-file" title="Ukloni fajl">×</button>
               </span>
             </div>
           </div>
-          <div class="mt-3">
-  <button id="asyncSend" type="button">Pošalji ASINHRONO (beta)</button>
-  <pre id="asyncLog" style="white-space:pre-wrap;"></pre>
-</div>
+
+          <!-- ASINHRONO dugme + spinner -->
+          <div class="right">
+            <button id="asyncSend" type="button" class="btn secondary">Pošalji ASINHRONO (beta)</button>
+            <span id="asyncSpinner" class="muted hidden">⏳ Obrada u toku…</span>
+          </div>
 
           <div class="right">
             <button type="submit" class="btn">✉️ Pošalji</button>
@@ -216,10 +208,7 @@ function initDarkToggle(){
   const cb = document.getElementById('darkToggle');
   const saved = localStorage.getItem('matbot_dark') === '1';
   if (saved){ document.body.classList.add('dark'); cb.checked = true; }
-  cb.addEventListener('change', ()=>{
-    document.body.classList.toggle('dark', cb.checked);
-    localStorage.setItem('matbot_dark', cb.checked ? '1' : '0');
-  });
+  cb.addEventListener('change', ()=>{ document.body.classList.toggle('dark', cb.checked); localStorage.setItem('matbot_dark', cb.checked ? '1' : '0');});
 }
 
 function showTyping(){ const el = document.getElementById('typing'); if(!el) return; el.style.display='block'; scrollToBottom(); }
@@ -230,12 +219,8 @@ function scrollToBottom(){ const chat=document.getElementById('chat-container');
   const chat = document.getElementById('chat-container');
   const btn = document.getElementById('to-bottom');
   if(!chat || !btn) return;
-  const toggleBtn = ()=>{
-    const nearBottom = (chat.scrollHeight - chat.scrollTop - chat.clientHeight) < 40;
-    btn.style.display = nearBottom ? 'none' : 'block';
-  };
-  chat.addEventListener('scroll', toggleBtn);
-  setTimeout(toggleBtn, 200);
+  const toggleBtn = ()=>{ const nearBottom = (chat.scrollHeight - chat.scrollTop - chat.clientHeight) < 40; btn.style.display = nearBottom ? 'none' : 'block'; };
+  chat.addEventListener('scroll', toggleBtn); setTimeout(toggleBtn, 200);
 })();
 
 function getCID(){
@@ -251,8 +236,7 @@ function resetHistory(HIST_KEY, hiddenMain){
   if (hiddenMain) hiddenMain.value = '[]';
 }
 function getTrimmedHistoryForSubmit(HIST_KEY){
-  let arr=[];
-  try{ arr = JSON.parse(localStorage.getItem(HIST_KEY) || '[]'); }catch(_){}
+  let arr=[]; try{ arr = JSON.parse(localStorage.getItem(HIST_KEY) || '[]'); }catch(_){}
   const last5 = arr.slice(-5).map(m=>({ user:String(m.user||'').slice(0,2000), bot:String(m.bot||'').slice(0,4000) }));
   return JSON.stringify(last5);
 }
@@ -262,42 +246,22 @@ function updateFileUI(){
   const fileName = document.getElementById('file-name');
   const fileChip  = document.getElementById('file-chip');
   const hasFile = fileInput && fileInput.files && fileInput.files[0];
-  if (hasFile){
-    fileName.textContent = fileInput.files[0].name;
-    fileChip.classList.add('show');
-  } else {
-    fileName.textContent = 'Nije odabran fajl';
-    fileChip.classList.remove('show');
-  }
+  if (hasFile){ fileName.textContent = fileInput.files[0].name; fileChip.classList.add('show');}
+  else{ fileName.textContent='Nije odabran fajl'; fileChip.classList.remove('show');}
 }
 function clearFile(){
-  const fileInput = document.getElementById('slika');
-  if (!fileInput) return;
-  const dt = new DataTransfer();
-  fileInput.files = dt.files;
-  fileInput.value = "";
-  updateFileUI();
+  const fileInput = document.getElementById('slika'); if (!fileInput) return;
+  const dt = new DataTransfer(); fileInput.files = dt.files; fileInput.value = ""; updateFileUI();
 }
 
 async function uploadToGCS(file){
   try{
-    const su = await fetch('/gcs/signed-upload', {
-      method:'POST',
-      headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({contentType: file.type || 'image/jpeg'})
-    }).then(r=>{ if(!r.ok) throw new Error('signed-upload failed'); return r.json(); });
-
-    const putRes = await fetch(su.uploadUrl, {
-      method:'PUT',
-      headers:{'Content-Type': file.type || 'image/jpeg'},
-      body: file
-    });
+    const su = await fetch('/gcs/signed-upload',{method:'POST',headers:{'Content-Type':'application/json'},body: JSON.stringify({contentType: file.type || 'image/jpeg'})})
+      .then(r=>{ if(!r.ok) throw new Error('signed-upload failed'); return r.json(); });
+    const putRes = await fetch(su.uploadUrl,{method:'PUT',headers:{'Content-Type': file.type || 'image/jpeg'},body:file});
     if(!putRes.ok) throw new Error('PUT to GCS failed');
     return su.readUrl;
-  }catch(err){
-    console.warn('GCS upload fallback:', err);
-    return null; // server će primiti sam fajl
-  }
+  }catch(err){ console.warn('GCS upload fallback:', err); return null; }
 }
 
 document.addEventListener('DOMContentLoaded', () => {
@@ -320,9 +284,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const last5 = serverHistory.slice(-5);
     localStorage.setItem(HIST_KEY, JSON.stringify(last5));
     if (hiddenMain) hiddenMain.value = JSON.stringify(last5);
-  } else {
-    resetHistory(HIST_KEY, hiddenMain);
-  }
+  } else { resetHistory(HIST_KEY, hiddenMain); }
 
   if (fileInput){ fileInput.addEventListener('change', updateFileUI); }
   if (removeBtn) removeBtn.addEventListener('click', clearFile);
@@ -332,39 +294,25 @@ document.addEventListener('DOMContentLoaded', () => {
       e.preventDefault();
       const hasText = textarea && textarea.value.trim().length>0;
       const hasFile = fileInput && fileInput.files && fileInput.files[0];
-      if (!hasText && !hasFile){
-        alert("Unesi matematičko pitanje ili učitaj sliku.");
-        return;
-      }
+      if (!hasText && !hasFile){ alert("Unesi matematičko pitanje ili učitaj sliku."); return; }
       showTyping();
 
       let readUrl = null;
-      if (hasFile){
-        readUrl = await uploadToGCS(fileInput.files[0]); // pokušaj GCS
-        imageUrlHidden.value = readUrl || "";            // da i server vidi vrijednost
-      }
+      if (hasFile){ readUrl = await uploadToGCS(fileInput.files[0]); imageUrlHidden.value = readUrl || ""; }
 
-      // >>> RUČNO pravimo FormData tek nakon što znamo readUrl/fajl
       const fd = new FormData();
       fd.append('ajax','1');
       if (hiddenMain) fd.append('history_json', getTrimmedHistoryForSubmit(HIST_KEY));
       if (razredSel && razredSel.value) fd.append('razred', razredSel.value);
       if (textarea) fd.append('pitanje', textarea.value || '');
-
-      if (readUrl){
-        fd.append('image_url', readUrl);
-      } else if (hasFile){
-        fd.append('slika', fileInput.files[0], fileInput.files[0].name);
-      }
+      if (readUrl){ fd.append('image_url', readUrl); }
+      else if (hasFile){ fd.append('slika', fileInput.files[0], fileInput.files[0].name); }
 
       try{
         const res = await fetch(askForm.action || '/', { method:'POST', body: fd, credentials:'include' });
         const htmlText = await res.text();
         document.open(); document.write(htmlText); document.close();
-      }catch(err){
-        hideTyping();
-        alert("Greška pri slanju. Molim pokušaj ponovo.");
-      }
+      }catch(err){ hideTyping(); alert("Greška pri slanju. Molim pokušaj ponovo."); }
     });
   }
 
@@ -384,7 +332,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
 window.onload = ()=> setTimeout(scrollToBottom, 150);
 
-// ------- Plot helpers (isto kao prije) -------
+// ------- Plot helpers -------
 function transformExpression(expr){
   return expr.replace(/\s+/g,'')
     .replace(/([0-9])([a-zA-Z])/g,'$1*$2')
@@ -420,45 +368,92 @@ document.querySelectorAll('.plot-request').forEach(plotDiv=>{
   plotDiv.remove();
 });
 </script>
+
+<!-- NEW: ASYNC – bez logova, dodavanje u chat -->
 <script>
-(async function () {
+(function () {
   const btn = document.getElementById('asyncSend');
-  const log = (t) => document.getElementById('asyncLog').textContent += t + "\n";
+  const spin = document.getElementById('asyncSpinner');
+  const fileInput = document.getElementById('slika');
+  const textarea  = document.getElementById('pitanje');
+  const razredSel = document.getElementById('razred');
+
+  const cid = getCID();
+  const HIST_KEY = 'matbot_history_' + cid;
+
+  const escapeHtml = (s)=> String(s||'')
+    .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+
+  function appendToChat(userText, botHTML){
+    // DOM
+    const chat = document.getElementById('chat-container');
+    const wrap = document.createElement('div');
+    wrap.className='qa-pair';
+    wrap.innerHTML =
+      '<div class="chat-message user-message"><div class="bubble user"><p>' +
+      escapeHtml(userText) +
+      '</p></div></div>' +
+      '<div class="chat-message bot-message"><div class="bubble">' +
+      botHTML +
+      '</div></div>';
+    if (chat) chat.appendChild(wrap);
+    scrollToBottom();
+
+    // HISTORY (persist)
+    try{
+      const arr = JSON.parse(localStorage.getItem(HIST_KEY) || '[]');
+      arr.push({user:userText, bot:botHTML});
+      const trimmed = arr.slice(-8);
+      localStorage.setItem(HIST_KEY, JSON.stringify(trimmed));
+      const h = document.getElementById('history_json_main');
+      if (h) h.value = JSON.stringify(trimmed.slice(-5));
+    }catch(_){}
+    MathJax.typesetPromise?.();
+  }
+
+  async function pollStatus(job){
+    while (true) {
+      await new Promise(rs => setTimeout(rs, 1000));
+      const r = await fetch('/status/' + job);
+      if (!r.ok) throw new Error('Greška na /status');
+      const sj = await r.json();
+      if (sj.status === 'done' || sj.status === 'error') return sj;
+    }
+  }
 
   btn?.addEventListener('click', async () => {
-    const fileInput = document.querySelector('input[name="slika"]');
     const f = fileInput?.files?.[0];
     if (!f) { alert('Odaberi sliku.'); return; }
 
-    // pokupi i razred/tekst ako postoje u formi
-    const razred = document.querySelector('select[name="razred"]')?.value || '';
-    const pitanje = document.querySelector('textarea[name="pitanje"]')?.value || '';
+    btn.disabled = true; spin.classList.remove('hidden');
 
-    const fd = new FormData();
-    fd.append('file', f, f.name);
-    fd.append('razred', razred);
-    fd.append('pitanje', pitanje);
+    try {
+      const razred = razredSel?.value || '';
+      const pitanje = textarea?.value || '';
 
-    const r = await fetch('/submit', { method: 'POST', body: fd });
-    if (!r.ok) { log('Greška na /submit'); return; }
-    const j = await r.json();
-    const job = j.job_id;
-    log('JOB_ID: ' + job);
+      const fd = new FormData();
+      fd.append('file', f, f.name);
+      if (razred)  fd.append('razred', razred);
+      if (pitanje) fd.append('pitanje', pitanje);
 
-    while (true) {
-      await new Promise(rs => setTimeout(rs, 1000));
-      const s = await fetch('/status/' + job);
-      if (!s.ok) { log('Greška na /status'); break; }
-      const sj = await s.json();
-      log(JSON.stringify(sj));
-      if (sj.status === 'done' || sj.status === 'error') {
-        if (sj.result?.html) {
-          const box = document.createElement('div');
-          box.innerHTML = sj.result.html;
-          document.getElementById('asyncLog').appendChild(box);
-        }
-        break;
-      }
+      const r = await fetch('/submit', { method: 'POST', body: fd });
+      if (!r.ok) throw new Error('Greška na /submit');
+      const j = await r.json();
+      const job = j.job_id;
+
+      const sj = await pollStatus(job);
+
+      let userBubble = pitanje ? pitanje + ' [SLIKA]' : '[SLIKA]';
+      let botHTML = sj?.result?.html || '<p><b>Greška:</b> Nije došao rezultat.</p>';
+      appendToChat(userBubble, botHTML);
+
+      // očisti formu
+      textarea.value = '';
+      clearFile();
+    } catch (e) {
+      appendToChat('[ASINHRONO]', '<p><b>Greška:</b> ' + escapeHtml(e.message || e) + '</p>');
+    } finally {
+      btn.disabled = false; spin.classList.add('hidden');
     }
   });
 })();
