@@ -304,7 +304,6 @@ def _detect_exercise_numbers_from_image(user_content):
         log.warning("Detect numbers fail: %s", e)
         return []
 
-
 def _map_ordinals_to_detected(requested, detected):
     if not requested:
         return []
@@ -322,12 +321,6 @@ def _map_ordinals_to_detected(requested, detected):
         if n not in seen:
             dedup.append(n); seen.add(n)
     return dedup
-
-
-
-
-   
-
 
 def route_image_flow_url(image_url: str, razred: str, history, requested_tasks=None, user_text=None):
     user_content = []
@@ -702,11 +695,19 @@ def submit_async():
     fs = _firestore_client()
     from google.cloud import firestore as gcf  # type: ignore
 
-    # iz forme/klijenta
+    # iz forme/klijenta (FormData ili query)
     razred = (request.form.get("razred") or request.args.get("razred") or "").strip()
     user_text = (request.form.get("user_text") or request.form.get("pitanje") or "").strip()
-    requested = extract_requested_tasks(user_text)
     image_url = (request.form.get("image_url") or request.args.get("image_url") or "").strip()
+
+    # ako dođe JSON (tekst-only ili tekst + image_url/b64)
+    data = request.get_json(silent=True) or {}
+    if data:
+        razred    = (data.get("razred")    or razred).strip()
+        user_text = (data.get("pitanje")   or data.get("user_text") or user_text).strip()
+        image_url = (data.get("image_url") or image_url).strip()
+
+    requested = extract_requested_tasks(user_text)
 
     job_id = str(uuid4())
     fs.collection("jobs").document(job_id).set({
@@ -737,12 +738,31 @@ def submit_async():
         blob = bucket.blob(name)
         blob.upload_from_file(f, content_type=f.mimetype or "application/octet-stream")
         payload["image_path"] = name
+    else:
+        # opciono: JSON base64 slika
+        image_b64 = (data.get("image_b64") if data else None)
+        if image_b64 and (storage_client and GCS_BUCKET):
+            if "," in image_b64:
+                image_b64 = image_b64.split(",", 1)[1]
+            raw = base64.b64decode(image_b64)
+            name = f"uploads/{job_id}/image.bin"
+            bucket = storage_client.bucket(GCS_BUCKET)
+            blob = bucket.blob(name)
+            blob.upload_from_string(raw, content_type="application/octet-stream")
+            payload["image_path"] = name
 
-    # ako nema ni file-a ni image_url-a → i dalje je validno (čisti TEXT)
+    # enqueue
     _create_task(payload)
     return jsonify({"job_id": job_id, "status": "queued"}), 202
 
-
+@app.get("/status/<job_id>")
+def async_status(job_id):
+    fs = _firestore_client()
+    doc = fs.collection("jobs").document(job_id).get()
+    if not doc.exists:
+        # bolje vratiti pending nego 404, da frontend ne prekida polling
+        return jsonify({"status": "pending"}), 200
+    return jsonify(doc.to_dict()), 200
 
 @app.post("/tasks/process")
 def tasks_process():
@@ -813,7 +833,6 @@ def tasks_process():
 
         # ---------------- GLAVNA OBRADA ----------------
         if image_path:
-            # već smo skinuli bytes za triage; skini opet (jednostavno)
             blob = storage_client.bucket(bucket).blob(image_path)
             image_bytes = blob.download_as_bytes()
             odgovor_html, used_path, used_model = route_image_flow(
@@ -849,7 +868,6 @@ def tasks_process():
         }, merge=True)
         # vrati 500 ako želiš da Cloud Tasks pokuša retry
         return "ERROR", 500
-
 
 # ===================== Run =====================
 if __name__ == "__main__":
