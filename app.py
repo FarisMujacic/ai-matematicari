@@ -968,6 +968,120 @@ def tasks_process():
         # vrati 500 ako želiš da Cloud Tasks pokuša retry
         return "ERROR", 500
 
+
+import time
+
+@app.post("/tasks/process")
+def tasks_process():
+    if request.headers.get("X-Tasks-Secret") != TASKS_SECRET:
+        return "Forbidden", 403
+
+    payload = request.get_json(force=True)
+    job_id     = payload["job_id"]
+    bucket     = payload.get("bucket")
+    image_path = payload.get("image_path")
+    image_url  = payload.get("image_url")
+    razred     = (payload.get("razred") or "").strip()
+    user_text  = (payload.get("user_text") or "").strip()
+    requested  = payload.get("requested") or []
+    if razred not in DOZVOLJENI_RAZREDI:
+        razred = "5"
+
+    fs = _firestore_client()
+    from google.cloud import firestore as gcf  # type: ignore
+
+    try:
+        history = []
+
+        detected = []
+        if (image_path or image_url):
+            if image_path:
+                # --- NEW: robustan download ---
+                if not storage_client:
+                    raise RuntimeError("GCS storage client not initialized")
+                try:
+                    blob = storage_client.bucket(bucket).blob(image_path)
+                    img_bytes = blob.download_as_bytes()
+                except Exception as e:
+                    log.error("GCS download failed for %s/%s: %r", bucket, image_path, e)
+                    html_msg = (
+                        "<p><b>Greška pri čitanju slike iz GCS-a.</b><br>"
+                        f"Bucket: <code>{html.escape(bucket or '')}</code><br>"
+                        f"Putanja: <code>{html.escape(image_path or '')}</code></p>"
+                    )
+                    fs.collection("jobs").document(job_id).set({
+                        "status": "done",
+                        "result": {"html": html_msg, "path": "gcs_error", "model": "n/a"},
+                        "finished_at": gcf.SERVER_TIMESTAMP,
+                        "razred": razred,
+                        "user_text": user_text,
+                        "requested": [],
+                    }, merge=True)
+                    # Vrati 200 → nema ponovnih pokušaja; rezultat je upisan
+                    return "OK", 200
+
+                img_b64 = base64.b64encode(img_bytes).decode()
+                user_content = [
+                    {"type":"text","text":"Na slici je matematički zadatak."},
+                    {"type":"image_url","image_url":{"url": f"data:image/jpeg;base64,{img_b64}"}}
+                ]
+            else:
+                user_content = [
+                    {"type":"text","text":"Na slici je matematički zadatak."},
+                    {"type":"image_url","image_url":{"url": image_url}}
+                ]
+
+            detected = _detect_exercise_numbers_from_image(user_content)
+            if requested and detected:
+                requested = _map_ordinals_to_detected(requested, detected)
+            if not requested and len(detected) >= 2:
+                html_msg = (
+                    "<p>Vidim više zadataka na slici: <b>"
+                    + ", ".join(map(str, detected))
+                    + "</b>.</p><p>Napiši koje želiš da riješim.</p>"
+                )
+                fs.collection("jobs").document(job_id).set({
+                    "status": "done",
+                    "result": {"html": html_msg, "path": "triage", "model": MODEL_VISION_LIGHT},
+                    "finished_at": gcf.SERVER_TIMESTAMP,
+                    "razred": razred,
+                    "user_text": user_text,
+                    "requested": [],
+                }, merge=True)
+                return "OK", 200
+
+        # --- glavni tok ---
+        if image_path:
+            odgovor_html, used_path, used_model = route_image_flow(
+                img_bytes, razred, history=history, requested_tasks=requested, user_text=user_text
+            )
+        elif image_url:
+            odgovor_html, used_path, used_model = route_image_flow_url(
+                image_url, razred, history=history, requested_tasks=requested, user_text=user_text
+            )
+        else:
+            odgovor_html, used_model = answer_with_text_pipeline(user_text, razred, history, requested)
+            used_path = "text"
+
+        fs.collection("jobs").document(job_id).set({
+            "status": "done",
+            "result": {"html": odgovor_html, "path": used_path, "model": used_model},
+            "finished_at": gcf.SERVER_TIMESTAMP,
+            "razred": razred,
+            "user_text": user_text,
+            "requested": requested,
+        }, merge=True)
+        return "OK", 200
+
+    except Exception as e:
+        log.exception("Task processing failed")
+        fs.collection("jobs").document(job_id).set({
+            "status": "error",
+            "error": str(e),
+            "finished_at": gcf.SERVER_TIMESTAMP
+        }, merge=True)
+        return "ERROR", 500
+
 # ===================== Run =====================
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", "8080"))
