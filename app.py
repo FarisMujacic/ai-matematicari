@@ -1,11 +1,11 @@
 # app.py — Async TEXT + IMAGE (Cloud Tasks + Firestore + GCS), bez Mathpix-a
 from flask import Flask, render_template, request, session, redirect, url_for, send_from_directory, jsonify
 from dotenv import load_dotenv
-import os, re, base64, json, html, datetime, logging
+import os, re, base64, json, html, datetime, logging, traceback
 from datetime import timedelta
 from uuid import uuid4
 
-from openai import OpenAI
+from openai import OpenAI, APIConnectionError, APIStatusError, RateLimitError
 from flask_cors import CORS
 
 import gspread
@@ -45,9 +45,13 @@ os.makedirs(UPLOAD_DIR, exist_ok=True)
 # prag za "velike" slike ako želiš preskočiti upload u GCS u sync putanji
 MAX_IMAGE_BYTES = int(os.getenv("MAX_IMAGE_BYTES", "1500000"))  # ≈1.5 MB
 
-# >>> smanjeni defaulti (možeš ih pregaziti env varovima)
-OPENAI_TIMEOUT = float(os.getenv("OPENAI_TIMEOUT", "45"))
+OPENAI_TIMEOUT = float(os.getenv("OPENAI_TIMEOUT", "240"))
 OPENAI_MAX_RETRIES = int(os.getenv("OPENAI_MAX_RETRIES", "2"))
+
+# Sigurni timeouti unutar Cloud Run limita
+RUN_TIMEOUT = float(os.getenv("RUN_TIMEOUT") or os.getenv("RUN_TIMEOUT_SECONDS") or "60")
+SAFE_MAIN_TIMEOUT = max(5.0, min(OPENAI_TIMEOUT, RUN_TIMEOUT - 5.0))  # npr. 55s kad je RUN=60
+SAFE_LIGHT_TIMEOUT = min(20.0, max(5.0, RUN_TIMEOUT - 40.0))          # npr. 20s
 
 # --- OpenAI (bez temperature!) ---
 _OPENAI_API_KEY = (os.getenv("OPENAI_API_KEY") or "").strip()
@@ -83,6 +87,7 @@ def _try_get_sa_email_from_creds(creds):
     email = getattr(creds, "service_account_email", None)
     if email:
         return email
+    # Ako je info dict (kod b64) dostupno:
     try:
         info = getattr(creds, "_service_account_email", None) or getattr(creds, "_subject", None)
         if info:
@@ -118,6 +123,7 @@ try:
         raise RuntimeError("GSHEET_ID ili GSHEET_NAME moraju biti postavljeni.")
 
     ss = gc.open_by_key(GSHEET_ID) if GSHEET_ID else gc.open(GSHEET_NAME)
+    # sheet1 je prva worksheet; ako nema, uzmi prvu postojećeg indexa 0
     try:
         ws = ss.sheet1
     except Exception:
@@ -266,11 +272,14 @@ def _openai_chat(model: str, messages: list, timeout: float = None, max_tokens: 
         return _do(params)
     except Exception as e:
         msg = str(e)
+
+        # fallback za max_completion_tokens
         if "max_completion_tokens" in msg or "Unsupported parameter: 'max_completion_tokens'" in msg:
             params.pop("max_completion_tokens", None)
             if max_tokens is not None:
                 params["max_tokens"] = max_tokens
             return _do(params)
+
         raise
 
 # ===================== TEXT pipeline =====================
@@ -306,7 +315,8 @@ def answer_with_text_pipeline(pure_text: str, razred: str, history, requested):
         messages.append({"role":"assistant","content": msg["bot"]})
     messages.append({"role":"user","content": pure_text})
 
-    response = _openai_chat(MODEL_TEXT, messages, timeout=OPENAI_TIMEOUT)
+    # KORISTI sigurni timeout
+    response = _openai_chat(MODEL_TEXT, messages, timeout=SAFE_MAIN_TIMEOUT)
     actual_model = getattr(response, "model", MODEL_TEXT)
     raw = response.choices[0].message.content
     raw = strip_ascii_graph_blocks(raw)
@@ -357,7 +367,8 @@ def _detect_exercise_numbers_from_image(user_content):
                         "Ako nema brojeva odgovori 'NONE'.")
         }
         msgs = [sys, {"role": "user", "content": user_content}]
-        resp = _openai_chat(MODEL_VISION_LIGHT, msgs, timeout=20)
+        # KORISTI kratki timeout
+        resp = _openai_chat(MODEL_VISION_LIGHT, msgs, timeout=SAFE_LIGHT_TIMEOUT)
         txt = (resp.choices[0].message.content or "").strip()
         if txt.upper() == "NONE":
             return []
@@ -399,7 +410,7 @@ def route_image_flow_url(image_url: str, razred: str, history, requested_tasks=N
     messages.append({"role": "user", "content": user_content})
 
     try:
-        resp = _openai_chat(MODEL_VISION, messages, timeout=OPENAI_TIMEOUT)
+        resp = _openai_chat(MODEL_VISION, messages, timeout=SAFE_MAIN_TIMEOUT)
         actual_model = getattr(resp, "model", MODEL_VISION)
         raw = resp.choices[0].message.content
         raw = strip_ascii_graph_blocks(raw)
@@ -424,7 +435,7 @@ def route_image_flow(slika_bytes: bytes, razred: str, history, requested_tasks=N
     messages.append({"role": "user", "content": user_content})
 
     try:
-        resp = _openai_chat(MODEL_VISION, messages, timeout=OPENAI_TIMEOUT)
+        resp = _openai_chat(MODEL_VISION, messages, timeout=SAFE_MAIN_TIMEOUT)
         actual_model = getattr(resp, "model", MODEL_VISION)
         raw = resp.choices[0].message.content
         raw = strip_ascii_graph_blocks(raw)
@@ -563,6 +574,7 @@ def index():
                 history.append({"user": display_user, "bot": odgovor.strip()})
                 history = history[-8:]; session["history"] = history
 
+                # uniformni log format
                 sync_job_id = f"sync-{uuid4().hex[:8]}"
                 log_to_sheet(sync_job_id, razred, combined_text, odgovor, used_path, used_model)
 
@@ -850,23 +862,23 @@ def async_status(job_id):
     fs = _firestore_client()
     doc = fs.collection("jobs").document(job_id).get()
     if not doc.exists:
+        # bolje vratiti pending nego 404, da frontend ne prekida polling
         return jsonify({"status": "pending"}), 200
     return jsonify(doc.to_dict()), 200
 
-# =============== JEDINI /tasks/process (robustan, 60s-friendly) ===============
 @app.post("/tasks/process")
 def tasks_process():
     if request.headers.get("X-Tasks-Secret") != TASKS_SECRET:
         return "Forbidden", 403
 
     payload = request.get_json(force=True)
-    job_id     = payload["job_id"]
-    bucket     = payload.get("bucket")
-    image_path = payload.get("image_path")
-    image_url  = payload.get("image_url")
-    razred     = (payload.get("razred") or "").strip()
-    user_text  = (payload.get("user_text") or "").strip()
-    requested  = payload.get("requested") or []
+    job_id      = payload["job_id"]
+    bucket_name = (payload.get("bucket") or GCS_BUCKET or "").strip()
+    image_path  = payload.get("image_path")
+    image_url   = payload.get("image_url")
+    razred      = (payload.get("razred") or "").strip()
+    user_text   = (payload.get("user_text") or "").strip()
+    requested   = payload.get("requested") or []
     if razred not in DOZVOLJENI_RAZREDI:
         razred = "5"
 
@@ -876,21 +888,23 @@ def tasks_process():
     try:
         history = []
 
-        # --- JEDNOKRATAN download slike + brza detekcija brojeva ---
+        # ---------------- TRIAGE: brzo detektuj brojeve zadataka ----------------
         detected = []
         img_bytes = None
-        if image_path or image_url:
+
+        if (image_path or image_url):
+            # pripremi user_content za brzu detekciju brojeva (light model, mali timeout)
             if image_path:
-                if not storage_client:
-                    raise RuntimeError("GCS storage client not initialized")
+                if not (storage_client and bucket_name):
+                    raise RuntimeError("GCS storage client/bucket not configured")
                 try:
-                    blob = storage_client.bucket(bucket).blob(image_path)
-                    img_bytes = blob.download_as_bytes()  # jednom
+                    blob = storage_client.bucket(bucket_name).blob(image_path)
+                    img_bytes = blob.download_as_bytes()
                 except Exception as e:
-                    log.error("GCS download failed for %s/%s: %r", bucket, image_path, e)
+                    log.error("GCS download failed for %s/%s: %r", bucket_name, image_path, e)
                     html_msg = (
                         "<p><b>Greška pri čitanju slike iz GCS-a.</b><br>"
-                        f"Bucket: <code>{html.escape(bucket or '')}</code><br>"
+                        f"Bucket: <code>{html.escape(bucket_name)}</code><br>"
                         f"Putanja: <code>{html.escape(image_path or '')}</code></p>"
                     )
                     fs.collection("jobs").document(job_id).set({
@@ -915,8 +929,12 @@ def tasks_process():
                 ]
 
             detected = _detect_exercise_numbers_from_image(user_content)
+
+            # Ako je korisnik napisao “prvi / zadnji / 2.” → mapiraj na stvarne brojeve
             if requested and detected:
                 requested = _map_ordinals_to_detected(requested, detected)
+
+            # Ako korisnik NIJE precizirao, a na slici ima više zadataka → pitaj koji želi
             if not requested and len(detected) >= 2:
                 html_msg = (
                     "<p>Vidim više zadataka na slici: <b>"
@@ -931,10 +949,11 @@ def tasks_process():
                     "user_text": user_text,
                     "requested": [],
                 }, merge=True)
+                log_to_sheet(job_id, razred, user_text, html_msg, "triage", MODEL_VISION_LIGHT)
                 return "OK", 200
 
-        # --- GLAVNA OBRADA ---
-        if img_bytes is not None:  # image_path slučaj
+        # ---------------- GLAVNA OBRADA ----------------
+        if image_path and img_bytes is not None:
             odgovor_html, used_path, used_model = route_image_flow(
                 img_bytes, razred, history=history, requested_tasks=requested, user_text=user_text
             )
@@ -943,10 +962,11 @@ def tasks_process():
                 image_url, razred, history=history, requested_tasks=requested, user_text=user_text
             )
         else:
+            # čisti tekst
             odgovor_html, used_model = answer_with_text_pipeline(user_text, razred, history, requested)
             used_path = "text"
 
-        # --- SPREMI REZULTAT ---
+        # ---------------- SPREMI REZULTAT ----------------
         fs.collection("jobs").document(job_id).set({
             "status": "done",
             "result": {"html": odgovor_html, "path": used_path, "model": used_model},
@@ -962,12 +982,16 @@ def tasks_process():
         return "OK", 200
 
     except Exception as e:
+        tb = traceback.format_exc()
         log.exception("Task processing failed")
         fs.collection("jobs").document(job_id).set({
             "status": "error",
             "error": str(e),
+            "error_type": type(e).__name__,
+            "traceback": tb,
             "finished_at": gcf.SERVER_TIMESTAMP
         }, merge=True)
+        # 500 → Cloud Tasks može retry-ati (po tvojoj politici)
         return "ERROR", 500
 
 # ===================== Run =====================
