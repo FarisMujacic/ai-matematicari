@@ -1,9 +1,9 @@
 # --- Core web ---
-Flask>=3.0.2
+Flask>=3.0
 gunicorn>=23.0.0
-flask-cors>=4.0.0
+flask-cors>=4.0
 flask-limiter>=3.5.0
-python-dotenv>=1.0.1
+python-dotenv>=1.0
 
 # --- OpenAI / HTTP ---
 openai>=1.40.0
@@ -26,3 +26,4 @@ scikit-learn
 argon2-cffi
 PyJWT
 psycopg2-binary
+
