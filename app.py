@@ -45,15 +45,18 @@ os.makedirs(UPLOAD_DIR, exist_ok=True)
 # prag za "velike" slike ako želiš preskočiti upload u GCS u sync putanji
 MAX_IMAGE_BYTES = int(os.getenv("MAX_IMAGE_BYTES", "1500000"))  # ≈1.5 MB
 
-OPENAI_TIMEOUT = float(os.getenv("OPENAI_TIMEOUT", "240"))
-OPENAI_MAX_RETRIES = int(os.getenv("OPENAI_MAX_RETRIES", "2"))
+# >>> TIMEOUT PATCH >>> (hard-code veće timeoute; ignorišemo ENV)
+HARD_TIMEOUT_S = 120.0            # koliko želiš za OpenAI pozive
+OPENAI_TIMEOUT = HARD_TIMEOUT_S    # koristimo svugdje
+OPENAI_MAX_RETRIES = 2             # možeš 2–3; 2 je razumno
 
 def _budgeted_timeout(default: float | int = None, margin: float = 8.0) -> float:
     """
     Vraća siguran timeout za OpenAI unutar Cloud Run request limita.
-    Koristi RUN_TIMEOUT_SECONDS (default 60) i ostavlja marginu.
+    Koristi RUN_TIMEOUT_SECONDS (default 300) i ostavlja marginu.
     """
-    run_lim = float(os.getenv("RUN_TIMEOUT_SECONDS", "60") or 60)
+    # >>> TIMEOUT PATCH >>>
+    run_lim = float(os.getenv("RUN_TIMEOUT_SECONDS", "300") or 300)
     want = float(default if default is not None else OPENAI_TIMEOUT)
     return max(5.0, min(want, run_lim - margin))
 
@@ -61,7 +64,10 @@ def _budgeted_timeout(default: float | int = None, margin: float = 8.0) -> float
 _OPENAI_API_KEY = (os.getenv("OPENAI_API_KEY") or "").strip()
 if not _OPENAI_API_KEY:
     log.error("OPENAI_API_KEY nije postavljen u okruženju.")
+
+# >>> TIMEOUT PATCH >>> (klijent sa većim timeoutom)
 client = OpenAI(api_key=_OPENAI_API_KEY, timeout=OPENAI_TIMEOUT, max_retries=OPENAI_MAX_RETRIES)
+
 MODEL_VISION_LIGHT = os.getenv("OPENAI_MODEL_VISION_LIGHT") or os.getenv("OPENAI_MODEL_VISION", "gpt-5")
 MODEL_TEXT   = os.getenv("OPENAI_MODEL_TEXT", "gpt-5-mini")
 MODEL_VISION = os.getenv("OPENAI_MODEL_VISION", "gpt-5")
@@ -363,7 +369,8 @@ def _detect_exercise_numbers_from_image(user_content):
                         "Ako nema brojeva odgovori 'NONE'.")
         }
         msgs = [sys, {"role": "user", "content": user_content}]
-        resp = _openai_chat(MODEL_VISION_LIGHT, msgs, timeout=20)
+        # >>> TIMEOUT PATCH >>> (digni preliminarni timeout)
+        resp = _openai_chat(MODEL_VISION_LIGHT, msgs, timeout=min(45, HARD_TIMEOUT_S))
         txt = (resp.choices[0].message.content or "").strip()
         if txt.upper() == "NONE":
             return []
@@ -556,7 +563,8 @@ def index():
                 combined_text = pitanje
                 requested = extract_requested_tasks(combined_text)
                 odgovor, used_path, used_model = route_image_flow_url(
-                    image_url, razred, history, requested_tasks=requested, user_text=combined_text
+                    image_url, razred, history, requested_tasks=requested, user_text=combined_text,
+                    timeout_override=HARD_TIMEOUT_S  # >>> TIMEOUT PATCH >>>
                 )
                 session["last_image_url"] = image_url
 
@@ -593,7 +601,8 @@ def index():
 
                 body = slika.read()
                 odgovor, used_path, used_model = route_image_flow(
-                    body, razred, history, requested_tasks=requested, user_text=combined_text
+                    body, razred, history, requested_tasks=requested, user_text=combined_text,
+                    timeout_override=HARD_TIMEOUT_S  # >>> TIMEOUT PATCH >>>
                 )
 
                 # spremi kopiju za follow-up
@@ -628,7 +637,8 @@ def index():
 
             if last_url and (requested or (pitanje and FOLLOWUP_TASK_RE.match(pitanje))):
                 odgovor, used_path, used_model = route_image_flow_url(
-                    last_url, razred, history, requested_tasks=requested, user_text=pitanje
+                    last_url, razred, history, requested_tasks=requested, user_text=pitanje,
+                    timeout_override=HARD_TIMEOUT_S  # >>> TIMEOUT PATCH >>>
                 )
                 if (not plot_expression_added) and should_plot(pitanje):
                     expr = extract_plot_expression(pitanje, razred=razred, history=history)
@@ -644,7 +654,9 @@ def index():
                 if is_ajax: return render_template("index.html", history=history, razred=razred)
                 return redirect(url_for("index"))
 
-            odgovor, actual_model = answer_with_text_pipeline(pitanje, razred, history, requested)
+            odgovor, actual_model = answer_with_text_pipeline(
+                pitanje, razred, history, requested, timeout_override=HARD_TIMEOUT_S  # >>> TIMEOUT PATCH >>>
+            )
             if (not plot_expression_added) and should_plot(pitanje):
                 expr = extract_plot_expression(pitanje, razred=razred, history=history)
                 if expr:
@@ -882,7 +894,8 @@ def tasks_process():
 
     try:
         history = []
-        task_ai_timeout = _budgeted_timeout()  # ~52s kad je RUN_TIMEOUT_SECONDS=60
+        # >>> TIMEOUT PATCH >>> (budžetiraj prema servisu; želiš 120s sa malom marginom)
+        task_ai_timeout = _budgeted_timeout(default=HARD_TIMEOUT_S, margin=5.0)
 
         # ---------------- TRIAGE: brzo detektuj brojeve zadataka ----------------
         detected = []
