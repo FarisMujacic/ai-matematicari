@@ -1,5 +1,4 @@
 # app.py — Async TEXT + IMAGE (Cloud Tasks + Firestore + GCS), bez Mathpix-a
-
 from flask import Flask, render_template, request, session, redirect, url_for, send_from_directory, jsonify
 from dotenv import load_dotenv
 import os, re, base64, json, html, datetime, logging
@@ -49,16 +48,7 @@ MAX_IMAGE_BYTES = int(os.getenv("MAX_IMAGE_BYTES", "1500000"))  # ≈1.5 MB
 OPENAI_TIMEOUT = float(os.getenv("OPENAI_TIMEOUT", "240"))
 OPENAI_MAX_RETRIES = int(os.getenv("OPENAI_MAX_RETRIES", "2"))
 
-# Temperatura: mnogo modela podržava samo default → po difoltu NE ŠALJEMO ništa.
-# Ako baš želiš pokušati, postavi OPENAI_TEMPERATURE npr. na "0" ili "0.2" — wrapper će
-# automatski retry bez temperature ako model to ne podrži.
-_OPENAI_T_RAW = (os.getenv("OPENAI_TEMPERATURE") or "").strip()
-try:
-    OPENAI_TEMPERATURE = float(_OPENAI_T_RAW)
-except Exception:
-    OPENAI_TEMPERATURE = None  # ne šalji parametar
-
-# --- OpenAI ---
+# --- OpenAI (bez temperature!) ---
 _OPENAI_API_KEY = (os.getenv("OPENAI_API_KEY") or "").strip()
 if not _OPENAI_API_KEY:
     log.error("OPENAI_API_KEY nije postavljen u okruženju.")
@@ -77,27 +67,72 @@ GSHEET_ID   = os.getenv("GSHEET_ID", "").strip()
 GSHEET_NAME = os.getenv("GSHEET_NAME", "matematika-bot").strip()
 
 sheet = None
+_sheets_diag = {
+    "enabled": False,
+    "mode": None,  # 'b64' | 'file' | 'adc'
+    "sa_email": None,
+    "spreadsheet_title": None,
+    "spreadsheet_id": None,
+    "worksheet_title": None,
+    "error": None,
+}
+
+def _try_get_sa_email_from_creds(creds):
+    # Najsigurnije za service_account creds
+    email = getattr(creds, "service_account_email", None)
+    if email:
+        return email
+    # Ako je info dict (kod b64) dostupno:
+    try:
+        info = getattr(creds, "_service_account_email", None) or getattr(creds, "_subject", None)
+        if info:
+            return info
+    except Exception:
+        pass
+    return None
+
 try:
+    gc = None
     b64 = os.getenv("GOOGLE_SHEETS_CREDENTIALS_B64", "").strip()
     if b64:
         info  = json.loads(base64.b64decode(b64).decode("utf-8"))
         creds = SACreds.from_service_account_info(info, scopes=SHEETS_SCOPES)
         gc = gspread.authorize(creds)
+        _sheets_diag["mode"] = "b64"
+        _sheets_diag["sa_email"] = info.get("client_email")
         log.info("Sheets via service_account_b64 (sa=%s)", info.get("client_email"))
     elif os.path.exists("credentials.json"):
         creds = SACreds.from_service_account_file("credentials.json", scopes=SHEETS_SCOPES)
         gc = gspread.authorize(creds)
+        _sheets_diag["mode"] = "file"
+        _sheets_diag["sa_email"] = _try_get_sa_email_from_creds(creds)
         log.info("Sheets via service_account_file")
     else:
         adc_creds, _ = google.auth.default(scopes=SHEETS_SCOPES)
         gc = gspread.authorize(adc_creds)
+        _sheets_diag["mode"] = "adc"
+        _sheets_diag["sa_email"] = _try_get_sa_email_from_creds(adc_creds)
         log.info("Sheets via ADC default credentials")
 
+    if not GSHEET_ID and not GSHEET_NAME:
+        raise RuntimeError("GSHEET_ID ili GSHEET_NAME moraju biti postavljeni.")
+
     ss = gc.open_by_key(GSHEET_ID) if GSHEET_ID else gc.open(GSHEET_NAME)
-    sheet = ss.sheet1
-    log.info("Sheets enabled (title=%s id=%s)", getattr(ss, "title", "?"), getattr(ss, "id", "?"))
+    # sheet1 je prva worksheet; ako nema, uzmi prvu postojećeg indexa 0
+    try:
+        ws = ss.sheet1
+    except Exception:
+        ws = ss.get_worksheet(0)
+
+    sheet = ws
+    _sheets_diag["enabled"] = True
+    _sheets_diag["spreadsheet_title"] = getattr(ss, "title", None)
+    _sheets_diag["spreadsheet_id"] = getattr(ss, "id", None)
+    _sheets_diag["worksheet_title"] = getattr(ws, "title", None)
+    log.info("Sheets enabled (title=%s id=%s ws=%s)", _sheets_diag["spreadsheet_title"], _sheets_diag["spreadsheet_id"], _sheets_diag["worksheet_title"])
 except Exception as e:
     log.warning("Sheets disabled: %s", e)
+    _sheets_diag["error"] = str(e)
     sheet = None
 
 def sheets_append_row_safe(values):
@@ -111,7 +146,7 @@ def sheets_append_row_safe(values):
         return False
 
 def log_to_sheet(job_id, razred, user_text, odgovor_html, source_tag, model_name):
-    # Kolone: vrijeme, razred, pitanje, odgovor(HTML), izvor|model, job_id
+    # Kolone: vrijeme_UTC, razred, pitanje, odgovor(HTML), izvor|model, job_id
     ts = datetime.datetime.utcnow().isoformat()
     sheets_append_row_safe([ts, razred, user_text, odgovor_html, f"{source_tag}|{model_name}", job_id])
 
@@ -213,12 +248,12 @@ def extract_plot_expression(user_text: str, razred: str = "", history=None) -> s
         return expr
     return None
 
-# ===================== OpenAI helpers =====================
+# ===================== OpenAI helpers (bez temperature) =====================
 def _openai_chat(model: str, messages: list, timeout: float = None, max_tokens: int | None = None):
     """
     Kompatibilni wrapper:
     - novi modeli traže max_completion_tokens → pretvaramo i fallbackamo
-    - mnogi modeli ne dopuštaju custom temperature → pokušamo pa retry bez temperature
+    - temperatura se NIKAD ne šalje
     """
     def _do(params):
         cli = client if timeout is None else client.with_options(timeout=timeout)
@@ -227,36 +262,17 @@ def _openai_chat(model: str, messages: list, timeout: float = None, max_tokens: 
     params = {"model": model, "messages": messages}
     if max_tokens is not None:
         params["max_completion_tokens"] = max_tokens
-    if OPENAI_TEMPERATURE is not None:
-        params["temperature"] = OPENAI_TEMPERATURE
 
     try:
         return _do(params)
     except Exception as e:
         msg = str(e)
 
-        # retry bez temperature ako model ne podržava custom vrijednosti
-        if "temperature" in msg or "unsupported_value" in msg:
-            params.pop("temperature", None)
-            try:
-                return _do(params)
-            except Exception as e2:
-                msg2 = str(e2)
-                # još jedan fallback: zamijeni max_completion_tokens -> max_tokens
-                if "max_completion_tokens" in msg2 or "Unsupported parameter: 'max_completion_tokens'" in msg2:
-                    params.pop("max_completion_tokens", None)
-                    if max_tokens is not None:
-                        params["max_tokens"] = max_tokens
-                    return _do(params)
-                raise
-
         # fallback za max_completion_tokens
         if "max_completion_tokens" in msg or "Unsupported parameter: 'max_completion_tokens'" in msg:
             params.pop("max_completion_tokens", None)
             if max_tokens is not None:
                 params["max_tokens"] = max_tokens
-            # možda i temperatura smeta – ukloni je proaktivno
-            params.pop("temperature", None)
             return _do(params)
 
         raise
@@ -310,7 +326,6 @@ def _vision_messages_base(razred: str, history, only_clause: str, strict_geom_po
             prompt_za_razred +
             " Odgovaraj jezikom pitanja (bosanski/ijekavica). "
             "Ako nije matematika, reci: 'Molim te, postavi matematičko pitanje.' "
-            "Ako ne znaš tačno rješenje, reci: 'Za ovaj zadatak se obrati instruktorima na info@matematicari.com'. "
             "Ne prikazuj ASCII grafove osim ako su izričito traženi. "
             + only_clause + " " + strict_geom_policy
         )
@@ -551,7 +566,10 @@ def index():
                 display_user = (combined_text + " [slika]") if combined_text else "[slika]"
                 history.append({"user": display_user, "bot": odgovor.strip()})
                 history = history[-8:]; session["history"] = history
-                sheets_append_row_safe([pitanje, odgovor, f"{used_path}|{used_model}"])
+
+                # uniformni log format
+                sync_job_id = f"sync-{uuid4().hex[:8]}"
+                log_to_sheet(sync_job_id, razred, combined_text, odgovor, used_path, used_model)
 
                 if is_ajax: return render_template("index.html", history=history, razred=razred)
                 return redirect(url_for("index"))
@@ -596,7 +614,9 @@ def index():
                 display_user = (combined_text + " [SLIKA]") if combined_text else "[SLIKA]"
                 history.append({"user": display_user, "bot": odgovor.strip()})
                 history = history[-8:]; session["history"] = history
-                sheets_append_row_safe([pitanje, odgovor, f"{used_path}|{used_model}"])
+
+                sync_job_id = f"sync-{uuid4().hex[:8]}"
+                log_to_sheet(sync_job_id, razred, combined_text, odgovor, used_path, used_model)
 
                 if is_ajax: return render_template("index.html", history=history, razred=razred)
                 return redirect(url_for("index"))
@@ -616,7 +636,9 @@ def index():
 
                 history.append({"user": pitanje, "bot": odgovor.strip()})
                 history = history[-8:]; session["history"] = history
-                sheets_append_row_safe([pitanje, odgovor, f"{used_path}|{used_model}"])
+
+                sync_job_id = f"sync-{uuid4().hex[:8]}"
+                log_to_sheet(sync_job_id, razred, pitanje, odgovor, used_path, used_model)
 
                 if is_ajax: return render_template("index.html", history=history, razred=razred)
                 return redirect(url_for("index"))
@@ -629,7 +651,9 @@ def index():
 
             history.append({"user": pitanje, "bot": odgovor.strip()})
             history = history[-8:]; session["history"] = history
-            sheets_append_row_safe([pitanje, odgovor, f"text|{actual_model}"])
+
+            sync_job_id = f"sync-{uuid4().hex[:8]}"
+            log_to_sheet(sync_job_id, razred, pitanje, odgovor, "text", actual_model)
 
         except Exception as e:
             log.error("FATAL index.POST: %r", e)
@@ -670,6 +694,26 @@ def _healthz():
 @app.get("/_ah/health")
 def ah_health():
     return "OK", 200
+
+# ---- Sheets dijagnostika ----
+@app.get("/sheets/diag")
+def sheets_diag():
+    return jsonify(_sheets_diag), 200
+
+@app.post("/sheets/selftest")
+def sheets_selftest():
+    if not sheet:
+        return jsonify({"ok": False, "error": _sheets_diag.get("error") or "Sheets not initialized"}), 500
+    row = [
+        datetime.datetime.utcnow().isoformat(),
+        "selftest",
+        "Hello from /sheets/selftest",
+        "<p>OK</p>",
+        "selftest|none",
+        f"self-{uuid4().hex[:8]}",
+    ]
+    ok = sheets_append_row_safe(row)
+    return jsonify({"ok": ok}), (200 if ok else 500)
 
 @app.after_request
 def add_no_cache_headers(resp):
