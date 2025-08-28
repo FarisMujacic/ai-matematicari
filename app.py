@@ -5,7 +5,7 @@ import os, re, base64, json, html, datetime, logging
 from datetime import timedelta
 from uuid import uuid4
 
-from openai import OpenAI, APIConnectionError, APIStatusError, RateLimitError
+from openai import OpenAI
 from flask_cors import CORS
 
 import gspread
@@ -45,7 +45,8 @@ os.makedirs(UPLOAD_DIR, exist_ok=True)
 # prag za "velike" slike ako želiš preskočiti upload u GCS u sync putanji
 MAX_IMAGE_BYTES = int(os.getenv("MAX_IMAGE_BYTES", "1500000"))  # ≈1.5 MB
 
-OPENAI_TIMEOUT = float(os.getenv("OPENAI_TIMEOUT", "240"))
+# >>> smanjeni defaulti (možeš ih pregaziti env varovima)
+OPENAI_TIMEOUT = float(os.getenv("OPENAI_TIMEOUT", "45"))
 OPENAI_MAX_RETRIES = int(os.getenv("OPENAI_MAX_RETRIES", "2"))
 
 # --- OpenAI (bez temperature!) ---
@@ -82,7 +83,6 @@ def _try_get_sa_email_from_creds(creds):
     email = getattr(creds, "service_account_email", None)
     if email:
         return email
-    # Ako je info dict (kod b64) dostupno:
     try:
         info = getattr(creds, "_service_account_email", None) or getattr(creds, "_subject", None)
         if info:
@@ -118,7 +118,6 @@ try:
         raise RuntimeError("GSHEET_ID ili GSHEET_NAME moraju biti postavljeni.")
 
     ss = gc.open_by_key(GSHEET_ID) if GSHEET_ID else gc.open(GSHEET_NAME)
-    # sheet1 je prva worksheet; ako nema, uzmi prvu postojećeg indexa 0
     try:
         ws = ss.sheet1
     except Exception:
@@ -267,14 +266,11 @@ def _openai_chat(model: str, messages: list, timeout: float = None, max_tokens: 
         return _do(params)
     except Exception as e:
         msg = str(e)
-
-        # fallback za max_completion_tokens
         if "max_completion_tokens" in msg or "Unsupported parameter: 'max_completion_tokens'" in msg:
             params.pop("max_completion_tokens", None)
             if max_tokens is not None:
                 params["max_tokens"] = max_tokens
             return _do(params)
-
         raise
 
 # ===================== TEXT pipeline =====================
@@ -567,7 +563,6 @@ def index():
                 history.append({"user": display_user, "bot": odgovor.strip()})
                 history = history[-8:]; session["history"] = history
 
-                # uniformni log format
                 sync_job_id = f"sync-{uuid4().hex[:8]}"
                 log_to_sheet(sync_job_id, razred, combined_text, odgovor, used_path, used_model)
 
@@ -855,10 +850,10 @@ def async_status(job_id):
     fs = _firestore_client()
     doc = fs.collection("jobs").document(job_id).get()
     if not doc.exists:
-        # bolje vratiti pending nego 404, da frontend ne prekida polling
         return jsonify({"status": "pending"}), 200
     return jsonify(doc.to_dict()), 200
 
+# =============== JEDINI /tasks/process (robustan, 60s-friendly) ===============
 @app.post("/tasks/process")
 def tasks_process():
     if request.headers.get("X-Tasks-Secret") != TASKS_SECRET:
@@ -881,127 +876,16 @@ def tasks_process():
     try:
         history = []
 
-        # ---------------- TRIAGE: brzo detektuj brojeve zadataka ----------------
+        # --- JEDNOKRATAN download slike + brza detekcija brojeva ---
         detected = []
-        if (image_path or image_url):
-            # pripremi user_content za brzu detekciju brojeva (light model, mali timeout)
+        img_bytes = None
+        if image_path or image_url:
             if image_path:
-                if not storage_client:
-                    raise RuntimeError("GCS storage client not initialized")
-                blob = storage_client.bucket(bucket).blob(image_path)
-                img_bytes = blob.download_as_bytes()
-                img_b64 = base64.b64encode(img_bytes).decode()
-                user_content = [
-                    {"type":"text","text":"Na slici je matematički zadatak."},
-                    {"type":"image_url","image_url":{"url": f"data:image/jpeg;base64,{img_b64}"}}
-                ]
-            else:
-                user_content = [
-                    {"type":"text","text":"Na slici je matematički zadatak."},
-                    {"type":"image_url","image_url":{"url": image_url}}
-                ]
-
-            detected = _detect_exercise_numbers_from_image(user_content)
-
-            # Ako korisnik NIJE precizirao, a na slici ima više zadataka → pitaj koji želi
-            if not requested and len(detected) >= 2:
-                html_msg = (
-                    "<p>Vidim više zadataka na slici: <b>"
-                    + ", ".join(map(str, detected))
-                    + "</b>.</p><p>Napiši koje tačno želiš da riješim "
-                    "(npr. <code>497</code> ili <code>497, 498</code> ili "
-                    "<code>prvi</code>/<code>zadnji</code>), pa ću riješiti samo njih.</p>"
-                )
-                fs.collection("jobs").document(job_id).set({
-                    "status": "done",
-                    "result": {"html": html_msg, "path": "triage", "model": MODEL_VISION_LIGHT},
-                    "finished_at": gcf.SERVER_TIMESTAMP,
-                    "razred": razred,
-                    "user_text": user_text,
-                    "requested": [],
-                }, merge=True)
-                log_to_sheet(job_id, razred, user_text, html_msg, "triage", MODEL_VISION_LIGHT)
-                return "OK", 200
-
-            # Ako je korisnik napisao “prvi / zadnji / 2.” → mapiraj na stvarne brojeve
-            if requested and detected:
-                requested = _map_ordinals_to_detected(requested, detected)
-
-        # ---------------- GLAVNA OBRADA ----------------
-        if image_path:
-            blob = storage_client.bucket(bucket).blob(image_path)
-            image_bytes = blob.download_as_bytes()
-            odgovor_html, used_path, used_model = route_image_flow(
-                image_bytes, razred, history=history, requested_tasks=requested, user_text=user_text
-            )
-        elif image_url:
-            odgovor_html, used_path, used_model = route_image_flow_url(
-                image_url, razred, history=history, requested_tasks=requested, user_text=user_text
-            )
-        else:
-            # čisti tekst
-            odgovor_html, used_model = answer_with_text_pipeline(user_text, razred, history, requested)
-            used_path = "text"
-
-        # ---------------- SPREMI REZULTAT ----------------
-        fs.collection("jobs").document(job_id).set({
-            "status": "done",
-            "result": {"html": odgovor_html, "path": used_path, "model": used_model},
-            "finished_at": gcf.SERVER_TIMESTAMP,
-            "razred": razred,
-            "user_text": user_text,
-            "requested": requested,
-        }, merge=True)
-
-        # log u Sheets
-        log_to_sheet(job_id, razred, user_text, odgovor_html, used_path, used_model)
-
-        return "OK", 200
-
-    except Exception as e:
-        log.exception("Task processing failed")
-        fs.collection("jobs").document(job_id).set({
-            "status": "error",
-            "error": str(e),
-            "finished_at": gcf.SERVER_TIMESTAMP
-        }, merge=True)
-        # vrati 500 ako želiš da Cloud Tasks pokuša retry
-        return "ERROR", 500
-
-
-import time
-
-@app.post("/tasks/process")
-def tasks_process():
-    if request.headers.get("X-Tasks-Secret") != TASKS_SECRET:
-        return "Forbidden", 403
-
-    payload = request.get_json(force=True)
-    job_id     = payload["job_id"]
-    bucket     = payload.get("bucket")
-    image_path = payload.get("image_path")
-    image_url  = payload.get("image_url")
-    razred     = (payload.get("razred") or "").strip()
-    user_text  = (payload.get("user_text") or "").strip()
-    requested  = payload.get("requested") or []
-    if razred not in DOZVOLJENI_RAZREDI:
-        razred = "5"
-
-    fs = _firestore_client()
-    from google.cloud import firestore as gcf  # type: ignore
-
-    try:
-        history = []
-
-        detected = []
-        if (image_path or image_url):
-            if image_path:
-                # --- NEW: robustan download ---
                 if not storage_client:
                     raise RuntimeError("GCS storage client not initialized")
                 try:
                     blob = storage_client.bucket(bucket).blob(image_path)
-                    img_bytes = blob.download_as_bytes()
+                    img_bytes = blob.download_as_bytes()  # jednom
                 except Exception as e:
                     log.error("GCS download failed for %s/%s: %r", bucket, image_path, e)
                     html_msg = (
@@ -1017,7 +901,6 @@ def tasks_process():
                         "user_text": user_text,
                         "requested": [],
                     }, merge=True)
-                    # Vrati 200 → nema ponovnih pokušaja; rezultat je upisan
                     return "OK", 200
 
                 img_b64 = base64.b64encode(img_bytes).decode()
@@ -1038,7 +921,7 @@ def tasks_process():
                 html_msg = (
                     "<p>Vidim više zadataka na slici: <b>"
                     + ", ".join(map(str, detected))
-                    + "</b>.</p><p>Napiši koje želiš da riješim.</p>"
+                    + "</b>.</p><p>Napiši koje tačno želiš da riješim.</p>"
                 )
                 fs.collection("jobs").document(job_id).set({
                     "status": "done",
@@ -1050,8 +933,8 @@ def tasks_process():
                 }, merge=True)
                 return "OK", 200
 
-        # --- glavni tok ---
-        if image_path:
+        # --- GLAVNA OBRADA ---
+        if img_bytes is not None:  # image_path slučaj
             odgovor_html, used_path, used_model = route_image_flow(
                 img_bytes, razred, history=history, requested_tasks=requested, user_text=user_text
             )
@@ -1063,6 +946,7 @@ def tasks_process():
             odgovor_html, used_model = answer_with_text_pipeline(user_text, razred, history, requested)
             used_path = "text"
 
+        # --- SPREMI REZULTAT ---
         fs.collection("jobs").document(job_id).set({
             "status": "done",
             "result": {"html": odgovor_html, "path": used_path, "model": used_model},
@@ -1071,6 +955,10 @@ def tasks_process():
             "user_text": user_text,
             "requested": requested,
         }, merge=True)
+
+        # log u Sheets
+        log_to_sheet(job_id, razred, user_text, odgovor_html, used_path, used_model)
+
         return "OK", 200
 
     except Exception as e:
