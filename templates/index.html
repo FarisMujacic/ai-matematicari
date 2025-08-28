@@ -128,7 +128,6 @@
   {% if error %}<div class="error-banner">{{ error }}</div>{% endif %}
 
   <main class="stack">
-    {% if history and history|length > 0 %}
     <div class="card">
       <div id="chat-container">
         {% for message in history %}
@@ -137,20 +136,14 @@
           <div class="chat-message bot-message"><div class="bubble">{{ message.bot|safe }}</div></div>
         </div>
         {% endfor %}
-        <div id="typing" class="typing-indicator">🤖 MAT-BOT piše odgovor</div>
+        <div id="typing" class="typing-indicator" style="display:none;">🤖 MAT-BOT piše odgovor</div>
       </div>
     </div>
-    {% else %}
-      <div class="card" id="chat-empty">
-        <div id="typing" class="typing-indicator" style="display:none; margin:0 auto;">🤖 MAT-BOT piše odgovor</div>
-        <div class="muted">Dobrodošao! Unesi pitanje ili učitaj sliku pa odaberi režim slanja.</div>
-      </div>
-    {% endif %}
 
     <div class="card">
+      <!-- Jedna forma, jedno dugme -->
       <form id="ask-form" method="POST" enctype="multipart/form-data" autocomplete="off" action="/submit">
         <input type="hidden" name="history_json" id="history_json_main" value='{{ history|tojson|safe }}'>
-
         <div id="razred-wrapper" {% if razred and not error %}style="display: none;"{% endif %}>
           <label for="razred">Koji si razred?</label>
           <select name="razred" id="razred" required>
@@ -161,7 +154,6 @@
             <option value="8" {% if razred == '8' %}selected{% endif %}>8. razred</option>
             <option value="9" {% if razred == '9' %}selected{% endif %}>9. razred</option>
           </select>
-          {% if error %}<div class="error">{{ error }}</div>{% endif %}
         </div>
 
         <label for="pitanje">Postavi mi matematičko pitanje (tekst ili slika):</label>
@@ -181,15 +173,8 @@
           </div>
 
           <div class="right">
-            <label for="mode" class="muted">Režim</label>
-            <select id="mode" name="mode" title="Odaberi režim">
-              <option value="auto" selected>Auto</option>
-              <option value="sync">Force Sync</option>
-              <option value="async">Force Async</option>
-            </select>
             <button id="sendBtn" type="button" class="btn">✉️ Pošalji</button>
-            <span id="hybridSpinner" class="muted hidden">⏳ Obrada u toku…</span>
-            <button type="submit" form="clear-form" class="btn danger">🗑️ Očisti konverzaciju</button>
+            <button type="submit" form="clear-form" class="btn danger">🗑️ Očisti</button>
           </div>
         </div>
       </form>
@@ -199,9 +184,6 @@
         <input type="hidden" name="confirm_clear" value="1" />
       </form>
     </div>
-
-    <!-- Mjesto za asinhroni ili brzi rezultat (kad nema chata) -->
-    <div id="async-result" class="card" style="display:none;"></div>
   </main>
 
   <button id="to-bottom" onclick="scrollToBottom()">⬇ Do dna</button>
@@ -239,11 +221,6 @@ function resetHistory(HIST_KEY, hiddenMain){
   localStorage.removeItem(HIST_KEY);
   if (hiddenMain) hiddenMain.value = '[]';
 }
-function getTrimmedHistoryForSubmit(HIST_KEY){
-  let arr=[]; try{ arr = JSON.parse(localStorage.getItem(HIST_KEY) || '[]'); }catch(_){}
-  const last5 = arr.slice(-5).map(m=>({ user:String(m.user||'').slice(0,2000), bot:String(m.bot||'').slice(0,4000) }));
-  return JSON.stringify(last5);
-}
 function pushHistory(HIST_KEY, user, bot){
   let arr=[]; try{ arr = JSON.parse(localStorage.getItem(HIST_KEY) || '[]'); }catch(_){}
   arr.push({user, bot}); arr = arr.slice(-8);
@@ -275,7 +252,6 @@ document.addEventListener('DOMContentLoaded', () => {
   const removeBtn = document.getElementById('remove-file');
   const textarea  = document.getElementById('pitanje');
   const razredSel = document.getElementById('razred');
-  const modeSel   = document.getElementById('mode');
 
   const cid = getCID();
   const HIST_KEY = 'matbot_history_' + cid;
@@ -290,147 +266,109 @@ document.addEventListener('DOMContentLoaded', () => {
   if (fileInput){ fileInput.addEventListener('change', updateFileUI); }
   if (removeBtn) removeBtn.addEventListener('click', clearFile);
 
-  const asyncOut = document.getElementById('async-result');
-  const spinner  = document.getElementById('hybridSpinner');
-
-  function setSpinner(v){ if (spinner) spinner.classList.toggle('hidden', !v); }
-  function ensureChatContainer(){
-    if (document.getElementById('chat-container')) return document.getElementById('chat-container');
-    // kreiraj kad nema history-a
-    const empty = document.getElementById('chat-empty');
-    if (empty){
-      const card = document.createElement('div');
-      card.className = 'card';
-      card.innerHTML = `<div id="chat-container"><div id="typing" class="typing-indicator" style="display:none;">🤖 MAT-BOT piše odgovor</div></div>`;
-      empty.replaceWith(card);
-      return card.querySelector('#chat-container');
-    }
-    return null;
-  }
-  function appendQA(userText, botHtml){
-    const chat = ensureChatContainer();
-    if (chat){
-      const pair = document.createElement('div'); pair.className='qa-pair';
-      const u = document.createElement('div'); u.className='chat-message user-message'; u.innerHTML = `<div class="bubble user"><p>${escapeHtml(userText)}</p></div>`;
-      const b = document.createElement('div'); b.className='chat-message bot-message'; b.innerHTML = `<div class="bubble">${botHtml}</div>`;
-      pair.appendChild(u); pair.appendChild(b); chat.appendChild(pair);
-      if (window.MathJax && MathJax.typesetPromise) { MathJax.typesetPromise([b]); }
-      applyPlotsIn(b);
-      scrollToBottom();
-    }else if (asyncOut){
-      asyncOut.style.display='block';
-      asyncOut.innerHTML = `<div class="bubble user"><p>${escapeHtml(userText)}</p></div><div class="bubble">${botHtml}</div>`;
-      if (window.MathJax && MathJax.typesetPromise) { MathJax.typesetPromise([asyncOut]); }
-      applyPlotsIn(asyncOut);
-      window.scrollTo({top: document.body.scrollHeight, behavior:'smooth'});
-    }
-  }
-  function showInfo(html){
-    if (asyncOut){
-      asyncOut.style.display='block';
-      asyncOut.innerHTML = `<div class="bubble">${html}</div>`;
-    }
-  }
+  function ensureChatContainer(){ return document.getElementById('chat-container'); }
   function escapeHtml(s){ return (s||'').replace(/[&<>"']/g, m=>({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[m])); }
 
-  async function poll(jobId, userText){
-    let tries=0, maxTries=180; // ~6min @ 2s
+  function appendUserBubble(text){
+    const chat = ensureChatContainer(); if(!chat) return;
+    const pair = document.createElement('div'); pair.className='qa-pair';
+    const u = document.createElement('div'); u.className='chat-message user-message'; u.innerHTML = `<div class="bubble user"><p>${escapeHtml(text)}</p></div>`;
+    const b = document.createElement('div'); b.className='chat-message bot-message'; b.innerHTML = `<div class="bubble"><i class="muted">Obrada…</i></div>`;
+    pair.appendChild(u); pair.appendChild(b); chat.appendChild(pair); scrollToBottom();
+    return b.querySelector('.bubble'); // vraća bot balon koji ćemo zamijeniti
+  }
+
+  async function poll(jobId, userLabel, botBubble){
     const sleep = (ms)=> new Promise(r=>setTimeout(r, ms));
-    while(tries++ < maxTries){
+    for (let i=0;i<180;i++){ // ~6 min @ 2s
       await sleep(2000);
       try{
         const r = await fetch(`/status/${jobId}`, {cache:'no-store', credentials:'include'});
         if (!r.ok) throw new Error('status http '+r.status);
         const data = await r.json();
         if (data.status === 'done'){
-          setSpinner(false);
           const html = (data.result && data.result.html) || '<i>Nema rezultata.</i>';
-          appendQA(userText, html);
-          pushHistory(HIST_KEY, userText, html);
+          botBubble.innerHTML = html;
+          if (window.MathJax && MathJax.typesetPromise) { MathJax.typesetPromise([botBubble]); }
+          applyPlotsIn(botBubble);
+          pushHistory(HIST_KEY, userLabel, html);
+          hideTyping();
           return;
         }
         if (data.status === 'error'){
-          setSpinner(false);
-          showInfo(`<div class="alert alert-danger">Greška: ${data.error || 'nepoznato'}</div>`);
-          return;
+          botBubble.innerHTML = `<div class="alert alert-danger">Greška: ${data.error || 'nepoznato'}</div>`;
+          hideTyping(); return;
         }
-      }catch(err){
-        setSpinner(false);
-        showInfo('<div class="alert alert-danger">Greška pri provjeri statusa.</div>');
-        return;
+      }catch(_){
+        botBubble.innerHTML = '<div class="alert alert-danger">Greška pri provjeri statusa.</div>';
+        hideTyping(); return;
       }
     }
-    setSpinner(false);
-    showInfo('<div class="alert alert-warning">Istek vremena čekanja na rezultat.</div>');
+    botBubble.innerHTML = '<div class="alert alert-warning">Istek vremena čekanja na rezultat.</div>';
+    hideTyping();
   }
 
-  async function sendHybrid(){
+  async function sendOneButton(){
     const f = fileInput?.files?.[0] || null;
     const razred  = razredSel?.value || '';
     const tekst   = textarea?.value?.trim() || '';
-    const mode    = modeSel?.value || 'auto';
 
     if (!razred){ alert('Odaberi razred.'); return; }
     if (!f && !tekst){ alert('Unesi pitanje ili dodaj sliku.'); return; }
 
-    setSpinner(true); showTyping();
+    const userLabel = tekst || (f ? '[SLIKA]' : '');
+    showTyping();
+    const botBubble = appendUserBubble(userLabel);
 
     const fd = new FormData();
     fd.append('razred', razred);
-    fd.append('user_text', tekst);   // backend prima user_text/pitanje
-    fd.append('mode', mode);
+    fd.append('user_text', tekst);
     if (f) fd.append('file', f, f.name);
+    // NEMA mode → backend = auto
 
     try{
       const r = await fetch('/submit', { method:'POST', body: fd, credentials:'include' });
       const j = await r.json();
 
-      // SYNC uspjeh (200) – backend vraća { result: { html, ... } }
+      // SYNC (200)
       if (r.status === 200 && j && j.result && j.result.html){
-        setSpinner(false); hideTyping();
-        appendQA(tekst || (f ? '[SLIKA]' : ''), j.result.html);
-        pushHistory(HIST_KEY, tekst || (f ? '[SLIKA]' : ''), j.result.html);
-        textarea.value = ''; clearFile(); return;
+        botBubble.innerHTML = j.result.html;
+        if (window.MathJax && MathJax.typesetPromise) { MathJax.typesetPromise([botBubble]); }
+        applyPlotsIn(botBubble);
+        pushHistory(HIST_KEY, userLabel, j.result.html);
+        hideTyping();
+        textarea.value = ''; clearFile();
+        return;
       }
 
-      // ASYNC (202) – backend vraća { job_id }
+      // ASYNC (202)
       if (r.status === 202 && j && j.job_id){
-        showInfo('<span class="muted">Zahtjev prihvaćen, obrađujem…</span>');
-        poll(j.job_id, tekst || (f ? '[SLIKA]' : ''));
-        textarea.value = ''; clearFile(); return;
+        botBubble.innerHTML = '<span class="muted">Zahtjev prihvaćen, obrađujem…</span>';
+        textarea.value = ''; clearFile();
+        poll(j.job_id, userLabel, botBubble);
+        return;
       }
 
-      // Ostalo – greška
-      setSpinner(false); hideTyping();
-      showInfo('<div class="alert alert-danger">Greška: neočekivan odgovor servera.</div>');
-    }catch(err){
-      setSpinner(false); hideTyping();
-      showInfo('Greška pri slanju zahtjeva.');
+      botBubble.innerHTML = '<div class="alert alert-danger">Neočekivan odgovor servera.</div>';
+      hideTyping();
+    }catch(_){
+      botBubble.innerHTML = 'Greška pri slanju zahtjeva.';
+      hideTyping();
     }
   }
 
-  // Klik na Pošalji
-  document.getElementById('sendBtn')?.addEventListener('click', sendHybrid);
-
-  // Enter/submit na formi → tretiramo kao Auto/izabrani režim
-  if (askForm){
-    askForm.addEventListener('submit', (e)=>{
-      e.preventDefault();
-      sendHybrid();
-    });
-  }
+  document.getElementById('sendBtn')?.addEventListener('click', sendOneButton);
+  askForm?.addEventListener('submit', (e)=>{ e.preventDefault(); sendOneButton(); });
 
   // Clear
   if (clearForm){
     clearForm.addEventListener('submit', async (e)=>{
       e.preventDefault();
       const fd = new FormData(clearForm);
-      try{
-        const res = await fetch(clearForm.action || '/clear', { method:'POST', body: fd, credentials:'include' });
-        // reset UI
-        const chat = document.getElementById('chat-container');
-        if (chat) chat.innerHTML = '<div id="typing" class="typing-indicator" style="display:none;">🤖 MAT-BOT piše odgovor</div>';
-      }catch(_){}
+      try{ await fetch(clearForm.action || '/clear', { method:'POST', body: fd, credentials:'include' }); }
+      catch(_){}
+      const chat = document.getElementById('chat-container');
+      if (chat) chat.innerHTML = '<div id="typing" class="typing-indicator" style="display:none;">🤖 MAT-BOT piše odgovor</div>';
       resetHistory(HIST_KEY, hiddenMain);
     });
   }
@@ -475,7 +413,7 @@ function applyPlotsIn(root){
     plotDiv.remove();
   });
 }
-// primjena na već renderovani sadržaj
+// primjena na već renderovani sadržaj (ako ga ima u initial history)
 document.querySelectorAll('.plot-request').forEach(plotDiv=>{
   const parent=plotDiv.closest(".bubble") || document.body;
   let expression=plotDiv.getAttribute("data-expression")||'';
