@@ -1,7 +1,7 @@
-# app.py — Async TEXT + IMAGE (Cloud Tasks + Firestore + GCS), bez Mathpix-a
+# app.py — Async TEXT + IMAGE (Cloud Tasks + Firestore + GCS), "no-conditions" varijanta
 from flask import Flask, render_template, request, session, redirect, url_for, send_from_directory, jsonify
 from dotenv import load_dotenv
-import os, re, base64, json, html, datetime, logging
+import os, re, base64, json, html, datetime, logging, imghdr, mimetypes
 from datetime import timedelta
 from uuid import uuid4
 
@@ -36,36 +36,29 @@ app.config.update(
 CORS(app, supports_credentials=True)
 app.secret_key = os.getenv("SECRET_KEY", "tajna_lozinka")
 
-MAX_MB = int(os.getenv("MAX_CONTENT_LENGTH_MB", "20"))
+MAX_MB = int(os.getenv("MAX_CONTENT_LENGTH_MB", "200"))  # veliki limit samo da ne pucamo na uploadu
 app.config["MAX_CONTENT_LENGTH"] = MAX_MB * 1024 * 1024
 
 UPLOAD_DIR = "/tmp/uploads"
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
-# prag za "velike" slike ako želiš preskočiti upload u GCS u sync putanji
-MAX_IMAGE_BYTES = int(os.getenv("MAX_IMAGE_BYTES", "1500000"))  # ≈1.5 MB
+# --- TIMEOUT: hard-code veliki timeout i budžetiraj prema servisu ---
+HARD_TIMEOUT_S = float(os.getenv("HARD_TIMEOUT_S", "120"))  # koliko želiš za OpenAI pozive
+OPENAI_TIMEOUT = HARD_TIMEOUT_S
+OPENAI_MAX_RETRIES = 2
 
-# >>> TIMEOUT PATCH >>> (hard-code veće timeoute; ignorišemo ENV)
-HARD_TIMEOUT_S = 120.0            # koliko želiš za OpenAI pozive
-OPENAI_TIMEOUT = HARD_TIMEOUT_S    # koristimo svugdje
-OPENAI_MAX_RETRIES = 2             # možeš 2–3; 2 je razumno
-
-def _budgeted_timeout(default: float | int = None, margin: float = 8.0) -> float:
+def _budgeted_timeout(default: float | int = None, margin: float = 5.0) -> float:
     """
-    Vraća siguran timeout za OpenAI unutar Cloud Run request limita.
-    Koristi RUN_TIMEOUT_SECONDS (default 300) i ostavlja marginu.
+    Timeout za OpenAI unutar limita Cloud Run requesta.
     """
-    # >>> TIMEOUT PATCH >>>
     run_lim = float(os.getenv("RUN_TIMEOUT_SECONDS", "300") or 300)
     want = float(default if default is not None else OPENAI_TIMEOUT)
     return max(5.0, min(want, run_lim - margin))
 
-# --- OpenAI (bez temperature!) ---
+# --- OpenAI ---
 _OPENAI_API_KEY = (os.getenv("OPENAI_API_KEY") or "").strip()
 if not _OPENAI_API_KEY:
     log.error("OPENAI_API_KEY nije postavljen u okruženju.")
-
-# >>> TIMEOUT PATCH >>> (klijent sa većim timeoutom)
 client = OpenAI(api_key=_OPENAI_API_KEY, timeout=OPENAI_TIMEOUT, max_retries=OPENAI_MAX_RETRIES)
 
 MODEL_VISION_LIGHT = os.getenv("OPENAI_MODEL_VISION_LIGHT") or os.getenv("OPENAI_MODEL_VISION", "gpt-5")
@@ -84,7 +77,7 @@ GSHEET_NAME = os.getenv("GSHEET_NAME", "matematika-bot").strip()
 sheet = None
 _sheets_diag = {
     "enabled": False,
-    "mode": None,  # 'b64' | 'file' | 'adc'
+    "mode": None,
     "sa_email": None,
     "spreadsheet_title": None,
     "spreadsheet_id": None,
@@ -254,18 +247,13 @@ def extract_plot_expression(user_text: str, razred: str = "", history=None) -> s
         return None
     m = _FUNC_PAT.search(user_text)
     if m:
-        expr = m.group(0).strip()
+        expr = m.group(0).trim() if hasattr(str, "trim") else m.group(0).strip()
         expr = re.sub(r"\s+", " ", expr)
         return expr
     return None
 
-# ===================== OpenAI helpers (bez temperature) =====================
+# ===================== OpenAI helpers =====================
 def _openai_chat(model: str, messages: list, timeout: float = None, max_tokens: int | None = None):
-    """
-    Kompatibilni wrapper:
-    - novi modeli traže max_completion_tokens → pretvaramo i fallbackamo
-    - temperatura se NIKAD ne šalje
-    """
     def _do(params):
         cli = client if timeout is None else client.with_options(timeout=timeout)
         return cli.chat.completions.create(**params)
@@ -325,7 +313,7 @@ def answer_with_text_pipeline(pure_text: str, razred: str, history, requested, t
     html_out = f"<p>{latexify_fractions(raw)}</p>"
     return html_out, actual_model
 
-# ===================== Vision (bez Mathpix-a) =====================
+# ===================== Vision (minimal, bez uslova) =====================
 def _vision_messages_base(razred: str, history, only_clause: str, strict_geom_policy: str):
     prompt_za_razred = PROMPTI_PO_RAZREDU.get(razred, PROMPTI_PO_RAZREDU["5"])
     system_message = {
@@ -333,7 +321,6 @@ def _vision_messages_base(razred: str, history, only_clause: str, strict_geom_po
         "content": (
             prompt_za_razred +
             " Odgovaraj jezikom pitanja (bosanski/ijekavica). "
-            "Ako nije matematika, reci: 'Molim te, postavi matematičko pitanje.' "
             "Ne prikazuj ASCII grafove osim ako su izričito traženi. "
             + only_clause + " " + strict_geom_policy
         )
@@ -344,107 +331,63 @@ def _vision_messages_base(razred: str, history, only_clause: str, strict_geom_po
         messages.append({"role": "assistant", "content": msg["bot"]})
     return messages
 
-def _vision_clauses(requested_tasks):
+def _vision_clauses():
     only_clause = ""
-    if requested_tasks:
-        only_clause = (
-            " Riješi ISKLJUČIVO sljedeće zadatke (ignoriši ostale na slici): "
-            f"{', '.join(map(str, requested_tasks))}."
-        )
     strict_geom_policy = (
-        " Radi tačno i oprezno:\n"
-        "1) Jasno prepiši koje brojeve zadataka i oznake podzadataka vidiš (npr. 497; a), b), c)).\n"
-        "2) Nemoj pretpostavljati paralelnost/jednakokrakost/sličnost bez oznake.\n"
-        "3) Ako korisnik uz sliku da tekstualne podatke, ONI imaju prioritet.\n"
-        "4) Daj konačan odgovor ako je moguće; inače navedi šta još nedostaje."
+        " Radi tačno i oprezno. Ako nešto nedostaje, navedi šta nedostaje i stani."
     )
     return only_clause, strict_geom_policy
 
-def _detect_exercise_numbers_from_image(user_content):
-    try:
-        sys = {
-            "role": "system",
-            "content": ("Pročitaj sliku i izdvoji vidljive brojeve zadataka (npr. 497, 498...). "
-                        "Odgovori isključivo brojevima odvojenim zarezom (npr. '497, 498'). "
-                        "Ako nema brojeva odgovori 'NONE'.")
+def _bytes_to_data_url(raw: bytes, mime_hint: str | None = None) -> str:
+    mime = mime_hint
+    if not mime or not mime.startswith("image/"):
+        kind = imghdr.what(None, raw)
+        mapping = {
+            "jpeg": "image/jpeg",
+            "png":  "image/png",
+            "gif":  "image/gif",
+            "bmp":  "image/bmp",
+            "tiff": "image/tiff",
+            "webp": "image/webp",
         }
-        msgs = [sys, {"role": "user", "content": user_content}]
-        # >>> TIMEOUT PATCH >>> (digni preliminarni timeout)
-        resp = _openai_chat(MODEL_VISION_LIGHT, msgs, timeout=min(45, HARD_TIMEOUT_S))
-        txt = (resp.choices[0].message.content or "").strip()
-        if txt.upper() == "NONE":
-            return []
-        return [int(n) for n in re.findall(r"\d{2,5}", txt)]
-    except Exception as e:
-        log.warning("Detect numbers fail: %s", e)
-        return []
+        mime = mapping.get(kind, "image/jpeg")
+    b64 = base64.b64encode(raw).decode()
+    return f"data:{mime};base64,{b64}"
 
-def _map_ordinals_to_detected(requested, detected):
-    if not requested:
-        return []
-    out = []
-    for t in requested:
-        if t <= 0:
-            if detected:
-                out.append(detected[-1])
-        elif t <= 10 and detected and t <= len(detected):
-            out.append(detected[t-1])
-        else:
-            out.append(t)
-    dedup, seen = [], set()
-    for n in out:
-        if n not in seen:
-            dedup.append(n); seen.add(n)
-    return dedup
+def route_image_flow_url(image_url: str, razred: str, history, user_text=None, timeout_override: float | None = None):
+    only_clause, strict_geom_policy = _vision_clauses()
+    messages = _vision_messages_base(razred, history, only_clause, strict_geom_policy)
 
-def route_image_flow_url(image_url: str, razred: str, history, requested_tasks=None, user_text=None, timeout_override: float | None = None):
     user_content = []
     if user_text:
         user_content.append({"type": "text", "text": f"Korisnički tekst: {user_text}"})
     user_content.append({"type": "text", "text": "Na slici je matematički zadatak."})
     user_content.append({"type": "image_url", "image_url": {"url": image_url}})
-
-    detected = _detect_exercise_numbers_from_image(user_content)
-    mapped = _map_ordinals_to_detected(requested_tasks or [], detected)
-    only_clause, strict_geom_policy = _vision_clauses(mapped or requested_tasks)
-
-    messages = _vision_messages_base(razred, history, only_clause, strict_geom_policy)
     messages.append({"role": "user", "content": user_content})
 
-    try:
-        resp = _openai_chat(MODEL_VISION, messages, timeout=timeout_override or OPENAI_TIMEOUT)
-        actual_model = getattr(resp, "model", MODEL_VISION)
-        raw = resp.choices[0].message.content
-        raw = strip_ascii_graph_blocks(raw)
-        return f"<p>{latexify_fractions(raw)}</p>", "vision_url", actual_model
-    except Exception as e:
-        log.warning("OpenAI vision URL error: %r", e)
-        return "<p><b>Greška:</b> Servis sporo odgovara ili je zauzet. Pokušaj ponovo.</p>", "vision_url_error", "n/a"
+    resp = _openai_chat(MODEL_VISION, messages, timeout=timeout_override or OPENAI_TIMEOUT)
+    actual_model = getattr(resp, "model", MODEL_VISION)
+    raw = resp.choices[0].message.content
+    raw = strip_ascii_graph_blocks(raw)
+    return f"<p>{latexify_fractions(raw)}</p>", "vision_url", actual_model
 
-def route_image_flow(slika_bytes: bytes, razred: str, history, requested_tasks=None, user_text=None, timeout_override: float | None = None):
-    image_b64 = base64.b64encode(slika_bytes).decode()
+def route_image_flow(slika_bytes: bytes, razred: str, history, user_text=None, timeout_override: float | None = None, mime_hint: str | None = None):
+    only_clause, strict_geom_policy = _vision_clauses()
+    messages = _vision_messages_base(razred, history, only_clause, strict_geom_policy)
+
+    data_url = _bytes_to_data_url(slika_bytes, mime_hint=mime_hint)
     user_content = []
     if user_text:
         user_content.append({"type": "text", "text": f"Korisnički tekst: {user_text}"})
     user_content.append({"type": "text", "text": "Na slici je matematički zadatak."})
-    user_content.append({"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image_b64}"}})
-
-    detected = _detect_exercise_numbers_from_image(user_content)
-    mapped = _map_ordinals_to_detected(requested_tasks or [], detected)
-    only_clause, strict_geom_policy = _vision_clauses(mapped or requested_tasks)
-
-    messages = _vision_messages_base(razred, history, only_clause, strict_geom_policy)
+    user_content.append({"type": "image_url", "image_url": {"url": data_url}})
     messages.append({"role": "user", "content": user_content})
 
-    try:
-        resp = _openai_chat(MODEL_VISION, messages, timeout=timeout_override or OPENAI_TIMEOUT)
-        actual_model = getattr(resp, "model", MODEL_VISION)
-        raw = resp.choices[0].message.content
-        raw = strip_ascii_graph_blocks(raw)
-        return f"<p>{latexify_fractions(raw)}</p>", "vision_direct", actual_model
-    except Exception as e:
-        log.warning("OpenAI vision base64 error: %r", e)
-        return "<p><b>Greška:</b> Servis sporo odgovara ili je zauzet. Pokušaj ponovo.</p>", "vision_direct_error", "n/a"
+    resp = _openai_chat(MODEL_VISION, messages, timeout=timeout_override or OPENAI_TIMEOUT)
+    actual_model = getattr(resp, "model", MODEL_VISION)
+    raw = resp.choices[0].message.content
+    raw = strip_ascii_graph_blocks(raw)
+    return f"<p>{latexify_fractions(raw)}</p>", "vision_direct", actual_model
 
 # ===================== Request helpers =====================
 def get_history_from_request():
@@ -538,7 +481,7 @@ def gcs_signed_upload():
 def uploads(name):
     return send_from_directory(UPLOAD_DIR, name)
 
-# ===================== Sync forma (neobavezno) =====================
+# ===================== Sync forma =====================
 @app.route("/", methods=["GET", "POST"])
 def index():
     plot_expression_added = False
@@ -561,10 +504,9 @@ def index():
             # IMAGE via URL
             if image_url:
                 combined_text = pitanje
-                requested = extract_requested_tasks(combined_text)
                 odgovor, used_path, used_model = route_image_flow_url(
-                    image_url, razred, history, requested_tasks=requested, user_text=combined_text,
-                    timeout_override=HARD_TIMEOUT_S  # >>> TIMEOUT PATCH >>>
+                    image_url, razred, history, user_text=combined_text,
+                    timeout_override=HARD_TIMEOUT_S
                 )
                 session["last_image_url"] = image_url
 
@@ -583,31 +525,19 @@ def index():
                 if is_ajax: return render_template("index.html", history=history, razred=razred)
                 return redirect(url_for("index"))
 
-            # IMAGE via FILE
+            # IMAGE via FILE (bez ikakvih ograničenja)
             if slika and slika.filename:
-                slika.stream.seek(0, os.SEEK_END); size_bytes = slika.stream.tell(); slika.stream.seek(0)
                 combined_text = pitanje
-                requested = extract_requested_tasks(combined_text)
-
-                if size_bytes > MAX_IMAGE_BYTES:
-                    kb = size_bytes // 1024; max_kb = MAX_IMAGE_BYTES // 1024
-                    display_user = (combined_text + " [SLIKA]") if combined_text else "[SLIKA]"
-                    bot_msg = (f"<p><b>Slika je prevelika ({kb} KB).</b> "
-                               f"Smanji veličinu (max {max_kb} KB) i pokušaj ponovo.</p>")
-                    history.append({"user": display_user, "bot": bot_msg})
-                    history = history[-8:]; session["history"] = history
-                    if is_ajax: return render_template("index.html", history=history, razred=razred)
-                    return redirect(url_for("index"))
-
                 body = slika.read()
                 odgovor, used_path, used_model = route_image_flow(
-                    body, razred, history, requested_tasks=requested, user_text=combined_text,
-                    timeout_override=HARD_TIMEOUT_S  # >>> TIMEOUT PATCH >>>
+                    body, razred, history, user_text=combined_text,
+                    timeout_override=HARD_TIMEOUT_S,
+                    mime_hint=slika.mimetype or None
                 )
 
-                # spremi kopiju za follow-up
+                # spremi kopiju (nije obavezno)
                 try:
-                    ext = os.path.splitext(slika.filename or "")[1].lower() or ".jpg"
+                    ext = os.path.splitext(slika.filename or "")[1].lower() or ".img"
                     fname = f"{uuid4().hex}{ext}"
                     with open(os.path.join(UPLOAD_DIR, fname), "wb") as fp:
                         fp.write(body)
@@ -637,8 +567,8 @@ def index():
 
             if last_url and (requested or (pitanje and FOLLOWUP_TASK_RE.match(pitanje))):
                 odgovor, used_path, used_model = route_image_flow_url(
-                    last_url, razred, history, requested_tasks=requested, user_text=pitanje,
-                    timeout_override=HARD_TIMEOUT_S  # >>> TIMEOUT PATCH >>>
+                    last_url, razred, history, user_text=pitanje,
+                    timeout_override=HARD_TIMEOUT_S
                 )
                 if (not plot_expression_added) and should_plot(pitanje):
                     expr = extract_plot_expression(pitanje, razred=razred, history=history)
@@ -655,7 +585,7 @@ def index():
                 return redirect(url_for("index"))
 
             odgovor, actual_model = answer_with_text_pipeline(
-                pitanje, razred, history, requested, timeout_override=HARD_TIMEOUT_S  # >>> TIMEOUT PATCH >>>
+                pitanje, razred, history, requested, timeout_override=HARD_TIMEOUT_S
             )
             if (not plot_expression_added) and should_plot(pitanje):
                 expr = extract_plot_expression(pitanje, razred=razred, history=history)
@@ -682,6 +612,7 @@ def index():
 # ===================== Health & utils =====================
 @app.errorhandler(413)
 def too_large(e):
+    # praktično nikad, jer smo stavili veliki MAX_CONTENT_LENGTH
     msg = (f"<p><b>Greška:</b> Fajl je prevelik (limit {MAX_MB} MB). "
            f"Pokušaj ponovo ili smanji kvalitet.</p>")
     return render_template("index.html", history=[{"user":"[SLIKA]", "bot": msg}], razred=session.get("razred")), 413
@@ -803,12 +734,10 @@ def submit_async():
     fs = _firestore_client()
     from google.cloud import firestore as gcf  # type: ignore
 
-    # iz forme/klijenta (FormData ili query)
     razred = (request.form.get("razred") or request.args.get("razred") or "").strip()
     user_text = (request.form.get("user_text") or request.form.get("pitanje") or "").strip()
     image_url = (request.form.get("image_url") or request.args.get("image_url") or "").strip()
 
-    # ako dođe JSON (tekst-only ili tekst + image_url/b64)
     data = request.get_json(silent=True) or {}
     if data:
         razred    = (data.get("razred")    or razred).strip()
@@ -836,7 +765,7 @@ def submit_async():
         "image_url": image_url or None
     }
 
-    # ako je stigao FILE → pohrani u GCS
+    # FILE -> GCS
     if "file" in request.files:
         if not (storage_client and GCS_BUCKET):
             return jsonify({"error": "GCS not configured (GCS_BUCKET)"}), 400
@@ -847,7 +776,6 @@ def submit_async():
         blob.upload_from_file(f, content_type=f.mimetype or "application/octet-stream")
         payload["image_path"] = name
     else:
-        # opciono: JSON base64 slika
         image_b64 = (data.get("image_b64") if data else None)
         if image_b64 and (storage_client and GCS_BUCKET):
             if "," in image_b64:
@@ -859,7 +787,6 @@ def submit_async():
             blob.upload_from_string(raw, content_type="application/octet-stream")
             payload["image_path"] = name
 
-    # enqueue
     _create_task(payload)
     return jsonify({"job_id": job_id, "status": "queued"}), 202
 
@@ -894,74 +821,22 @@ def tasks_process():
 
     try:
         history = []
-        # >>> TIMEOUT PATCH >>> (budžetiraj prema servisu; želiš 120s sa malom marginom)
         task_ai_timeout = _budgeted_timeout(default=HARD_TIMEOUT_S, margin=5.0)
 
-        # ---------------- TRIAGE: brzo detektuj brojeve zadataka ----------------
-        detected = []
-        if (image_path or image_url):
-            if image_path:
-                if not storage_client:
-                    raise RuntimeError("GCS storage client not initialized")
-                try:
-                    blob = storage_client.bucket(bucket).blob(image_path)
-                    img_bytes = blob.download_as_bytes()
-                except Exception as e:
-                    log.error("GCS download failed for %s/%s: %r", bucket, image_path, e)
-                    html_msg = (
-                        "<p><b>Greška pri čitanju slike iz GCS-a.</b><br>"
-                        f"Bucket: <code>{html.escape(bucket or '')}</code><br>"
-                        f"Putanja: <code>{html.escape(image_path or '')}</code></p>"
-                    )
-                    fs.collection("jobs").document(job_id).set({
-                        "status": "done",
-                        "result": {"html": html_msg, "path": "gcs_error", "model": "n/a"},
-                        "finished_at": gcf.SERVER_TIMESTAMP,
-                        "razred": razred,
-                        "user_text": user_text,
-                        "requested": [],
-                    }, merge=True)
-                    return "OK", 200
-
-                img_b64 = base64.b64encode(img_bytes).decode()
-                user_content = [
-                    {"type":"text","text":"Na slici je matematički zadatak."},
-                    {"type":"image_url","image_url":{"url": f"data:image/jpeg;base64,{img_b64}"}}
-                ]
-            else:
-                user_content = [
-                    {"type":"text","text":"Na slici je matematički zadatak."},
-                    {"type":"image_url","image_url":{"url": image_url}}
-                ]
-
-            detected = _detect_exercise_numbers_from_image(user_content)
-            if requested and detected:
-                requested = _map_ordinals_to_detected(requested, detected)
-            if not requested and len(detected) >= 2:
-                html_msg = (
-                    "<p>Vidim više zadataka na slici: <b>"
-                    + ", ".join(map(str, detected))
-                    + "</b>.</p><p>Napiši koje želiš da riješim.</p>"
-                )
-                fs.collection("jobs").document(job_id).set({
-                    "status": "done",
-                    "result": {"html": html_msg, "path": "triage", "model": MODEL_VISION_LIGHT},
-                    "finished_at": gcf.SERVER_TIMESTAMP,
-                    "razred": razred,
-                    "user_text": user_text,
-                    "requested": [],
-                }, merge=True)
-                return "OK", 200
-
-        # --- glavni tok ---
+        # ---- Glavni tok, BEZ ikakvih uslova/triage-a ----
         if image_path:
+            if not storage_client:
+                raise RuntimeError("GCS storage client not initialized")
+            blob = storage_client.bucket(bucket).blob(image_path)
+            img_bytes = blob.download_as_bytes()
+            mime_hint = blob.content_type or mimetypes.guess_type(image_path)[0] or None
             odgovor_html, used_path, used_model = route_image_flow(
-                img_bytes, razred, history=history, requested_tasks=requested, user_text=user_text,
-                timeout_override=task_ai_timeout
+                img_bytes, razred, history=history, user_text=user_text,
+                timeout_override=task_ai_timeout, mime_hint=mime_hint
             )
         elif image_url:
             odgovor_html, used_path, used_model = route_image_flow_url(
-                image_url, razred, history=history, requested_tasks=requested, user_text=user_text,
+                image_url, razred, history=history, user_text=user_text,
                 timeout_override=task_ai_timeout
             )
         else:
@@ -979,7 +854,6 @@ def tasks_process():
             "requested": requested,
         }, merge=True)
 
-        # log u Sheets (best-effort)
         try:
             log_to_sheet(job_id, razred, user_text, odgovor_html, used_path, used_model)
         except Exception as _e:
@@ -989,12 +863,18 @@ def tasks_process():
 
     except Exception as e:
         log.exception("Task processing failed")
+        # NEMA 500 nazad Cloud Tasks-u → završavamo sa 200, a korisniku pišemo poruku
+        err_html = (
+            "<p><b>Nije uspjela obrada slike.</b> "
+            "Pokušaj ponovo ili pošalji jasniju fotografiju.</p>"
+            f"<p><code>{html.escape(str(e))}</code></p>"
+        )
         fs.collection("jobs").document(job_id).set({
-            "status": "error",
-            "error": str(e),
+            "status": "done",
+            "result": {"html": err_html, "path": "error", "model": "n/a"},
             "finished_at": gcf.SERVER_TIMESTAMP
         }, merge=True)
-        return "ERROR", 500
+        return "OK", 200  # važno: nema retrija/500
 
 # ===================== Run =====================
 if __name__ == "__main__":
