@@ -141,14 +141,15 @@
       </div>
     </div>
     {% else %}
-      <div id="typing" class="typing-indicator" style="display:none; margin:0 auto;">🤖 MAT-BOT piše odgovor</div>
+      <div class="card" id="chat-empty">
+        <div id="typing" class="typing-indicator" style="display:none; margin:0 auto;">🤖 MAT-BOT piše odgovor</div>
+        <div class="muted">Dobrodošao! Unesi pitanje ili učitaj sliku pa odaberi režim slanja.</div>
+      </div>
     {% endif %}
 
     <div class="card">
-      <form id="ask-form" method="POST" enctype="multipart/form-data" autocomplete="off" action="/">
+      <form id="ask-form" method="POST" enctype="multipart/form-data" autocomplete="off" action="/submit">
         <input type="hidden" name="history_json" id="history_json_main" value='{{ history|tojson|safe }}'>
-        <input type="hidden" name="ajax" value="1">
-        <input type="hidden" name="image_url" id="image_url_hidden" value="">
 
         <div id="razred-wrapper" {% if razred and not error %}style="display: none;"{% endif %}>
           <label for="razred">Koji si razred?</label>
@@ -170,7 +171,7 @@
           <div class="left">
             <label for="slika">Ili učitaj / uslikaj sliku:</label>
             <div class="file-row">
-              <input class="file-input" id="slika" type="file" name="slika" accept="image/*" />
+              <input class="file-input" id="slika" type="file" name="file" accept="image/*" />
               <label for="slika" class="btn secondary">📎 Izaberi fajl / Kamera</label>
               <span id="file-chip" class="file-chip">
                 <span id="file-name">Nije odabran fajl</span>
@@ -179,14 +180,15 @@
             </div>
           </div>
 
-          <!-- ASINHRONO dugme + spinner -->
           <div class="right">
-            <button id="asyncSend" type="button" class="btn secondary">Pošalji ASINHRONO (beta)</button>
-            <span id="asyncSpinner" class="muted hidden">⏳ Obrada u toku…</span>
-          </div>
-
-          <div class="right">
-            <button type="submit" class="btn">✉️ Pošalji</button>
+            <label for="mode" class="muted">Režim</label>
+            <select id="mode" name="mode" title="Odaberi režim">
+              <option value="auto" selected>Auto</option>
+              <option value="sync">Force Sync</option>
+              <option value="async">Force Async</option>
+            </select>
+            <button id="sendBtn" type="button" class="btn">✉️ Pošalji</button>
+            <span id="hybridSpinner" class="muted hidden">⏳ Obrada u toku…</span>
             <button type="submit" form="clear-form" class="btn danger">🗑️ Očisti konverzaciju</button>
           </div>
         </div>
@@ -198,7 +200,7 @@
       </form>
     </div>
 
-    <!-- Mjesto za asinhroni rezultat -->
+    <!-- Mjesto za asinhroni ili brzi rezultat (kad nema chata) -->
     <div id="async-result" class="card" style="display:none;"></div>
   </main>
 
@@ -242,6 +244,13 @@ function getTrimmedHistoryForSubmit(HIST_KEY){
   const last5 = arr.slice(-5).map(m=>({ user:String(m.user||'').slice(0,2000), bot:String(m.bot||'').slice(0,4000) }));
   return JSON.stringify(last5);
 }
+function pushHistory(HIST_KEY, user, bot){
+  let arr=[]; try{ arr = JSON.parse(localStorage.getItem(HIST_KEY) || '[]'); }catch(_){}
+  arr.push({user, bot}); arr = arr.slice(-8);
+  localStorage.setItem(HIST_KEY, JSON.stringify(arr));
+  const hidden = document.getElementById('history_json_main');
+  if (hidden) hidden.value = JSON.stringify(arr.slice(-5));
+}
 
 function updateFileUI(){
   const fileInput = document.getElementById('slika');
@@ -256,16 +265,6 @@ function clearFile(){
   const dt = new DataTransfer(); fileInput.files = dt.files; fileInput.value = ""; updateFileUI();
 }
 
-async function uploadToGCS(file){
-  try{
-    const su = await fetch('/gcs/signed-upload',{method:'POST',headers:{'Content-Type':'application/json'},body: JSON.stringify({contentType: file.type || 'image/jpeg'})})
-      .then(r=>{ if(!r.ok) throw new Error('signed-upload failed'); return r.json(); });
-    const putRes = await fetch(su.uploadUrl,{method:'PUT',headers:{'Content-Type': file.type || 'image/jpeg'},body:file});
-    if(!putRes.ok) throw new Error('PUT to GCS failed');
-    return su.readUrl;
-  }catch(err){ console.warn('GCS upload fallback:', err); return null; }
-}
-
 document.addEventListener('DOMContentLoaded', () => {
   initDarkToggle();
 
@@ -276,7 +275,7 @@ document.addEventListener('DOMContentLoaded', () => {
   const removeBtn = document.getElementById('remove-file');
   const textarea  = document.getElementById('pitanje');
   const razredSel = document.getElementById('razred');
-  const imageUrlHidden = document.getElementById('image_url_hidden');
+  const modeSel   = document.getElementById('mode');
 
   const cid = getCID();
   const HIST_KEY = 'matbot_history_' + cid;
@@ -291,65 +290,50 @@ document.addEventListener('DOMContentLoaded', () => {
   if (fileInput){ fileInput.addEventListener('change', updateFileUI); }
   if (removeBtn) removeBtn.addEventListener('click', clearFile);
 
-  // --- Sync (postojeće dugme Pošalji) ---
-  if (askForm){
-    askForm.addEventListener('submit', async (e)=>{
-      e.preventDefault();
-      const hasText = textarea && textarea.value.trim().length>0;
-      const hasFile = fileInput && fileInput.files && fileInput.files[0];
-      if (!hasText && !hasFile){ alert("Unesi matematičko pitanje ili učitaj sliku."); return; }
-      showTyping();
-
-      let readUrl = null;
-      if (hasFile){ readUrl = await uploadToGCS(fileInput.files[0]); imageUrlHidden.value = readUrl || ""; }
-
-      const fd = new FormData();
-      fd.append('ajax','1');
-      if (hiddenMain) fd.append('history_json', getTrimmedHistoryForSubmit(HIST_KEY));
-      if (razredSel && razredSel.value) fd.append('razred', razredSel.value);
-      if (textarea) fd.append('pitanje', textarea.value || '');
-      if (readUrl){ fd.append('image_url', readUrl); }
-      else if (hasFile){ fd.append('slika', fileInput.files[0], fileInput.files[0].name); }
-
-      try{
-        const res = await fetch(askForm.action || '/', { method:'POST', body: fd, credentials:'include' });
-        const htmlText = await res.text();
-        document.open(); document.write(htmlText); document.close();
-      }catch(err){ hideTyping(); alert("Greška pri slanju. Molim pokušaj ponovo."); }
-    });
-  }
-
-  // --- Clear ---
-  if (clearForm){
-    clearForm.addEventListener('submit', async (e)=>{
-      e.preventDefault();
-      const fd = new FormData(clearForm);
-      try{
-        const res = await fetch(clearForm.action || '/clear', { method:'POST', body: fd, credentials:'include' });
-        const htmlText = await res.text();
-        document.open(); document.write(htmlText); document.close();
-      }catch(_){}
-      resetHistory(HIST_KEY, hiddenMain);
-    });
-  }
-
-  // --- ASINHRONO ---
-  const asyncBtn = document.getElementById('asyncSend');
-  const asyncSpinner = document.getElementById('asyncSpinner');
   const asyncOut = document.getElementById('async-result');
+  const spinner  = document.getElementById('hybridSpinner');
 
-  function showAsync(html){
-    if (!asyncOut) return;
-    asyncOut.style.display = 'block';
-    asyncOut.innerHTML = `<div class="bubble">${html}</div>`;
-    // Math + grafovi u novom sadržaju
-    if (window.MathJax && MathJax.typesetPromise) { MathJax.typesetPromise([asyncOut]); }
-    applyPlotsIn(asyncOut);
-    window.scrollTo({top: document.body.scrollHeight, behavior: 'smooth'});
+  function setSpinner(v){ if (spinner) spinner.classList.toggle('hidden', !v); }
+  function ensureChatContainer(){
+    if (document.getElementById('chat-container')) return document.getElementById('chat-container');
+    // kreiraj kad nema history-a
+    const empty = document.getElementById('chat-empty');
+    if (empty){
+      const card = document.createElement('div');
+      card.className = 'card';
+      card.innerHTML = `<div id="chat-container"><div id="typing" class="typing-indicator" style="display:none;">🤖 MAT-BOT piše odgovor</div></div>`;
+      empty.replaceWith(card);
+      return card.querySelector('#chat-container');
+    }
+    return null;
   }
-  function setSpinner(v){ if (asyncSpinner) asyncSpinner.classList.toggle('hidden', !v); }
+  function appendQA(userText, botHtml){
+    const chat = ensureChatContainer();
+    if (chat){
+      const pair = document.createElement('div'); pair.className='qa-pair';
+      const u = document.createElement('div'); u.className='chat-message user-message'; u.innerHTML = `<div class="bubble user"><p>${escapeHtml(userText)}</p></div>`;
+      const b = document.createElement('div'); b.className='chat-message bot-message'; b.innerHTML = `<div class="bubble">${botHtml}</div>`;
+      pair.appendChild(u); pair.appendChild(b); chat.appendChild(pair);
+      if (window.MathJax && MathJax.typesetPromise) { MathJax.typesetPromise([b]); }
+      applyPlotsIn(b);
+      scrollToBottom();
+    }else if (asyncOut){
+      asyncOut.style.display='block';
+      asyncOut.innerHTML = `<div class="bubble user"><p>${escapeHtml(userText)}</p></div><div class="bubble">${botHtml}</div>`;
+      if (window.MathJax && MathJax.typesetPromise) { MathJax.typesetPromise([asyncOut]); }
+      applyPlotsIn(asyncOut);
+      window.scrollTo({top: document.body.scrollHeight, behavior:'smooth'});
+    }
+  }
+  function showInfo(html){
+    if (asyncOut){
+      asyncOut.style.display='block';
+      asyncOut.innerHTML = `<div class="bubble">${html}</div>`;
+    }
+  }
+  function escapeHtml(s){ return (s||'').replace(/[&<>"']/g, m=>({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[m])); }
 
-  async function poll(jobId){
+  async function poll(jobId, userText){
     let tries=0, maxTries=180; // ~6min @ 2s
     const sleep = (ms)=> new Promise(r=>setTimeout(r, ms));
     while(tries++ < maxTries){
@@ -361,54 +345,95 @@ document.addEventListener('DOMContentLoaded', () => {
         if (data.status === 'done'){
           setSpinner(false);
           const html = (data.result && data.result.html) || '<i>Nema rezultata.</i>';
-          showAsync(html);
+          appendQA(userText, html);
+          pushHistory(HIST_KEY, userText, html);
           return;
         }
         if (data.status === 'error'){
           setSpinner(false);
-          showAsync(`<div class="alert alert-danger">Greška: ${data.error || 'nepoznato'}</div>`);
+          showInfo(`<div class="alert alert-danger">Greška: ${data.error || 'nepoznato'}</div>`);
           return;
         }
       }catch(err){
         setSpinner(false);
-        showAsync('<div class="alert alert-danger">Greška pri provjeri statusa.</div>');
+        showInfo('<div class="alert alert-danger">Greška pri provjeri statusa.</div>');
         return;
       }
     }
     setSpinner(false);
-    showAsync('<div class="alert alert-warning">Istek vremena čekanja na rezultat.</div>');
+    showInfo('<div class="alert alert-warning">Istek vremena čekanja na rezultat.</div>');
   }
 
-  asyncBtn?.addEventListener('click', async ()=>{
-    // priprema podataka
+  async function sendHybrid(){
     const f = fileInput?.files?.[0] || null;
     const razred  = razredSel?.value || '';
     const tekst   = textarea?.value?.trim() || '';
+    const mode    = modeSel?.value || 'auto';
 
     if (!razred){ alert('Odaberi razred.'); return; }
     if (!f && !tekst){ alert('Unesi pitanje ili dodaj sliku.'); return; }
 
-    setSpinner(true);
-    if (asyncOut){ asyncOut.style.display='block'; asyncOut.innerHTML = '<span class="muted">Zahtjev poslan…</span>'; }
+    setSpinner(true); showTyping();
 
-    // UVIJEK šaljemo kao FormData (backend čita request.form i request.files)
     const fd = new FormData();
     fd.append('razred', razred);
-    fd.append('user_text', tekst);     // backend prima 'user_text' ili 'pitanje'
+    fd.append('user_text', tekst);   // backend prima user_text/pitanje
+    fd.append('mode', mode);
     if (f) fd.append('file', f, f.name);
 
     try{
       const r = await fetch('/submit', { method:'POST', body: fd, credentials:'include' });
-      if (!r.ok){ setSpinner(false); showAsync('Greška na /submit.'); return; }
       const j = await r.json();
-      if (!j.job_id){ setSpinner(false); showAsync('Nije vraćen job_id.'); return; }
-      showAsync('<span class="muted">Zahtjev prihvaćen, obrađujem…</span>');
-      poll(j.job_id);
+
+      // SYNC uspjeh (200) – backend vraća { result: { html, ... } }
+      if (r.status === 200 && j && j.result && j.result.html){
+        setSpinner(false); hideTyping();
+        appendQA(tekst || (f ? '[SLIKA]' : ''), j.result.html);
+        pushHistory(HIST_KEY, tekst || (f ? '[SLIKA]' : ''), j.result.html);
+        textarea.value = ''; clearFile(); return;
+      }
+
+      // ASYNC (202) – backend vraća { job_id }
+      if (r.status === 202 && j && j.job_id){
+        showInfo('<span class="muted">Zahtjev prihvaćen, obrađujem…</span>');
+        poll(j.job_id, tekst || (f ? '[SLIKA]' : ''));
+        textarea.value = ''; clearFile(); return;
+      }
+
+      // Ostalo – greška
+      setSpinner(false); hideTyping();
+      showInfo('<div class="alert alert-danger">Greška: neočekivan odgovor servera.</div>');
     }catch(err){
-      setSpinner(false);
-      showAsync('Greška pri slanju zahtjeva.');
+      setSpinner(false); hideTyping();
+      showInfo('Greška pri slanju zahtjeva.');
     }
-  });
+  }
+
+  // Klik na Pošalji
+  document.getElementById('sendBtn')?.addEventListener('click', sendHybrid);
+
+  // Enter/submit na formi → tretiramo kao Auto/izabrani režim
+  if (askForm){
+    askForm.addEventListener('submit', (e)=>{
+      e.preventDefault();
+      sendHybrid();
+    });
+  }
+
+  // Clear
+  if (clearForm){
+    clearForm.addEventListener('submit', async (e)=>{
+      e.preventDefault();
+      const fd = new FormData(clearForm);
+      try{
+        const res = await fetch(clearForm.action || '/clear', { method:'POST', body: fd, credentials:'include' });
+        // reset UI
+        const chat = document.getElementById('chat-container');
+        if (chat) chat.innerHTML = '<div id="typing" class="typing-indicator" style="display:none;">🤖 MAT-BOT piše odgovor</div>';
+      }catch(_){}
+      resetHistory(HIST_KEY, hiddenMain);
+    });
+  }
 });
 
 window.onload = ()=> setTimeout(scrollToBottom, 150);
