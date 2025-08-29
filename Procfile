@@ -1,13 +1,1 @@
-web: gunicorn app:app \
-    --bind 0.0.0.0:$PORT \
-    --workers 1 \
-    --threads 8 \
-    --worker-class gthread \
-    --timeout 930 \
-    --graceful-timeout 120 \
-    --keep-alive 75 \
-    --max-requests 200 \
-    --max-requests-jitter 50 \
-    --log-level info \
-    --access-logfile - \
-    --error-logfile -
+web: gunicorn app:app --bind 0.0.0.0:$PORT --workers 1 --threads 8 --worker-class gthread --timeout 930 --graceful-timeout 120 --keep-alive 75 --max-requests 200 --max-requests-jitter 50 --log-level info --access-logfile - --error-logfile -
