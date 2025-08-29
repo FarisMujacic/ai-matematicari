@@ -5,4 +5,5 @@ WORKDIR /app
 COPY requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
-CMD ["gunicorn","-b","0.0.0.0:${PORT}","-w","2","-k","gthread","--threads","8","--timeout","120","--graceful-timeout","90","app:app"]
+# Shell forma: bash ekspanduje $PORT prije pokretanja gunicorna
+CMD ["bash","-lc","exec gunicorn -b 0.0.0.0:$PORT -w 2 -k gthread --threads 8 --timeout 120 --graceful-timeout 90 app:app"]
