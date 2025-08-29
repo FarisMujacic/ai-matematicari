@@ -960,3 +960,6 @@ if __name__ == "__main__":
     log.info("Starting app on port %s, LOCAL_MODE=%s", port, LOCAL_MODE)
     app.run(host="0.0.0.0", port=port, debug=debug)
 
+@app.route("/")
+def root():
+    return "ok", 200
