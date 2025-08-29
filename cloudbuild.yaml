@@ -1,34 +1,35 @@
 steps:
-  # 1) Build Docker image
-  - name: gcr.io/cloud-builders/docker
-    args:
-      [
-        "build",
-        "--pull",
-        "--no-cache",
-        "-t",
-        "${_AR_HOSTNAME}/${_AR_PROJECT_ID}/${_AR_REPOSITORY}/${_SERVICE_NAME}:${SHORT_SHA}",
-        "."
-      ]
+  # 0) Docker auth na Artifact Registry
+  - name: gcr.io/google.com/cloudsdktool/cloud-sdk
+    entrypoint: bash
+    args: ['-c', 'gcloud auth configure-docker ${_AR_HOSTNAME} --quiet']
 
-  # 2) Push image to Artifact Registry (MORA prije deploya)
+  # 1) Build image
   - name: gcr.io/cloud-builders/docker
-    args:
-      [
-        "push",
-        "${_AR_HOSTNAME}/${_AR_PROJECT_ID}/${_AR_REPOSITORY}/${_SERVICE_NAME}:${SHORT_SHA}"
-      ]
+    args: [
+      "build", "--pull", "--no-cache",
+      "-t", "${_AR_HOSTNAME}/${_AR_PROJECT_ID}/${_AR_REPOSITORY}/${_SERVICE_NAME}:${SHORT_SHA}",
+      "."
+    ]
 
-  # 3) Deploy na Cloud Run i prebaci sav traffic na latest
+  # 2) Push image (prije deploya!)
+  - name: gcr.io/cloud-builders/docker
+    args: [
+      "push",
+      "${_AR_HOSTNAME}/${_AR_PROJECT_ID}/${_AR_REPOSITORY}/${_SERVICE_NAME}:${SHORT_SHA}"
+    ]
+
+  # 3) Deploy na Cloud Run + 100% na latest
   - name: gcr.io/google.com/cloudsdktool/cloud-sdk
     entrypoint: gcloud
-    args:
-      [
-        "run","deploy","${_SERVICE_NAME}",
-        "--image","${_AR_HOSTNAME}/${_AR_PROJECT_ID}/${_AR_REPOSITORY}/${_SERVICE_NAME}:${SHORT_SHA}",
-        "--region","${_DEPLOY_REGION}",
-        "--platform","${_PLATFORM}",
-        "--allow-unauthenticated",
-        "--quiet",
-        "--traffic","latest=100"
-      ]
+    args: [
+      "run","deploy","${_SERVICE_NAME}",
+      "--image","${_AR_HOSTNAME}/${_AR_PROJECT_ID}/${_AR_REPOSITORY}/${_SERVICE_NAME}:${SHORT_SHA}",
+      "--region","${_DEPLOY_REGION}",
+      "--platform","${_PLATFORM}",
+      "--quiet",
+      "--set-traffic","latest=100"
+    ]
+
+images:
+- '${_AR_HOSTNAME}/${_AR_PROJECT_ID}/${_AR_REPOSITORY}/${_SERVICE_NAME}:${SHORT_SHA}'
