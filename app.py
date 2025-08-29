@@ -48,7 +48,7 @@ CORS(app, supports_credentials=True)
 app.secret_key = os.getenv("SECRET_KEY", "tajna_lozinka")
 
 # ------ MODE ------
-LOCAL_MODE = os.getenv("LOCAL_MODE", "0") == "1"   # kad je 1 → nema Cloud Tasks / Firestore / GCS, sve ide lokalno
+LOCAL_MODE = os.getenv("LOCAL_MODE", "0") == "1"
 USE_FIRESTORE = os.getenv("USE_FIRESTORE", "1") == "1" and not LOCAL_MODE
 
 MAX_MB = int(os.getenv("MAX_CONTENT_LENGTH_MB", "200"))
@@ -63,8 +63,8 @@ OPENAI_TIMEOUT = HARD_TIMEOUT_S
 OPENAI_MAX_RETRIES = 2
 
 # --- HYBRID pragovi/timeouti ---
-SYNC_SOFT_TIMEOUT_S = float(os.getenv("SYNC_SOFT_TIMEOUT_S", "8"))          # meki rok za sinhroni pokušaj
-HEAVY_TOKEN_THRESHOLD = int(os.getenv("HEAVY_TOKEN_THRESHOLD", "1500"))     # grubi prag za “težak” tekst
+SYNC_SOFT_TIMEOUT_S = float(os.getenv("SYNC_SOFT_TIMEOUT_S", "8"))
+HEAVY_TOKEN_THRESHOLD = int(os.getenv("HEAVY_TOKEN_THRESHOLD", "1500"))
 
 def _budgeted_timeout(default: float | int = None, margin: float = 5.0) -> float:
     run_lim = float(os.getenv("RUN_TIMEOUT_SECONDS", "300") or 300)
@@ -389,14 +389,7 @@ def _bytes_to_data_url(raw: bytes, mime_hint: str | None = None) -> str:
     return f"data:{mime};base64,{b64}"
 
 def route_image_flow_url(image_url: str, razred: str, history, user_text=None, timeout_override: float | None = None):
-    """
-    Stabilna obrada 'image_url':
-    1) Backend preuzme sliku (requests.get) i pozove byte-flow (route_image_flow)
-    2) Ako download padne, fallback na stari URL-flow prema modelu
-    """
     only_clause, strict_geom_policy = _vision_clauses()
-
-    # 1) Pokušaj skinuti bytes i koristiti byte-flow (najpouzdanije)
     try:
         r = requests.get(image_url, timeout=15)
         r.raise_for_status()
@@ -410,7 +403,6 @@ def route_image_flow_url(image_url: str, razred: str, history, user_text=None, t
     except Exception as e:
         log.error("route_image_flow_url: download failed: %s", e)
 
-    # 2) Fallback: stari URL-flow (ako baš moramo)
     messages = _vision_messages_base(razred, history, only_clause, strict_geom_policy)
     user_content = []
     if user_text:
@@ -605,6 +597,19 @@ def clear():
     if request.form.get("ajax") == "1": return render_template("index.html", history=[], razred=None)
     return redirect("/")
 
+# 🔸 NOVO: promjena razreda s čišćenjem chata (koristi front nakon potvrde)
+@app.post("/set-razred")
+def set_razred():
+    r = (request.form.get("razred") or "").strip()
+    if r not in DOZVOLJENI_RAZREDI:
+        return jsonify({"ok": False, "error": "neispravan_razred"}), 400
+    session["razred"] = r
+    session.pop("history", None)
+    session.pop("last_image_url", None)
+    session.pop("active_job_id", None)
+    session["in_flight"] = False
+    return jsonify({"ok": True, "razred": r})
+
 @app.get("/healthz")
 def healthz(): return {"ok": True, "local_mode": LOCAL_MODE}, 200
 @app.get("/_healthz")
@@ -672,7 +677,7 @@ def gcs_signed_upload():
 
     return jsonify({"uploadUrl": put_url, "readUrl": read_url}), 200
 
-# ===================== ASINHRONO: Cloud Tasks + Firestore + GCS =====================
+# ===================== ASINHRONO (Cloud Tasks / local thread) =====================
 PROJECT_ID        = (os.getenv("GOOGLE_CLOUD_PROJECT") or os.getenv("GCP_PROJECT") or "").strip()
 REGION            = os.getenv("REGION", "europe-west1")
 TASKS_QUEUE       = os.getenv("TASKS_QUEUE", "matbot-queue")
@@ -698,25 +703,18 @@ def _create_task_cloud(payload: dict):
     }
     return tc.create_task(request={"parent": parent, "task": task})
 
-# --------- SIGURNI FALLBACK ENQUEUE ----------
 def _enqueue(payload: dict):
-    """
-    Jedna tačka za enqueuing:
-    - Ako je LOCAL_MODE ili Tasks nisu podešeni / biblioteka fali → lokalni thread
-    - Inače → Cloud Tasks
-    """
     if LOCAL_MODE or (not tasks_v2) or (not TASKS_TARGET_URL) or (not PROJECT_ID):
         threading.Thread(target=_local_worker, daemon=True, args=(payload,)).start()
     else:
         _create_task_cloud(payload)
 
-# --- Core worker logika (zajednička i za cloud i za lokalni thread) ---
 def _process_job_core(payload: dict) -> dict:
     job_id     = payload["job_id"]
     bucket     = payload.get("bucket")
     image_path = payload.get("image_path")
     image_url  = payload.get("image_url")
-    image_inline_b64 = payload.get("image_inline_b64")  # samo za LOCAL_MODE
+    image_inline_b64 = payload.get("image_inline_b64")
     razred     = (payload.get("razred") or "").strip()
     user_text  = (payload.get("user_text") or "").strip()
     requested  = payload.get("requested") or []
@@ -729,7 +727,6 @@ def _process_job_core(payload: dict) -> dict:
     history = []
     task_ai_timeout = _budgeted_timeout(default=HARD_TIMEOUT_S, margin=5.0)
 
-    # Glavni tok
     if image_path:
         if not storage_client:
             raise RuntimeError("GCS storage client not initialized (image_path zadat).")
@@ -760,7 +757,6 @@ def _process_job_core(payload: dict) -> dict:
         "requested": requested,
     }
 
-# --- Lokalni worker thread ---
 def _local_worker(payload: dict):
     job_id = payload["job_id"]
     try:
@@ -775,7 +771,6 @@ def _local_worker(payload: dict):
         store_job(job_id, {"status": "done", "result": {"html": err_html, "path": "error", "model": "n/a"},
                            "finished_at": datetime.datetime.utcnow().isoformat() + "Z"}, merge=True)
 
-# --------- Heuristike i sync helperi ----------
 def estimate_tokens(text: str) -> int:
     if not text: return 0
     return max(0, len(text) // 4)
@@ -794,7 +789,7 @@ def _sync_process_once(razred: str, user_text: str, requested: list, image_url: 
         if file_bytes:
             html_out, used_path, used_model = route_image_flow(file_bytes, razred, history, user_text=user_text, timeout_override=timeout_s, mime_hint=file_mime or None)
             return {"ok": True, "result": {"html": html_out, "path": used_path, "model": used_model}}
-        html_out, used_model = answer_with_text_pipeline(user_text, razred, history, requested, timeout_s)
+        html_out, used_model = answer_with_text_pipeline(user_text, razred, history, requested, timeout_override=timeout_s)
         return {"ok": True, "result": {"html": html_out, "path": "text", "model": used_model}}
     except Exception as e:
         return {"ok": False, "error": str(e)}
@@ -830,15 +825,13 @@ def _prepare_async_payload(job_id: str, razred: str, user_text: str, requested: 
 
     return payload
 
-# --------- HYBRID /submit (sa session guardom) ----------
+# --------- HYBRID /submit (sa session guardom i garantovanim unlock-om) ----------
 @app.route("/submit", methods=["POST", "OPTIONS"])
 def submit():
     if request.method == "OPTIONS":
         return ("", 204)
 
-    # Session guard: blokiraj paralelne zahtjeve u istoj sesiji
-    _lock_inflight_or_409()
-
+    _lock_inflight_or_409()  # ↔ postavi in_flight=True
     try:
         razred = (request.form.get("razred") or request.args.get("razred") or "").strip()
         user_text = (request.form.get("user_text") or request.form.get("pitanje") or "").strip()
@@ -879,12 +872,9 @@ def submit():
                                "razred": razred, "user_text": user_text, "requested": requested}, merge=True)
             payload = _prepare_async_payload(job_id, razred, user_text, requested, image_url or None,
                                              file_bytes, file_name, file_mime, image_b64_str)
-            try:
-                _enqueue(payload)
-                _set_active_job(job_id)
-                return jsonify({"mode": "async", "job_id": job_id, "status": "queued", "local_mode": LOCAL_MODE}), 202
-            finally:
-                _unlock_inflight()
+            _enqueue(payload)
+            _set_active_job(job_id)
+            return jsonify({"mode": "async", "job_id": job_id, "status": "queued", "local_mode": LOCAL_MODE}), 202
 
         # --- auto: heuristika ---
         heavy = looks_heavy(user_text, has_image=has_image)
@@ -894,12 +884,9 @@ def submit():
                                "razred": razred, "user_text": user_text, "requested": requested}, merge=True)
             payload = _prepare_async_payload(job_id, razred, user_text, requested, image_url or None,
                                              file_bytes, file_name, file_mime, image_b64_str)
-            try:
-                _enqueue(payload)
-                _set_active_job(job_id)
-                return jsonify({"mode": "auto→async", "job_id": job_id, "status": "queued", "local_mode": LOCAL_MODE}), 202
-            finally:
-                _unlock_inflight()
+            _enqueue(payload)
+            _set_active_job(job_id)
+            return jsonify({"mode": "auto→async", "job_id": job_id, "status": "queued", "local_mode": LOCAL_MODE}), 202
 
         # --- sync pokušaj (meki timeout) ---
         sync_try = _sync_process_once(
@@ -931,21 +918,20 @@ def submit():
                            "razred": razred, "user_text": user_text, "requested": requested}, merge=True)
         payload = _prepare_async_payload(job_id, razred, user_text, requested, image_url or None,
                                          file_bytes, file_name, file_mime, image_b64_str)
-        try:
-            _enqueue(payload)
-            _set_active_job(job_id)
-            mode_tag = "auto(sync→async)" if mode == "auto" else "sync→async"
-            return jsonify({
-                "mode": mode_tag, "job_id": job_id, "status": "queued", "local_mode": LOCAL_MODE,
-                "reason": sync_try.get("error", "soft-timeout-or-error")
-            }), 202
-        finally:
-            _unlock_inflight()
+        _enqueue(payload)
+        _set_active_job(job_id)
+        mode_tag = "auto(sync→async)" if mode == "auto" else "sync→async"
+        return jsonify({
+            "mode": mode_tag, "job_id": job_id, "status": "queued", "local_mode": LOCAL_MODE,
+            "reason": sync_try.get("error", "soft-timeout-or-error")
+        }), 202
 
     except Exception as e:
-        _unlock_inflight()
         log.error("submit failed: %s\n%s", e, traceback.format_exc())
         return jsonify({"error": "submit_failed", "detail": str(e)}), 500
+    finally:
+        # 🔑 ključna ispravka: uvijek otključaj
+        _unlock_inflight()
 
 # --------- STATUS ----------
 @app.get("/status/<job_id>")
@@ -953,12 +939,10 @@ def async_status(job_id):
     data = read_job(job_id)
     if not data:
         return jsonify({"status": "pending"}), 200
-    # Ako je posao gotov ili errored i ovo je aktivni za ovu sesiju → očisti lock
     if data.get("status") in ("done", "error") and session.get("active_job_id") == job_id:
         _set_active_job(None)
     return jsonify(data), 200
 
-# (Opcionalno) RESULT endpoint – zgodan za front da dobije samo rezultat
 @app.get("/result/<job_id>")
 def async_result(job_id):
     data = read_job(job_id)
@@ -992,7 +976,7 @@ def tasks_process():
         job_id = (request.get_json(silent=True) or {}).get("job_id", f"unknown-{uuid4().hex[:6]}")
         store_job(job_id, {"status": "done", "result": {"html": err_html, "path": "error", "model": "n/a"},
                            "finished_at": datetime.datetime.utcnow().isoformat() + "Z"}, merge=True)
-        return "OK", 200  # bez retrija
+        return "OK", 200
 
 # ===================== Run =====================
 if __name__ == "__main__":
