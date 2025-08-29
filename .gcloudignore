@@ -1,0 +1,18 @@
+cd ~/ai-matematicari
+
+cat > .gcloudignore <<'EOF'
+# Eksplicitno: NE diramo templates/
+# Standardno ignoriši samo “smeće”:
+.git
+*.pyc
+__pycache__/
+.env
+.env.*
+venv/
+.venv/
+node_modules/
+.DS_Store
+.idea/
+.vscode/
+*.log
+EOF
