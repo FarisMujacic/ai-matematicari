@@ -35,6 +35,7 @@ log = logging.getLogger("matbot")
 
 SECURE_COOKIES = os.getenv("COOKIE_SECURE", "0") == "1"
 app = Flask(__name__)
+
 app.config.update(
     SESSION_COOKIE_SAMESITE="Lax",
     SESSION_COOKIE_SECURE=SECURE_COOKIES,
@@ -45,6 +46,10 @@ app.config.update(
 )
 CORS(app, supports_credentials=True)
 app.secret_key = os.getenv("SECRET_KEY", "tajna_lozinka")
+# negdje nakon: app = Flask(__name__)
+@app.get("/healthz")
+def healthz():
+    return "ok", 200
 
 # ------ MODE ------
 LOCAL_MODE = os.getenv("LOCAL_MODE", "0") == "1"   # kad je 1 → nema Cloud Tasks / Firestore / GCS, sve ide lokalno
@@ -954,3 +959,4 @@ if __name__ == "__main__":
     debug = os.getenv("FLASK_DEBUG", "0") == "1"
     log.info("Starting app on port %s, LOCAL_MODE=%s", port, LOCAL_MODE)
     app.run(host="0.0.0.0", port=port, debug=debug)
+
