@@ -954,9 +954,16 @@ def tasks_process():
                            "finished_at": datetime.datetime.utcnow().isoformat() + "Z"}, merge=True)
         return "OK", 200  # bez retrija
 
+
+@app.get("/healthz")
+def healthz():
+    return "ok", 200
+
+
 # ===================== Run =====================
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", "8080"))
     debug = os.getenv("FLASK_DEBUG", "0") == "1"
     log.info("Starting app on port %s, LOCAL_MODE=%s", port, LOCAL_MODE)
     app.run(host="0.0.0.0", port=port, debug=debug)
+
