@@ -70,6 +70,9 @@
   .bubble.user{background:#c8ebf0;border-right:4px solid var(--accent-user);border-left:0!important;margin:.35rem 0 .35rem auto;max-width:60%;}
   .typing-indicator{position:sticky;bottom:0;align-self:flex-start;font-style:italic;font-size:1rem;padding:.5rem .75rem;color:#444;background:#fff2c2;border-left:4px solid #ffb84d;border-radius:8px;margin:.15rem 0 0;max-width:320px;display:none;z-index:2;}
   .typing-indicator::after{content:'...';animation:dots 1s steps(3,end) infinite;}
+  .bubble.user img{max-width:240px;border-radius:10px;margin-top:8px;display:block;}
+  .typing-indicator{position:sticky;bottom:0;align-self:flex-start;font-style:italic;font-size:1rem;padding:.5rem .75rem;color:#444;background:#fff2c2;border-left:4px solid #ffb84d;border-radius:8px;margin:.15rem 0 0;max-width:420px;display:none;z-index:2;}
+  .typing-indicator .dots::after{content:'...';animation:dots 1s steps(3,end) infinite;}
   @keyframes dots{0%{content:''}33%{content:'.'}66%{content:'..'}100%{content:'...'}}
   @keyframes fadeIn{from{opacity:0;transform:translateY(6px);}to{opacity:1;transform:translateY(0);}}
 
@@ -106,6 +109,7 @@
 
   .muted{color:var(--muted);font-size:.95rem}
   .hidden{display:none}
+  .linklike{background:none;border:none;color:#3d7d66;cursor:pointer;text-decoration:underline;padding:0;font-size:.95rem}
   </style>
 </head>
 <body>
@@ -137,6 +141,10 @@
         </div>
         {% endfor %}
         <div id="typing" class="typing-indicator" style="display:none;">🤖 MAT-BOT piše odgovor</div>
+        <!-- Jedini indikator koji koristimo -->
+        <div id="typing" class="typing-indicator" style="display:none;">
+          <span class="dots">🤖 MAT-BOT piše odgovor</span>
+        </div>
       </div>
     </div>
 
@@ -154,6 +162,9 @@
             <option value="8" {% if razred == '8' %}selected{% endif %}>8. razred</option>
             <option value="9" {% if razred == '9' %}selected{% endif %}>9. razred</option>
           </select>
+        </div>
+        <div id="promijeni-razred-wrap" class="hidden">
+          <button type="button" id="promijeni-razred" class="linklike">Promijeni razred</button>
         </div>
 
         <label for="pitanje">Postavi mi matematičko pitanje (tekst ili slika):</label>
@@ -252,6 +263,9 @@ document.addEventListener('DOMContentLoaded', () => {
   const removeBtn = document.getElementById('remove-file');
   const textarea  = document.getElementById('pitanje');
   const razredSel = document.getElementById('razred');
+  const razredWrap= document.getElementById('razred-wrapper');
+  const promijeniWrap = document.getElementById('promijeni-razred-wrap');
+  const promijeniBtn  = document.getElementById('promijeni-razred');
 
   const cid = getCID();
   const HIST_KEY = 'matbot_history_' + cid;
@@ -266,16 +280,90 @@ document.addEventListener('DOMContentLoaded', () => {
   if (fileInput){ fileInput.addEventListener('change', updateFileUI); }
   if (removeBtn) removeBtn.addEventListener('click', clearFile);
 
+  if (promijeniBtn){
+    promijeniBtn.addEventListener('click', () => {
+      razredWrap.classList.remove('hidden');
+      razredWrap.style.display = '';
+      promijeniWrap.classList.add('hidden');
+    });
+  }
+
   function ensureChatContainer(){ return document.getElementById('chat-container'); }
   function escapeHtml(s){ return (s||'').replace(/[&<>"']/g, m=>({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[m])); }
 
   function appendUserBubble(text){
+  // -------- Typing Manager (jedini indikator + dinamične poruke) --------
+  const TypingManager = (function(){
+    const el = document.getElementById('typing');
+    let t0 = null, tickTimer = null;
+    const stages = [
+      {t: 0,   text: "🤖 MAT-BOT piše odgovor", dots:true},
+      {t: 8,   text: "⏳ Obrada traje mrvicu duže – ne šalji upit ponovo", dots:true},
+      {t: 20,  text: "🙏 Hvala na strpljenju — čitam/slikam zadatak", dots:false},
+      {t: 40,  text: "⚙️ Još radim… veliki zadaci znaju potrajati", dots:true},
+      {t: 90,  text: "🚀 Gotovo uskoro…", dots:true},
+    ];
+    function setText(msg, dots){
+      if (!el) return;
+      el.innerHTML = `<span class="${dots?'dots':''}">${msg}</span>`;
+    }
+    function onTick(){
+      const s = Math.floor((Date.now() - t0)/1000);
+      let current = stages[0];
+      for (const st of stages){ if (s >= st.t) current = st; else break; }
+      setText(current.text, current.dots);
+    }
+    return {
+      show(){
+        if (!el) return;
+        el.style.display = 'block';
+        t0 = Date.now();
+        onTick();
+        tickTimer = setInterval(onTick, 1000);
+        scrollToBottom();
+      },
+      hide(){
+        if (!el) return;
+        el.style.display = 'none';
+        if (tickTimer){ clearInterval(tickTimer); tickTimer = null; }
+      }
+    }
+  })();
+
+  function showTyping(){ TypingManager.show(); }
+  function hideTyping(){ TypingManager.hide(); }
+
+  // --------- UI baloni ---------
+  function appendUserBubble({text, file}){
     const chat = ensureChatContainer(); if(!chat) return;
     const pair = document.createElement('div'); pair.className='qa-pair';
     const u = document.createElement('div'); u.className='chat-message user-message'; u.innerHTML = `<div class="bubble user"><p>${escapeHtml(text)}</p></div>`;
     const b = document.createElement('div'); b.className='chat-message bot-message'; b.innerHTML = `<div class="bubble"><i class="muted">Obrada…</i></div>`;
+
+    // user bubble
+    const u = document.createElement('div'); u.className='chat-message user-message';
+    let userHTML = '';
+    if (text && text.trim()) userHTML += `<p>${escapeHtml(text)}</p>`;
+    if (file){
+      try{
+        const url = URL.createObjectURL(file);
+        userHTML += `<img src="${url}" alt="${escapeHtml(file.name)}" />`;
+        // revoke nakon što se prikaže
+        setTimeout(()=>URL.revokeObjectURL(url), 60000);
+      }catch(_){
+        userHTML += `<p><strong>📷 ${escapeHtml(file.name)}</strong></p>`;
+      }
+    }
+    if (!userHTML) userHTML = '<p><em>(prazna poruka)</em></p>';
+    u.innerHTML = `<div class="bubble user">${userHTML}</div>`;
+
+    // bot placeholder (bez “Obrada…” teksta – samo prazan balon)
+    const b = document.createElement('div'); b.className='chat-message bot-message';
+    b.innerHTML = `<div class="bubble">&nbsp;</div>`;
+
     pair.appendChild(u); pair.appendChild(b); chat.appendChild(pair); scrollToBottom();
     return b.querySelector('.bubble'); // vraća bot balon koji ćemo zamijeniti
+    return b.querySelector('.bubble'); // vraća bot balon koji ćemo kasnije popuniti
   }
 
   async function poll(jobId, userLabel, botBubble){
@@ -297,6 +385,7 @@ document.addEventListener('DOMContentLoaded', () => {
         }
         if (data.status === 'error'){
           botBubble.innerHTML = `<div class="alert alert-danger">Greška: ${data.error || 'nepoznato'}</div>`;
+          botBubble.innerHTML = `<div class="alert alert-danger">Greška: ${escapeHtml(data.error || 'nepoznato')}</div>`;
           hideTyping(); return;
         }
       }catch(_){
@@ -308,6 +397,13 @@ document.addEventListener('DOMContentLoaded', () => {
     hideTyping();
   }
 
+  function hideGradeAfterFirstSend(){
+    if (!razredWrap) return;
+    razredWrap.classList.add('hidden');
+    razredWrap.style.display = 'none';
+    promijeniWrap.classList.remove('hidden');
+  }
+
   async function sendOneButton(){
     const f = fileInput?.files?.[0] || null;
     const razred  = razredSel?.value || '';
@@ -317,8 +413,12 @@ document.addEventListener('DOMContentLoaded', () => {
     if (!f && !tekst){ alert('Unesi pitanje ili dodaj sliku.'); return; }
 
     const userLabel = tekst || (f ? '[SLIKA]' : '');
+    const userLabel = tekst || (f ? f.name : '');
+    hideGradeAfterFirstSend();
+
     showTyping();
     const botBubble = appendUserBubble(userLabel);
+    const botBubble = appendUserBubble({text: tekst, file: f});
 
     const fd = new FormData();
     fd.append('razred', razred);
@@ -344,6 +444,7 @@ document.addEventListener('DOMContentLoaded', () => {
       // ASYNC (202)
       if (r.status === 202 && j && j.job_id){
         botBubble.innerHTML = '<span class="muted">Zahtjev prihvaćen, obrađujem…</span>';
+        // ostavi prazan dok ne stigne rezultat; indikator govori sve
         textarea.value = ''; clearFile();
         poll(j.job_id, userLabel, botBubble);
         return;
@@ -369,7 +470,14 @@ document.addEventListener('DOMContentLoaded', () => {
       catch(_){}
       const chat = document.getElementById('chat-container');
       if (chat) chat.innerHTML = '<div id="typing" class="typing-indicator" style="display:none;">🤖 MAT-BOT piše odgovor</div>';
+      if (chat) chat.innerHTML = `
+        <div id="typing" class="typing-indicator" style="display:none;">
+          <span class="dots">🤖 MAT-BOT piše odgovor</span>
+        </div>`;
       resetHistory(HIST_KEY, hiddenMain);
+      // prikaži selektor razreda ponovo
+      if (razredWrap){ razredWrap.classList.remove('hidden'); razredWrap.style.display = ''; }
+      promijeniWrap.classList.add('hidden');
     });
   }
 });
