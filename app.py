@@ -4,7 +4,7 @@ from dotenv import load_dotenv
 import os, re, base64, json, html, datetime, logging, mimetypes, threading, traceback
 from datetime import timedelta
 from uuid import uuid4
-
+import requests
 from openai import OpenAI
 from flask_cors import CORS
 
@@ -338,10 +338,32 @@ def _bytes_to_data_url(raw: bytes, mime_hint: str | None = None) -> str:
     return f"data:{mime};base64,{b64}"
 
 def route_image_flow_url(image_url: str, razred: str, history, user_text=None, timeout_override: float | None = None):
+    """
+    Stabilna obrada 'image_url':
+    1) Backend preuzme sliku (requests.get) i pozove byte-flow (route_image_flow)
+    2) Ako download padne, kao fallback koristi stari URL-flow prema modelu
+    """
     only_clause, strict_geom_policy = _vision_clauses()
+
+    # 1) Pokušaj skinuti bytes i koristiti byte-flow (najpouzdanije)
+    try:
+        r = requests.get(image_url, timeout=15)
+        r.raise_for_status()
+        mime_hint = r.headers.get("Content-Type") or None
+        return route_image_flow(
+            r.content, razred, history,
+            user_text=user_text,
+            timeout_override=timeout_override,
+            mime_hint=mime_hint
+        )
+    except Exception as e:
+        log.error("route_image_flow_url: download failed: %s", e)
+
+    # 2) Fallback: stari URL-flow (ako baš moramo)
     messages = _vision_messages_base(razred, history, only_clause, strict_geom_policy)
     user_content = []
-    if user_text: user_content.append({"type": "text", "text": f"Korisnički tekst: {user_text}"})
+    if user_text:
+        user_content.append({"type": "text", "text": f"Korisnički tekst: {user_text}"})
     user_content.append({"type": "text", "text": "Na slici je matematički zadatak."})
     user_content.append({"type": "image_url", "image_url": {"url": image_url}})
     messages.append({"role": "user", "content": user_content})
@@ -350,6 +372,7 @@ def route_image_flow_url(image_url: str, razred: str, history, user_text=None, t
     raw = resp.choices[0].message.content
     raw = strip_ascii_graph_blocks(raw)
     return f"<p>{latexify_fractions(raw)}</p>", "vision_url", actual_model
+
 
 def route_image_flow(slika_bytes: bytes, razred: str, history, user_text=None, timeout_override: float | None = None, mime_hint: str | None = None):
     only_clause, strict_geom_policy = _vision_clauses()
@@ -933,4 +956,5 @@ if __name__ == "__main__":
     debug = os.getenv("FLASK_DEBUG", "0") == "1"
     log.info("Starting app on port %s, LOCAL_MODE=%s", port, LOCAL_MODE)
     app.run(host="0.0.0.0", port=port, debug=debug)
+
 
