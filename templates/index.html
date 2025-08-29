@@ -227,7 +227,7 @@
         <input type="hidden" name="history_json" id="history_json_main" value='{{ history|tojson|safe }}'>
 
         <div id="razred-wrapper" {% if razred and not error %}style="display: none;"{% endif %}>
-          <label for="razred">Koji si razred?</label>
+          <label for="razred">Koji si razred?????????</label>
           <select name="razred" id="razred" required>
             <option value="" disabled {% if not razred %}selected{% endif %}>-- Odaberi razred --</option>
             <option value="5" {% if razred == '5' %}selected{% endif %}>5. razred</option>
