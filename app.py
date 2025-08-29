@@ -46,10 +46,7 @@ app.config.update(
 )
 CORS(app, supports_credentials=True)
 app.secret_key = os.getenv("SECRET_KEY", "tajna_lozinka")
-# negdje nakon: app = Flask(__name__)
-@app.get("/healthz")
-def healthz():
-    return "ok", 200
+
 
 # ------ MODE ------
 LOCAL_MODE = os.getenv("LOCAL_MODE", "0") == "1"   # kad je 1 → nema Cloud Tasks / Firestore / GCS, sve ide lokalno
@@ -960,6 +957,4 @@ if __name__ == "__main__":
     log.info("Starting app on port %s, LOCAL_MODE=%s", port, LOCAL_MODE)
     app.run(host="0.0.0.0", port=port, debug=debug)
 
-@app.route("/")
-def root():
-    return "ok", 200
+
