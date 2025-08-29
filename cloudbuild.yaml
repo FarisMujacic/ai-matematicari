@@ -1,40 +1,35 @@
-substitutions:
-  _AR_HOSTNAME: europe-west1-docker.pkg.dev        # promijeni ako koristiš drugi region repo-a
-  _AR_PROJECT_ID: math-bot-465513                  # tvoj GCP projekat
-  _AR_REPOSITORY: matbot                           # ime Artifact Registry repozitorija
-  _SERVICE_NAME: matbot                            # Cloud Run servis
-  _DEPLOY_REGION: europe-west1                     # region Cloud Run servisa
-  _PLATFORM: managed
-
-options:
-  logging: CLOUD_LOGGING_ONLY
-
 steps:
-# 1) Build Docker image iz Dockerfile-a
+# 1) Build Docker image
 - name: gcr.io/cloud-builders/docker
   args:
-    - build
-    - '--pull'                 # povuci najnovije base image
-    - '--no-cache'             # izbjegni keš – uvijek svježe
-    - '-t'
-    - '${_AR_HOSTNAME}/${_AR_PROJECT_ID}/${_AR_REPOSITORY}/${_SERVICE_NAME}:${SHORT_SHA}'
-    - '.'
+    [
+      "build",
+      "--pull",
+      "--no-cache",
+      "-t",
+      "${_AR_HOSTNAME}/${_AR_PROJECT_ID}/${_AR_REPOSITORY}/${_SERVICE_NAME}:${SHORT_SHA}",
+      "."
+    ]
 
 # 2) Deploy na Cloud Run
 - name: gcr.io/google.com/cloudsdktool/cloud-sdk
   entrypoint: gcloud
   args:
-    - run
-    - deploy
-    - '${_SERVICE_NAME}'
-    - '--image=${_AR_HOSTNAME}/${_AR_PROJECT_ID}/${_AR_REPOSITORY}/${_SERVICE_NAME}:${SHORT_SHA}'
-    - '--region=${_DEPLOY_REGION}'
-    - '--platform=${_PLATFORM}'
-    - '--allow-unauthenticated'
-    - '--quiet'
-    # Ako želiš eksplicitno: prebaci 100% saobraćaja na novu reviziju
-    - '--traffic'
-    - 'latest=100'
+    [
+      "run",
+      "deploy",
+      "${_SERVICE_NAME}",
+      "--image",
+      "${_AR_HOSTNAME}/${_AR_PROJECT_ID}/${_AR_REPOSITORY}/${_SERVICE_NAME}:${SHORT_SHA}",
+      "--region",
+      "${_DEPLOY_REGION}",
+      "--platform",
+      "${_PLATFORM}",
+      "--allow-unauthenticated",
+      "--quiet",
+      "--traffic",
+      "latest=100"
+    ]
 
 images:
 - '${_AR_HOSTNAME}/${_AR_PROJECT_ID}/${_AR_REPOSITORY}/${_SERVICE_NAME}:${SHORT_SHA}'
