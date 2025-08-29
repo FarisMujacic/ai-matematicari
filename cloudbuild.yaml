@@ -1,4 +1,4 @@
-# cloudbuild.yaml — build + push + deploy (bez custom substitutions)
+# cloudbuild.yaml — Docker build+push, pa Cloud Run deploy, pa update traffic
 timeout: "1200s"
 
 steps:
@@ -7,7 +7,7 @@ steps:
     entrypoint: bash
     args: ['-c', 'gcloud auth configure-docker europe-west1-docker.pkg.dev --quiet']
 
-  # 1) Build image (Dockerfile u rootu)
+  # 1) Build image
   - name: gcr.io/cloud-builders/docker
     args: ['build','--pull','-t','europe-west1-docker.pkg.dev/$PROJECT_ID/matbot/matbot:$BUILD_ID','.']
 
@@ -15,15 +15,21 @@ steps:
   - name: gcr.io/cloud-builders/docker
     args: ['push','europe-west1-docker.pkg.dev/$PROJECT_ID/matbot/matbot:$BUILD_ID']
 
-  # 3) Deploy na Cloud Run i prebaci 100% saobraćaja
+  # 3) Deploy (bez set-traffic radi kompatibilnosti)
   - name: gcr.io/google.com/cloudsdktool/cloud-sdk
     entrypoint: gcloud
     args: [
       'run','deploy','matbot',
       '--image=europe-west1-docker.pkg.dev/$PROJECT_ID/matbot/matbot:$BUILD_ID',
-      '--region=europe-west1','--platform=managed',
-      '--quiet','--set-traffic','latest=100'
+      '--region=europe-west1','--platform=managed','--quiet',
+      '--allow-unauthenticated',
+      '--set-env-vars','BUILD_ID=$BUILD_ID,COMMIT_SHA=$COMMIT_SHA'
     ]
+
+  # 4) Prebaci 100% saobraćaja na najnoviju spremnu reviziju
+  - name: gcr.io/google.com/cloudsdktool/cloud-sdk
+    entrypoint: gcloud
+    args: ['run','services','update-traffic','matbot','--region=europe-west1','--to-latest']
 
 images:
   - 'europe-west1-docker.pkg.dev/$PROJECT_ID/matbot/matbot:$BUILD_ID'
