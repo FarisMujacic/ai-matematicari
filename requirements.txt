@@ -26,4 +26,3 @@ scikit-learn
 argon2-cffi
 PyJWT
 psycopg2-binary
-
