@@ -1,5 +1,4 @@
-# cloudbuild.yaml — Build & Deploy (Dockerfile) -> Cloud Run
-
+# cloudbuild.yaml — build+push+deploy (Dockerfile) sa tagom koji radi i lokalno
 substitutions:
   _AR_HOSTNAME: europe-west1-docker.pkg.dev
   _AR_PROJECT_ID: $PROJECT_ID
@@ -7,35 +6,29 @@ substitutions:
   _SERVICE_NAME: matbot
   _DEPLOY_REGION: europe-west1
   _PLATFORM: managed
+  _TAG: $BUILD_ID   # radi i za submit i za trigger; po želji možeš prepisati iz CLI-ja
 
 timeout: "1200s"
 
 steps:
-  # 0) Auth za Artifact Registry
   - name: gcr.io/google.com/cloudsdktool/cloud-sdk
     entrypoint: bash
     args: ['-c', 'gcloud auth configure-docker $_AR_HOSTNAME --quiet']
 
-  # 1) Build image (Dockerfile u rootu)
   - name: gcr.io/cloud-builders/docker
-    args: ['build', '--pull', '-t', '$_AR_HOSTNAME/$_AR_PROJECT_ID/$_AR_REPOSITORY/$_SERVICE_NAME:$SHORT_SHA', '.']
+    args: ['build','--pull','-t','$_AR_HOSTNAME/$_AR_PROJECT_ID/$_AR_REPOSITORY/$_SERVICE_NAME:$_TAG','.']
 
-  # 2) Push image
   - name: gcr.io/cloud-builders/docker
-    args: ['push', '$_AR_HOSTNAME/$_AR_PROJECT_ID/$_AR_REPOSITORY/$_SERVICE_NAME:$SHORT_SHA']
+    args: ['push','$_AR_HOSTNAME/$_AR_PROJECT_ID/$_AR_REPOSITORY/$_SERVICE_NAME:$_TAG']
 
-  # 3) Deploy na Cloud Run i preusmjeri 100% saobraćaja na latest
   - name: gcr.io/google.com/cloudsdktool/cloud-sdk
     entrypoint: gcloud
-    args:
-      [
-        'run','deploy','$_SERVICE_NAME',
-        '--image=$_AR_HOSTNAME/$_AR_PROJECT_ID/$_AR_REPOSITORY/$_SERVICE_NAME:$SHORT_SHA',
-        '--region=$_DEPLOY_REGION',
-        '--platform=$_PLATFORM',
-        '--quiet',
-        '--set-traffic','latest=100'
-      ]
+    args: [
+      'run','deploy','$_SERVICE_NAME',
+      '--image=$_AR_HOSTNAME/$_AR_PROJECT_ID/$_AR_REPOSITORY/$_SERVICE_NAME:$_TAG',
+      '--region=$_DEPLOY_REGION','--platform=$_PLATFORM',
+      '--quiet','--set-traffic','latest=100'
+    ]
 
 images:
-  - '$_AR_HOSTNAME/$_AR_PROJECT_ID/$_AR_REPOSITORY/$_SERVICE_NAME:$SHORT_SHA'
+  - '$_AR_HOSTNAME/$_AR_PROJECT_ID/$_AR_REPOSITORY/$_SERVICE_NAME:$_TAG'
