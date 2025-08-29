@@ -1,5 +1,5 @@
-# app.py — Async TEXT + IMAGE (Cloud Tasks + Firestore + GCS) + HYBRID (auto|sync|async) + LOCAL_MODE za razvoj
-from flask import Flask, render_template, request, session, redirect, url_for, send_from_directory, jsonify
+# app.py — Async TEXT + IMAGE (Cloud Tasks + Firestore + GCS) + HYBRID (auto|sync|async) + LOCAL_MODE + session guard
+from flask import Flask, render_template, request, session, redirect, url_for, send_from_directory, jsonify, abort
 from dotenv import load_dotenv
 import os, re, base64, json, html, datetime, logging, mimetypes, threading, traceback
 from datetime import timedelta
@@ -46,7 +46,6 @@ app.config.update(
 )
 CORS(app, supports_credentials=True)
 app.secret_key = os.getenv("SECRET_KEY", "tajna_lozinka")
-
 
 # ------ MODE ------
 LOCAL_MODE = os.getenv("LOCAL_MODE", "0") == "1"   # kad je 1 → nema Cloud Tasks / Firestore / GCS, sve ide lokalno
@@ -193,6 +192,40 @@ def read_job(job_id: str) -> dict:
         return (doc.to_dict() or {}) if doc.exists else {}
     return JOB_STORE.get(job_id, {})
 
+# ===================== Session helpers (guard) =====================
+def _ensure_sid():
+    if "sid" not in session:
+        session["sid"] = str(uuid4())
+    session.permanent = True
+
+@app.before_request
+def _prepare_session():
+    _ensure_sid()
+
+def _session_has_active_job() -> bool:
+    job_id = session.get("active_job_id")
+    if not job_id:
+        return False
+    data = read_job(job_id)
+    status = (data or {}).get("status", "pending")
+    return status not in ("done", "error")
+
+def _set_active_job(job_id: str | None):
+    if job_id:
+        session["active_job_id"] = job_id
+    else:
+        session.pop("active_job_id", None)
+
+def _lock_inflight_or_409():
+    if session.get("in_flight"):
+        abort(409, description="Već je u toku generisanje odgovora.")
+    if _session_has_active_job():
+        abort(409, description="Postoji aktivan zahtjev u obradi.")
+    session["in_flight"] = True
+
+def _unlock_inflight():
+    session["in_flight"] = False
+
 # ===================== Helpers =====================
 PROMPTI_PO_RAZREDU = {
     "5": "Ti si pomoćnik iz matematike za učenike 5. razreda osnovne škole. Objašnjavaj jednostavnim i razumljivim jezikom. Pomaži učenicima da razumiju zadatke iz prirodnih brojeva, osnovnih računskih operacija, jednostavne geometrije i tekstualnih zadataka. Svako rješenje objasni jasno, korak po korak.",
@@ -241,7 +274,7 @@ TRIGGER_PHRASES = [r"\bnacrtaj\b", r"\bnacrtati\b", r"\bcrtaj\b", r"\biscrtaj\b"
                    r"\bgraf\b", r"\bgrafik\b", r"\bprika[žz]i\s+graf\b", r"\bplot\b", r"\bvizualizuj\b", r"\bnasrtaj\b"]
 NEGATION_PHRASES = [r"\bbez\s+grafa\b", r"\bne\s+crt(a|aj)\b", r"\bnemoj\s+crtati\b", r"\bne\s+treba\s+graf\b"]
 _trigger_re  = re.compile("|".join(TRIGGER_PHRASES), flags=re.IGNORECASE)
-_negation_re = re.compile("|".join(NEGATION_PHRASES), flags=re.IGNORECASE)
+_negation_re = re.compile("|".join(NEGATION_PHRASES), re.IGNORECASE)
 
 def should_plot(text: str) -> bool:
     if not text: return False
@@ -468,7 +501,7 @@ def gcs_upload_filestorage(f):
     except Exception as e:
         log.error("GCS upload failed: %s", e); return None
 
-# ===================== Routes: sync forma (nebitno za lokal test) =====================
+# ===================== Routes: sync forma (legacy) =====================
 @app.route("/", methods=["GET", "POST"])
 def index():
     plot_expression_added = False
@@ -493,7 +526,6 @@ def index():
                 if (not plot_expression_added) and should_plot(combined_text):
                     expr = extract_plot_expression(combined_text, razred=razred, history=history)
                     if expr: odgovor = add_plot_div_once(odgovor, expr); plot_expression_added = True
-                # === prikaz imena iz URL-a
                 file_label = _name_from_url(image_url)
                 display_user = (combined_text + f" [slika: {file_label}]") if combined_text else f"[slika: {file_label}]"
                 history.append({"user": display_user, "bot": odgovor.strip()})
@@ -517,7 +549,6 @@ def index():
                 if (not plot_expression_added) and should_plot(combined_text):
                     expr = extract_plot_expression(combined_text, razred=razred, history=history)
                     if expr: odgovor = add_plot_div_once(odgovor, expr); plot_expression_added = True
-                # === prikaz originalnog imena fajla
                 orig_name = _short_name_for_display(slika.filename or "upload")
                 display_user = (combined_text + f" [slika: {orig_name}]") if combined_text else f"[slika: {orig_name}]"
                 history.append({"user": display_user, "bot": odgovor.strip()})
@@ -533,7 +564,6 @@ def index():
                 if (not plot_expression_added) and should_plot(pitanje):
                     expr = extract_plot_expression(pitanje, razred=razred, history=history)
                     if expr: odgovor = add_plot_div_once(odgovor, expr); plot_expression_added = True
-                # === i u follow-upu prikaži koju sliku koristi
                 file_label = _name_from_url(last_url)
                 display_user = (pitanje + f" [slika: {file_label}]") if pitanje else f"[slika: {file_label}]"
                 history.append({"user": display_user, "bot": odgovor.strip()})
@@ -571,6 +601,7 @@ def too_large(e):
 def clear():
     if request.form.get("confirm_clear") == "1":
         session.pop("history", None); session.pop("razred", None); session.pop("last_image_url", None)
+        session.pop("active_job_id", None); session["in_flight"] = False
     if request.form.get("ajax") == "1": return render_template("index.html", history=[], razred=None)
     return redirect("/")
 
@@ -744,7 +775,7 @@ def _local_worker(payload: dict):
         store_job(job_id, {"status": "done", "result": {"html": err_html, "path": "error", "model": "n/a"},
                            "finished_at": datetime.datetime.utcnow().isoformat() + "Z"}, merge=True)
 
-# --------- Heuristike i sync helperi (NOVO) ----------
+# --------- Heuristike i sync helperi ----------
 def estimate_tokens(text: str) -> int:
     if not text: return 0
     return max(0, len(text) // 4)
@@ -763,7 +794,7 @@ def _sync_process_once(razred: str, user_text: str, requested: list, image_url: 
         if file_bytes:
             html_out, used_path, used_model = route_image_flow(file_bytes, razred, history, user_text=user_text, timeout_override=timeout_s, mime_hint=file_mime or None)
             return {"ok": True, "result": {"html": html_out, "path": used_path, "model": used_model}}
-        html_out, used_model = answer_with_text_pipeline(user_text, razred, history, requested, timeout_override=timeout_s)
+        html_out, used_model = answer_with_text_pipeline(user_text, razred, history, requested, timeout_s)
         return {"ok": True, "result": {"html": html_out, "path": "text", "model": used_model}}
     except Exception as e:
         return {"ok": False, "error": str(e)}
@@ -799,119 +830,132 @@ def _prepare_async_payload(job_id: str, razred: str, user_text: str, requested: 
 
     return payload
 
-# --------- HYBRID /submit (NOVO) ----------
+# --------- HYBRID /submit (sa session guardom) ----------
 @app.route("/submit", methods=["POST", "OPTIONS"])
 def submit():
     if request.method == "OPTIONS":
         return ("", 204)
 
-    razred = (request.form.get("razred") or request.args.get("razred") or "").strip()
-    user_text = (request.form.get("user_text") or request.form.get("pitanje") or "").strip()
-    image_url = (request.form.get("image_url") or request.args.get("image_url") or "").strip()
-    mode = (request.form.get("mode") or request.args.get("mode") or "auto").strip().lower()
+    # Session guard: blokiraj paralelne zahtjeve u istoj sesiji
+    _lock_inflight_or_409()
 
-    data = request.get_json(silent=True) or {}
-    if data:
-        razred    = (data.get("razred")    or razred).strip()
-        user_text = (data.get("pitanje")   or data.get("user_text") or user_text).strip()
-        image_url = (data.get("image_url") or image_url).strip()
-        mode      = (data.get("mode")      or mode).strip().lower()
-
-    if razred not in DOZVOLJENI_RAZREDI:
-        razred = "5"
-
-    requested = extract_requested_tasks(user_text)
-
-    file_storage = request.files.get("file")
-    file_bytes = None
-    file_mime = None
-    file_name = None
-    if file_storage and file_storage.filename:
-        file_bytes = file_storage.read()
-        file_mime = file_storage.mimetype or "application/octet-stream"
-        file_name = file_storage.filename
-
-    image_b64_str = (data.get("image_b64") if data else None)
-    has_image = bool(image_url or file_bytes or image_b64_str)
-
-    if mode not in ("auto", "sync", "async"):
-        mode = "auto"
-
-    if mode == "async":
-        job_id = str(uuid4())
-        store_job(job_id, {"status": "pending", "created_at": datetime.datetime.utcnow().isoformat() + "Z",
-                           "razred": razred, "user_text": user_text, "requested": requested}, merge=True)
-        payload = _prepare_async_payload(job_id, razred, user_text, requested, image_url or None,
-                                         file_bytes, file_name, file_mime, image_b64_str)
-        try:
-            _enqueue(payload)
-            return jsonify({"mode": "async", "job_id": job_id, "status": "queued", "local_mode": LOCAL_MODE}), 202
-        except Exception as e:
-            log.error("submit async failed: %s\n%s", e, traceback.format_exc())
-            store_job(job_id, {"status": "error", "error": str(e)}, merge=True)
-            return jsonify({"error": "submit_failed", "detail": str(e), "job_id": job_id}), 500
-
-    heavy = looks_heavy(user_text, has_image=has_image)
-
-    if mode == "auto" and heavy:
-        job_id = str(uuid4())
-        store_job(job_id, {"status": "pending", "created_at": datetime.datetime.utcnow().isoformat() + "Z",
-                           "razred": razred, "user_text": user_text, "requested": requested}, merge=True)
-        payload = _prepare_async_payload(job_id, razred, user_text, requested, image_url or None,
-                                         file_bytes, file_name, file_mime, image_b64_str)
-        try:
-            _enqueue(payload)
-            return jsonify({"mode": "auto→async", "job_id": job_id, "status": "queued", "local_mode": LOCAL_MODE}), 202
-        except Exception as e:
-            log.error("submit auto→async failed: %s\n%s", e, traceback.format_exc())
-            store_job(job_id, {"status": "error", "error": str(e)}, merge=True)
-            return jsonify({"error": "submit_failed", "detail": str(e)}), 500
-
-    sync_try = _sync_process_once(
-        razred=razred,
-        user_text=user_text,
-        requested=requested,
-        image_url=(image_url or None),
-        file_bytes=file_bytes,
-        file_mime=file_mime,
-        timeout_s=SYNC_SOFT_TIMEOUT_S
-    )
-
-    if sync_try.get("ok"):
-        html_out = sync_try["result"]["html"]
-        if should_plot(user_text):
-            expr = extract_plot_expression(user_text, razred=razred, history=[])
-            if expr: html_out = add_plot_div_once(html_out, expr)
-        try: log_to_sheet(f"sync-{uuid4().hex[:8]}", razred, user_text, html_out, sync_try["result"]["path"], sync_try["result"]["model"])
-        except Exception as _e: log.warning("Sheets log fail (sync): %s", _e)
-        mode_tag = "auto(sync)" if mode == "auto" else "sync"
-        return jsonify({
-            "mode": mode_tag,
-            "result": {"html": html_out, "path": sync_try["result"]["path"], "model": sync_try["result"]["model"]}
-        }), 200
-
-    job_id = str(uuid4())
-    store_job(job_id, {"status": "pending", "created_at": datetime.datetime.utcnow().isoformat() + "Z",
-                       "razred": razred, "user_text": user_text, "requested": requested}, merge=True)
-    payload = _prepare_async_payload(job_id, razred, user_text, requested, image_url or None,
-                                     file_bytes, file_name, file_mime, image_b64_str)
     try:
-        _enqueue(payload)
-        mode_tag = "auto(sync→async)" if mode == "auto" else "sync→async"
-        return jsonify({
-            "mode": mode_tag, "job_id": job_id, "status": "queued", "local_mode": LOCAL_MODE,
-            "reason": sync_try.get("error", "soft-timeout-or-error")
-        }), 202
+        razred = (request.form.get("razred") or request.args.get("razred") or "").strip()
+        user_text = (request.form.get("user_text") or request.form.get("pitanje") or "").strip()
+        image_url = (request.form.get("image_url") or request.args.get("image_url") or "").strip()
+        mode = (request.form.get("mode") or request.args.get("mode") or "auto").strip().lower()
+
+        data = request.get_json(silent=True) or {}
+        if data:
+            razred    = (data.get("razred")    or razred).strip()
+            user_text = (data.get("pitanje")   or data.get("user_text") or user_text).strip()
+            image_url = (data.get("image_url") or image_url).strip()
+            mode      = (data.get("mode")      or mode).strip().lower()
+
+        if razred not in DOZVOLJENI_RAZREDI:
+            razred = "5"
+
+        requested = extract_requested_tasks(user_text)
+
+        file_storage = request.files.get("file")
+        file_bytes = None
+        file_mime = None
+        file_name = None
+        if file_storage and file_storage.filename:
+            file_bytes = file_storage.read()
+            file_mime = file_storage.mimetype or "application/octet-stream"
+            file_name = file_storage.filename
+
+        image_b64_str = (data.get("image_b64") if data else None)
+        has_image = bool(image_url or file_bytes or image_b64_str)
+
+        if mode not in ("auto", "sync", "async"):
+            mode = "auto"
+
+        # --- async direktno ---
+        if mode == "async":
+            job_id = str(uuid4())
+            store_job(job_id, {"status": "pending", "created_at": datetime.datetime.utcnow().isoformat() + "Z",
+                               "razred": razred, "user_text": user_text, "requested": requested}, merge=True)
+            payload = _prepare_async_payload(job_id, razred, user_text, requested, image_url or None,
+                                             file_bytes, file_name, file_mime, image_b64_str)
+            try:
+                _enqueue(payload)
+                _set_active_job(job_id)
+                return jsonify({"mode": "async", "job_id": job_id, "status": "queued", "local_mode": LOCAL_MODE}), 202
+            finally:
+                _unlock_inflight()
+
+        # --- auto: heuristika ---
+        heavy = looks_heavy(user_text, has_image=has_image)
+        if mode == "auto" and heavy:
+            job_id = str(uuid4())
+            store_job(job_id, {"status": "pending", "created_at": datetime.datetime.utcnow().isoformat() + "Z",
+                               "razred": razred, "user_text": user_text, "requested": requested}, merge=True)
+            payload = _prepare_async_payload(job_id, razred, user_text, requested, image_url or None,
+                                             file_bytes, file_name, file_mime, image_b64_str)
+            try:
+                _enqueue(payload)
+                _set_active_job(job_id)
+                return jsonify({"mode": "auto→async", "job_id": job_id, "status": "queued", "local_mode": LOCAL_MODE}), 202
+            finally:
+                _unlock_inflight()
+
+        # --- sync pokušaj (meki timeout) ---
+        sync_try = _sync_process_once(
+            razred=razred,
+            user_text=user_text,
+            requested=requested,
+            image_url=(image_url or None),
+            file_bytes=file_bytes,
+            file_mime=file_mime,
+            timeout_s=SYNC_SOFT_TIMEOUT_S
+        )
+
+        if sync_try.get("ok"):
+            html_out = sync_try["result"]["html"]
+            if should_plot(user_text):
+                expr = extract_plot_expression(user_text, razred=razred, history=[])
+                if expr: html_out = add_plot_div_once(html_out, expr)
+            try: log_to_sheet(f"sync-{uuid4().hex[:8]}", razred, user_text, html_out, sync_try["result"]["path"], sync_try["result"]["model"])
+            except Exception as _e: log.warning("Sheets log fail (sync): %s", _e)
+            mode_tag = "auto(sync)" if mode == "auto" else "sync"
+            return jsonify({
+                "mode": mode_tag,
+                "result": {"html": html_out, "path": sync_try["result"]["path"], "model": sync_try["result"]["model"]}
+            }), 200
+
+        # --- sync nije uspio → async fallback ---
+        job_id = str(uuid4())
+        store_job(job_id, {"status": "pending", "created_at": datetime.datetime.utcnow().isoformat() + "Z",
+                           "razred": razred, "user_text": user_text, "requested": requested}, merge=True)
+        payload = _prepare_async_payload(job_id, razred, user_text, requested, image_url or None,
+                                         file_bytes, file_name, file_mime, image_b64_str)
+        try:
+            _enqueue(payload)
+            _set_active_job(job_id)
+            mode_tag = "auto(sync→async)" if mode == "auto" else "sync→async"
+            return jsonify({
+                "mode": mode_tag, "job_id": job_id, "status": "queued", "local_mode": LOCAL_MODE,
+                "reason": sync_try.get("error", "soft-timeout-or-error")
+            }), 202
+        finally:
+            _unlock_inflight()
+
     except Exception as e:
-        log.error("submit sync→async failed: %s\n%s", e, traceback.format_exc())
-        store_job(job_id, {"status": "error", "error": str(e)}, merge=True)
-        return jsonify({"error": "submit_failed", "detail": str(e), "job_id": job_id}), 500
+        _unlock_inflight()
+        log.error("submit failed: %s\n%s", e, traceback.format_exc())
+        return jsonify({"error": "submit_failed", "detail": str(e)}), 500
 
 # --------- STATUS ----------
 @app.get("/status/<job_id>")
 def async_status(job_id):
     data = read_job(job_id)
-    if not data: return jsonify({"status": "pending"}), 200
+    if not data:
+        return jsonify({"status": "pending"}), 200
+    # Ako je posao gotov ili errored i ovo je aktivni za ovu sesiju → očisti lock
+    if data.get("status") in ("done", "error") and session.get("active_job_id") == job_id:
+        _set_active_job(None)
     return jsonify(data), 200
 
 # (Opcionalno) RESULT endpoint – zgodan za front da dobije samo rezultat
@@ -956,5 +1000,3 @@ if __name__ == "__main__":
     debug = os.getenv("FLASK_DEBUG", "0") == "1"
     log.info("Starting app on port %s, LOCAL_MODE=%s", port, LOCAL_MODE)
     app.run(host="0.0.0.0", port=port, debug=debug)
-
-
