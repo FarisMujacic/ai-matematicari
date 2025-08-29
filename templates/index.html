@@ -353,30 +353,31 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // --------- UI baloni ---------
   function appendUserPair({text, file}){
-    const chat = ensureChatContainer(); if(!chat) return null;
-    const pair = document.createElement('div'); pair.className='qa-pair';
+  const chat = document.getElementById('chat-container'); if(!chat) return null;
+  const pair = document.createElement('div'); pair.className='qa-pair';
 
-    // user bubble
-    const u = document.createElement('div'); u.className='chat-message user-message';
-    let userHTML = '';
-    if (text && text.trim()) userHTML += `<p>${escapeHtml(text)}</p>`;
-    if (file){
-      try{
-        const url = URL.createObjectURL(file);
-        userHTML += `<img src="${url}" alt="${escapeHtml(file.name)}" />`;
-        setTimeout(()=>URL.revokeObjectURL(url), 60000);
-      }catch(_){
-        userHTML += `<p><strong>📷 ${escapeHtml(file.name)}</strong></p>`;
-      }
-    }
-    if (!userHTML) userHTML = '<p><em>(prazna poruka)</em></p>';
-    u.innerHTML = `<div class="bubble user">${userHTML}</div>`;
+  // user bubble (bez image previewa)
+  const u = document.createElement('div'); u.className='chat-message user-message';
+  let userHTML = '';
 
-    pair.appendChild(u);
-    chat.appendChild(pair);
-    scrollToBottom();
-    return pair;
+  const hasText = text && text.trim();
+  if (hasText) userHTML += `<p>${escapeHtml(text)}</p>`;
+
+  if (file){
+    const fname = file.name ? file.name : 'slika';
+    // samo prikaži naziv fajla umjesto <img>
+    userHTML += `<p><strong>[slika: ${escapeHtml(fname)}]</strong></p>`;
   }
+
+  if (!userHTML) userHTML = '<p><em>(prazna poruka)</em></p>';
+  u.innerHTML = `<div class="bubble user">${userHTML}</div>`;
+
+  pair.appendChild(u);
+  chat.appendChild(pair);
+  scrollToBottom();
+  return pair;
+}
+
   function appendBotToPair(pair, html){
     if(!pair) return;
     const b = document.createElement('div'); b.className='chat-message bot-message';
