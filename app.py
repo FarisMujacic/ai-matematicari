@@ -555,6 +555,51 @@ def add_no_cache_headers(resp):
     except KeyError: pass
     return resp
 
+
+# ---- Serve local uploads for preview/follow-ups ----
+@app.get("/uploads/<path:filename>")
+def serve_upload(filename):
+    return send_from_directory(UPLOAD_DIR, filename, as_attachment=False)
+
+# ---- (Optional) GCS signed upload so frontend can PUT directly ----
+@app.post("/gcs/signed-upload")
+def gcs_signed_upload():
+    # ako nema GCS klijenta ili si u LOCAL_MODE, elegantno reci klijentu da preskoči signed upload
+    if not storage_client or not GCS_BUCKET or LOCAL_MODE:
+        return jsonify({"ok": False, "reason": "no-gcs"}), 200
+
+    data = request.get_json(force=True, silent=True) or {}
+    content_type = (data.get("contentType") or "image/jpeg").strip()
+
+    # generiši jedinstven key
+    obj = f"uploads/{uuid4().hex}.bin"
+    bucket = storage_client.bucket(GCS_BUCKET)
+    blob = bucket.blob(obj)
+
+    # URL za direktni PUT sa klijenta
+    put_url = blob.generate_signed_url(
+        version="V4",
+        expiration=datetime.timedelta(minutes=15),
+        method="PUT",
+        content_type=content_type,
+    )
+    # URL za čitanje (signed GET ili public, ovisno o postavci)
+    if GCS_SIGNED_GET:
+        read_url = blob.generate_signed_url(
+            version="V4", expiration=datetime.timedelta(minutes=45), method="GET"
+        )
+    else:
+        try:
+            blob.make_public()
+            read_url = blob.public_url
+        except Exception:
+            read_url = blob.generate_signed_url(
+                version="V4", expiration=datetime.timedelta(minutes=45), method="GET"
+            )
+
+    return jsonify({"uploadUrl": put_url, "readUrl": read_url}), 200
+
+
 # ===================== ASINHRONO: Cloud Tasks + Firestore + GCS =====================
 PROJECT_ID        = (os.getenv("GOOGLE_CLOUD_PROJECT") or os.getenv("GCP_PROJECT") or "").strip()
 REGION            = os.getenv("REGION", "europe-west1")
@@ -888,3 +933,4 @@ if __name__ == "__main__":
     debug = os.getenv("FLASK_DEBUG", "0") == "1"
     log.info("Starting app on port %s, LOCAL_MODE=%s", port, LOCAL_MODE)
     app.run(host="0.0.0.0", port=port, debug=debug)
+
