@@ -120,7 +120,6 @@
   @keyframes dots{0%{content:''}33%{content:'.'}66%{content:'..'}100%{content:'...'}}
   @keyframes fadeIn{from{opacity:0;transform:translateY(6px);}to{opacity:1;transform:translateY(0);}}
 
-  form{display:flex;flex-direction:column;gap:1rem;} form,textarea,select{autocomplete: off;}
   label{font-weight:600;}
   select, textarea{
     background:var(--input-bg); color:var(--text);
@@ -174,6 +173,13 @@
   .hidden{display:none}
   .linklike{background:none;border:none;color:#3d7d66;cursor:pointer;text-decoration:underline;padding:0;font-size:.95rem}
   body.dark .linklike{color:#7fcab7;}
+
+  /* jednostavni alertovi */
+  .alert{padding:.65rem .8rem;border-radius:10px;margin:.25rem 0;}
+  .alert-danger{background:#ffe9e9;border:1px solid #f3b8b8;color:#7a1e1e;}
+  .alert-warning{background:#fff6e5;border:1px solid #ffd38a;color:#7a4c1e;}
+  body.dark .alert-danger{background:#2a1717;border-color:#6a3333;color:#ffdede;}
+  body.dark .alert-warning{background:#2a2417;border-color:#6a5c33;color:#ffe3a3;}
 
   /* sakrij prazan chat-karton na startu */
   .card.is-empty{display:none}
@@ -233,13 +239,13 @@
         </div>
 
         <label for="pitanje">Postavi mi matematičko pitanje (tekst ili slika):</label>
-        <textarea name="pitanje" id="pitanje" placeholder="Ovdje možeš unijeti zadatak ili pitanje..." autofocus autocomplete="off"></textarea>
+        <textarea name="pitanje" id="pitanje" placeholder="Ovdje možeš unijeti zadatak ili pitanje..." autofocus></textarea>
 
         <div class="form-actions">
           <div class="left">
             <label for="slika">Ili učitaj / uslikaj sliku:</label>
             <div class="file-row">
-              <input class="file-input" id="slika" type="file" name="file" accept="image/*" />
+              <input class="file-input" id="slika" type="file" name="file" accept="image/*" capture="environment" />
               <label for="slika" class="btn secondary sm">📎 Izaberi fajl / Kamera</label>
               <span id="file-chip" class="file-chip">
                 <span id="file-name">Nije odabran fajl</span>
@@ -258,7 +264,7 @@
         </div>
       </form>
 
-      <form id="clear-form" method="POST" action="/clear" autocomplete="off">
+      <form id="clear-form" method="POST" action="/clear">
         <input type="hidden" name="ajax" value="1" />
         <input type="hidden" name="confirm_clear" value="1" />
       </form>
@@ -366,6 +372,7 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   function ensureChatContainer(){ return document.getElementById('chat-container'); }
+  function ensureChatVisible(){ document.getElementById('chat-card')?.classList.remove('is-empty'); }
   function escapeHtml(s){ return (s||'').replace(/[&<>"']/g, m=>({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[m])); }
 
   // -------- Typing Manager --------
@@ -411,6 +418,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // --------- UI baloni ---------
   function appendUserBubble({text, file}){
+    ensureChatVisible();
     const chat = ensureChatContainer(); if(!chat) return;
     const pair = document.createElement('div'); pair.className='qa-pair';
 
@@ -450,19 +458,23 @@ document.addEventListener('DOMContentLoaded', () => {
           if (window.MathJax && MathJax.typesetPromise) { MathJax.typesetPromise([botBubble]); }
           applyPlotsIn(botBubble);
           pushHistory(HIST_KEY, userLabel, html);
+          ensureChatVisible();
           hideTyping();
           return;
         }
         if (data.status === 'error'){
           botBubble.innerHTML = `<div class="alert alert-danger">Greška: ${escapeHtml(data.error || 'nepoznato')}</div>`;
+          ensureChatVisible();
           hideTyping(); return;
         }
       }catch(_){
         botBubble.innerHTML = '<div class="alert alert-danger">Greška pri provjeri statusa.</div>';
+        ensureChatVisible();
         hideTyping(); return;
       }
     }
     botBubble.innerHTML = '<div class="alert alert-warning">Istek vremena čekanja na rezultat.</div>';
+    ensureChatVisible();
     hideTyping();
   }
 
@@ -493,13 +505,15 @@ document.addEventListener('DOMContentLoaded', () => {
 
     try{
       const r = await fetch('/submit', { method:'POST', body: fd, credentials:'include' });
-      const j = await r.json();
+      const ct = r.headers.get('content-type') || '';
+      const j = ct.includes('application/json') ? await r.json() : {};
 
       if (r.status === 200 && j && j.result && j.result.html){
         botBubble.innerHTML = j.result.html;
         if (window.MathJax && MathJax.typesetPromise) { MathJax.typesetPromise([botBubble]); }
         applyPlotsIn(botBubble);
         pushHistory(HIST_KEY, userLabel, j.result.html);
+        ensureChatVisible();
         hideTyping();
         textarea.value = ''; clearFile();
         return;
@@ -512,9 +526,11 @@ document.addEventListener('DOMContentLoaded', () => {
       }
 
       botBubble.innerHTML = '<div class="alert alert-danger">Neočekivan odgovor servera.</div>';
+      ensureChatVisible();
       hideTyping();
     }catch(_){
       botBubble.innerHTML = 'Greška pri slanju zahtjeva.';
+      ensureChatVisible();
       hideTyping();
     }
   }
