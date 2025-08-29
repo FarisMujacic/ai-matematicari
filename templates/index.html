@@ -68,8 +68,6 @@
   .bubble,.bubble.user{padding:.9rem 1.1rem;border-radius:14px;font-size:1rem;line-height:1.75;box-shadow:0 1px 4px rgba(0,0,0,.05);white-space:pre-wrap;background:var(--bubble-bg);color:var(--bubble-text);max-width:75%;animation:fadeIn .25s ease;}
   .bubble{border-left:4px solid var(--accent-bot);margin:.35rem 0;}
   .bubble.user{background:#c8ebf0;border-right:4px solid var(--accent-user);border-left:0!important;margin:.35rem 0 .35rem auto;max-width:60%;}
-  .typing-indicator{position:sticky;bottom:0;align-self:flex-start;font-style:italic;font-size:1rem;padding:.5rem .75rem;color:#444;background:#fff2c2;border-left:4px solid #ffb84d;border-radius:8px;margin:.15rem 0 0;max-width:320px;display:none;z-index:2;}
-  .typing-indicator::after{content:'...';animation:dots 1s steps(3,end) infinite;}
   .bubble.user img{max-width:240px;border-radius:10px;margin-top:8px;display:block;}
   .typing-indicator{position:sticky;bottom:0;align-self:flex-start;font-style:italic;font-size:1rem;padding:.5rem .75rem;color:#444;background:#fff2c2;border-left:4px solid #ffb84d;border-radius:8px;margin:.15rem 0 0;max-width:420px;display:none;z-index:2;}
   .typing-indicator .dots::after{content:'...';animation:dots 1s steps(3,end) infinite;}
@@ -140,7 +138,6 @@
           <div class="chat-message bot-message"><div class="bubble">{{ message.bot|safe }}</div></div>
         </div>
         {% endfor %}
-        <div id="typing" class="typing-indicator" style="display:none;">🤖 MAT-BOT piše odgovor</div>
         <!-- Jedini indikator koji koristimo -->
         <div id="typing" class="typing-indicator" style="display:none;">
           <span class="dots">🤖 MAT-BOT piše odgovor</span>
@@ -208,8 +205,6 @@ function initDarkToggle(){
   cb.addEventListener('change', ()=>{ document.body.classList.toggle('dark', cb.checked); localStorage.setItem('matbot_dark', cb.checked ? '1' : '0');});
 }
 
-function showTyping(){ const el = document.getElementById('typing'); if(!el) return; el.style.display='block'; scrollToBottom(); }
-function hideTyping(){ const el = document.getElementById('typing'); if(el) el.style.display='none'; }
 function scrollToBottom(){ const chat=document.getElementById('chat-container'); if(chat) chat.scrollTop = chat.scrollHeight; }
 
 (function setupScrollButton(){
@@ -291,7 +286,6 @@ document.addEventListener('DOMContentLoaded', () => {
   function ensureChatContainer(){ return document.getElementById('chat-container'); }
   function escapeHtml(s){ return (s||'').replace(/[&<>"']/g, m=>({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[m])); }
 
-  function appendUserBubble(text){
   // -------- Typing Manager (jedini indikator + dinamične poruke) --------
   const TypingManager = (function(){
     const el = document.getElementById('typing');
@@ -337,8 +331,6 @@ document.addEventListener('DOMContentLoaded', () => {
   function appendUserBubble({text, file}){
     const chat = ensureChatContainer(); if(!chat) return;
     const pair = document.createElement('div'); pair.className='qa-pair';
-    const u = document.createElement('div'); u.className='chat-message user-message'; u.innerHTML = `<div class="bubble user"><p>${escapeHtml(text)}</p></div>`;
-    const b = document.createElement('div'); b.className='chat-message bot-message'; b.innerHTML = `<div class="bubble"><i class="muted">Obrada…</i></div>`;
 
     // user bubble
     const u = document.createElement('div'); u.className='chat-message user-message';
@@ -362,7 +354,6 @@ document.addEventListener('DOMContentLoaded', () => {
     b.innerHTML = `<div class="bubble">&nbsp;</div>`;
 
     pair.appendChild(u); pair.appendChild(b); chat.appendChild(pair); scrollToBottom();
-    return b.querySelector('.bubble'); // vraća bot balon koji ćemo zamijeniti
     return b.querySelector('.bubble'); // vraća bot balon koji ćemo kasnije popuniti
   }
 
@@ -384,7 +375,6 @@ document.addEventListener('DOMContentLoaded', () => {
           return;
         }
         if (data.status === 'error'){
-          botBubble.innerHTML = `<div class="alert alert-danger">Greška: ${data.error || 'nepoznato'}</div>`;
           botBubble.innerHTML = `<div class="alert alert-danger">Greška: ${escapeHtml(data.error || 'nepoznato')}</div>`;
           hideTyping(); return;
         }
@@ -412,19 +402,16 @@ document.addEventListener('DOMContentLoaded', () => {
     if (!razred){ alert('Odaberi razred.'); return; }
     if (!f && !tekst){ alert('Unesi pitanje ili dodaj sliku.'); return; }
 
-    const userLabel = tekst || (f ? '[SLIKA]' : '');
     const userLabel = tekst || (f ? f.name : '');
     hideGradeAfterFirstSend();
 
     showTyping();
-    const botBubble = appendUserBubble(userLabel);
     const botBubble = appendUserBubble({text: tekst, file: f});
 
     const fd = new FormData();
     fd.append('razred', razred);
     fd.append('user_text', tekst);
     if (f) fd.append('file', f, f.name);
-    // NEMA mode → backend = auto
 
     try{
       const r = await fetch('/submit', { method:'POST', body: fd, credentials:'include' });
@@ -443,7 +430,6 @@ document.addEventListener('DOMContentLoaded', () => {
 
       // ASYNC (202)
       if (r.status === 202 && j && j.job_id){
-        botBubble.innerHTML = '<span class="muted">Zahtjev prihvaćen, obrađujem…</span>';
         // ostavi prazan dok ne stigne rezultat; indikator govori sve
         textarea.value = ''; clearFile();
         poll(j.job_id, userLabel, botBubble);
@@ -469,7 +455,6 @@ document.addEventListener('DOMContentLoaded', () => {
       try{ await fetch(clearForm.action || '/clear', { method:'POST', body: fd, credentials:'include' }); }
       catch(_){}
       const chat = document.getElementById('chat-container');
-      if (chat) chat.innerHTML = '<div id="typing" class="typing-indicator" style="display:none;">🤖 MAT-BOT piše odgovor</div>';
       if (chat) chat.innerHTML = `
         <div id="typing" class="typing-indicator" style="display:none;">
           <span class="dots">🤖 MAT-BOT piše odgovor</span>
