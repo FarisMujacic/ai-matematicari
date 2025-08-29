@@ -35,6 +35,10 @@
 
     --type-bg:#fff3bf;
     --type-border:#ffb84d;
+
+    --overlay: rgba(0,0,0,.45);
+    --modal-bg: #ffffff;
+    --modal-border: rgba(0,0,0,.08);
   }
   body.dark{
     --page-bg:linear-gradient(180deg,#0b1113 0%,#090d0f 100%);
@@ -55,6 +59,10 @@
 
     --type-bg:#0f1b20;
     --type-border:#3d7d66;
+
+    --overlay: rgba(0,0,0,.6);
+    --modal-bg:#162126;
+    --modal-border: rgba(255,255,255,.08);
   }
 
   *{box-sizing:border-box}
@@ -81,6 +89,9 @@
   .dropdown.open .dropdown-content{display:block;}
   .menu-item{width:100%;text-align:left;background:transparent;border:1px solid var(--card-border);color:var(--text);
     padding:.6rem .75rem;border-radius:10px;cursor:pointer;margin-top:.7rem}
+  .menu-item:hover{background:rgba(127,255,212,.06)}
+  .menu-line{margin:.6rem 0;border-top:1px dashed var(--card-border);}
+
   .toggle-row{display:flex;align-items:center;justify-content:space-between;gap:.75rem;}
   .toggle-slider{position:relative;width:64px;height:32px;background:#cfd8dc;border-radius:32px;cursor:pointer;transition:background .25s;}
   .toggle-slider::before{content:"";position:absolute;top:3px;left:3px;width:26px;height:26px;background:#fff;border-radius:50%;box-shadow:0 2px 6px rgba(0,0,0,.25);transition:transform .25s;}
@@ -127,6 +138,9 @@
   .btn{background:var(--btn-bg);color:#fff;border:none;padding:.85rem 1.1rem;font-size:1rem;border-radius:10px;cursor:pointer;width:fit-content;
        transition: transform .05s ease, background .15s ease;}
   .btn:hover{background:var(--btn-bg-hover);} .btn:active{transform:translateY(1px);}
+  .btn.secondary{background:transparent;color:var(--btn-bg);border:2px solid var(--btn-bg);}
+  .btn.danger{background:var(--danger);}
+  .btn.sm{padding:.5rem .7rem;font-size:.92rem;border-radius:9px;}
 
   .form-actions{display:flex;align-items:flex-start;justify-content:space-between;gap:1rem;flex-wrap:wrap;padding-top:.75rem;border-top:1px solid var(--card-border);}
   .form-actions .right{display:flex;align-items:center;gap:.6rem;flex-wrap:wrap;}
@@ -135,9 +149,22 @@
   .muted{color:var(--muted);font-size:.95rem}
   .hidden{display:none}
   .card.is-empty{display:none}
+
+  /* file chip */
+  .file-chip{display:none;align-items:center;gap:.5rem;background:#eff6ff;border:1px dashed #b9d2ff;color:#2a4365;padding:.35rem .55rem;border-radius:999px;font-size:.88rem;}
+  .file-chip.show{display:inline-flex;}
+  .file-chip .remove{background:transparent;border:none;font-size:1rem;cursor:pointer;color:inherit;line-height:1;}
+
+  /* modal */
+  .overlay{position:fixed;inset:0;background:var(--overlay);display:none;z-index:1100;}
+  .modal{position:fixed;inset:0;display:none;align-items:center;justify-content:center;z-index:1101;}
+  .modal .box{background:var(--modal-bg);color:var(--text);border:1px solid var(--modal-border);border-radius:14px;box-shadow:0 18px 60px rgba(0,0,0,.25);width:min(92vw,520px);padding:1rem;}
+  .modal .box h3{margin:.2rem 0 .6rem;font-size:1.25rem}
+  .modal .box p{margin:.3rem 0 .9rem}
+  .modal .actions{display:flex;gap:.5rem;justify-content:flex-end;margin-top:.6rem}
   </style>
 </head>
-<body>
+<body data-current-razred="{{ razred or '5' }}">
   <header id="main-header">
     <div class="title-container">MAT-BOT</div>
     <div class="dropdown" id="menuWrap">
@@ -150,41 +177,88 @@
             <span class="toggle-slider"></span>
           </label>
         </div>
-        <label for="razred" style="margin-top:.6rem;">🎓 Razred</label>
-        <select id="razred" name="razred">
-          <option value="5">5</option>
-          <option value="6">6</option>
-          <option value="7">7</option>
-          <option value="8">8</option>
-          <option value="9" selected>9</option>
-        </select>
+
+        <div class="menu-line"></div>
+
+        <button class="menu-item" id="menuClear">🗑️ Očisti chat…</button>
+
+        <div class="menu-item" id="menuGrades">
+          <div style="font-weight:700;margin-bottom:.35rem;">🎓 Promijeni razred</div>
+          <div style="display:flex;gap:.4rem;flex-wrap:wrap">
+            <button class="btn sm secondary grade-btn" data-grade="5">5</button>
+            <button class="btn sm secondary grade-btn" data-grade="6">6</button>
+            <button class="btn sm secondary grade-btn" data-grade="7">7</button>
+            <button class="btn sm secondary grade-btn" data-grade="8">8</button>
+            <button class="btn sm secondary grade-btn" data-grade="9">9</button>
+          </div>
+          <div class="muted" style="margin-top:.4rem">Trenutni: <span id="curGradeLabel">{{ razred or '5' }}</span></div>
+        </div>
       </div>
     </div>
   </header>
 
+  {% if error %}<div class="error-banner">{{ error }}</div>{% endif %}
+
   <main class="stack">
     <!-- CHAT -->
     <div class="card" id="chat-card">
-      <div id="chat-container"></div>
+      <div id="chat-container">
+        {% for message in history %}
+        <div class="chat-message user-message"><div class="bubble user"><p>{{ message.user }}</p></div></div>
+        <div class="chat-message bot-message"><div class="bubble">{{ message.bot|safe }}</div></div>
+        {% endfor %}
+      </div>
       <div id="typing" class="typing-indicator"><span class="dots">🤖 MAT-BOT piše odgovor</span></div>
     </div>
 
     <!-- FORMA -->
     <div class="card">
       <form id="ask-form" method="POST" enctype="multipart/form-data" autocomplete="off" action="/submit">
+        <input type="hidden" id="razredHidden" name="razred" value="{{ razred or '5' }}">
         <label for="pitanje">Postavi mi matematičko pitanje (tekst ili slika):</label>
         <textarea name="pitanje" id="pitanje" placeholder="Ovdje možeš unijeti zadatak ili pitanje..." autofocus></textarea>
 
         <div class="form-actions">
-          <div class="right">
+          <div class="left">
             <input id="slika" type="file" name="file" accept="image/*" capture="environment" style="display:none;" />
-            <label for="slika" class="btn">📎 Fajl/Kamera</label>
+            <label for="slika" class="btn secondary sm">📎 Fajl/Kamera</label>
+            <span id="file-chip" class="file-chip">
+              <span id="file-name">Nije odabran fajl</span>
+              <button type="button" class="remove" id="remove-file" title="Ukloni fajl">×</button>
+            </span>
+          </div>
+          <div class="right">
             <button id="sendBtn" type="button" class="btn">✉️ Pošalji</button>
           </div>
         </div>
       </form>
     </div>
   </main>
+
+  <!-- MODALS -->
+  <div class="overlay" id="overlay"></div>
+
+  <div class="modal" id="confirm-clear">
+    <div class="box">
+      <h3>Očisti chat?</h3>
+      <p>Ova radnja briše cijelu konverzaciju. Ne može se poništiti.</p>
+      <div class="actions">
+        <button class="btn secondary" data-close="#confirm-clear">Odustani</button>
+        <button class="btn danger" id="doClear">Obriši</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="modal" id="confirm-grade">
+    <div class="box">
+      <h3>Promjena razreda</h3>
+      <p id="gradeMsg">Promijeniti razred?</p>
+      <div class="actions">
+        <button class="btn secondary" data-close="#confirm-grade">Odustani</button>
+        <button class="btn" id="doGrade">Potvrdi</button>
+      </div>
+    </div>
+  </div>
 
 <script>
 function toggleDropdown(e){ e.preventDefault(); document.getElementById('menuWrap').classList.toggle('open'); }
@@ -199,6 +273,23 @@ function showTyping(){ document.getElementById('typing').style.display='block'; 
 function hideTyping(){ document.getElementById('typing').style.display='none'; }
 function scrollToBottom(){ const chat=document.getElementById('chat-container'); if(chat) chat.scrollTop = chat.scrollHeight; }
 
+function openModal(id){
+  document.getElementById('overlay').style.display='block';
+  document.querySelector(id).style.display='flex';
+}
+function closeModal(id){
+  document.getElementById('overlay').style.display='none';
+  document.querySelector(id).style.display='none';
+}
+document.getElementById('overlay').addEventListener('click', ()=>{
+  document.querySelectorAll('.modal').forEach(m=>m.style.display='none');
+  document.getElementById('overlay').style.display='none';
+});
+document.addEventListener('click',(e)=>{
+  const closeSel=e.target.getAttribute?.('data-close');
+  if (closeSel){ e.preventDefault(); closeModal(closeSel); }
+});
+
 document.addEventListener('DOMContentLoaded', () => {
   initDarkToggle();
 
@@ -206,8 +297,66 @@ document.addEventListener('DOMContentLoaded', () => {
   const sendBtn = document.getElementById('sendBtn');
   const textarea = document.getElementById('pitanje');
   const fileInput = document.getElementById('slika');
-  const razredSel = document.getElementById('razred');
+  const fileChip = document.getElementById('file-chip');
+  const fileName = document.getElementById('file-name');
+  const removeFileBtn = document.getElementById('remove-file');
   const chat = document.getElementById('chat-container');
+  const razredHidden = document.getElementById('razredHidden');
+
+  // file chip
+  function updateFileUI(){
+    if(fileInput.files && fileInput.files[0]){
+      fileName.textContent = fileInput.files[0].name;
+      fileChip.classList.add('show');
+    }else{
+      fileName.textContent = 'Nije odabran fajl';
+      fileChip.classList.remove('show');
+    }
+  }
+  function clearFile(){
+    const dt = new DataTransfer(); fileInput.files = dt.files; fileInput.value = ""; updateFileUI();
+  }
+  fileInput.addEventListener('change', updateFileUI);
+  removeFileBtn.addEventListener('click', clearFile);
+
+  // menu: clear
+  document.getElementById('menuClear').addEventListener('click', (e)=>{ e.preventDefault(); openModal('#confirm-clear'); closeDropdown(); });
+  document.getElementById('doClear').addEventListener('click', async ()=>{
+    try{
+      const fd = new URLSearchParams({confirm_clear:"1", ajax:"1"});
+      await fetch("/clear",{method:"POST", body:fd, credentials:"include"});
+    }catch(_){}
+    closeModal('#confirm-clear');
+    location.reload();
+  });
+
+  // menu: grades (hide current)
+  const currentGrade = document.body.getAttribute('data-current-razred') || '5';
+  document.querySelectorAll('.grade-btn').forEach(btn=>{
+    if(btn.dataset.grade === currentGrade){ btn.style.display='none'; }
+    btn.addEventListener('click',(e)=>{
+      e.preventDefault();
+      const g = btn.dataset.grade;
+      document.getElementById('gradeMsg').textContent = `Promijeniti razred na ${g} i obrisati chat?`;
+      document.getElementById('doGrade').setAttribute('data-grade', g);
+      openModal('#confirm-grade'); closeDropdown();
+    });
+  });
+  document.getElementById('doGrade').addEventListener('click', async (e)=>{
+    const g = e.target.getAttribute('data-grade');
+    if(!g) return;
+    try{
+      const fd = new FormData(); fd.append("razred", g);
+      const r = await fetch("/set-razred",{method:"POST", body:fd, credentials:"include"});
+      if(r.ok){
+        razredHidden.value = g;
+        closeModal('#confirm-grade');
+        location.reload();
+      }
+    }catch(_){
+      closeModal('#confirm-grade');
+    }
+  });
 
   function escapeHtml(s){ return (s||'').replace(/[&<>"']/g, m=>({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[m])); }
 
@@ -216,7 +365,11 @@ document.addEventListener('DOMContentLoaded', () => {
     wrap.className = 'chat-message user-message';
     const bubble = document.createElement('div');
     bubble.className = 'bubble user';
-    bubble.innerHTML = text ? `<p>${escapeHtml(text)}</p>` : `<p><strong>${escapeHtml(fileName||'slika')}</strong></p>`;
+    let html = '';
+    if (text && text.trim()) html += `<p>${escapeHtml(text)}</p>`;
+    if (fileName) html += `<p><strong>📷 ${escapeHtml(fileName)}</strong></p>`;
+    if (!html) html = '<p><em>(prazna poruka)</em></p>';
+    bubble.innerHTML = html;
     wrap.appendChild(bubble);
     chat.appendChild(wrap);
     scrollToBottom();
@@ -235,24 +388,24 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   async function sendOne(){
-    const razred = razredSel.value;
+    const razred = razredHidden.value || '5';
     const text = textarea.value.trim();
     const file = fileInput.files[0];
 
-    if(!razred){ alert('Odaberi razred.'); return; }
-    if(!text && !file){ alert('Unesi pitanje ili dodaj sliku.'); return; }
+    if(!razred){ appendBotHTML('<div class="alert alert-warning">Odaberi razred.</div>'); return; }
+    if(!text && !file){ appendBotHTML('<div class="alert alert-warning">Unesi pitanje ili dodaj sliku.</div>'); return; }
 
     // UI lock + prikaz user poruke
     sendBtn.disabled = true;
     textarea.disabled = true;
-    razredSel.disabled = true;
+    document.querySelectorAll('.grade-btn').forEach(b=>b.disabled=true);
     showTyping();
 
     appendUserBubble({text, fileName: file?.name});
 
     // Očisti inpute odmah da se ne može dvaput slati
     textarea.value = '';
-    fileInput.value = '';
+    clearFile();
 
     const fd = new FormData();
     fd.append('razred', razred);
@@ -261,14 +414,21 @@ document.addEventListener('DOMContentLoaded', () => {
 
     try{
       const r = await fetch(form.action || '/submit', { method:'POST', body: fd, credentials:'include' });
+      const ct = r.headers.get('content-type') || '';
+      const isJSON = ct.includes('application/json');
       if (r.status === 409){
         appendBotHTML('<div class="alert alert-warning">Već se generiše jedan odgovor. Sačekaj trenutak.</div>');
       } else if (!r.ok){
-        const t = await r.text();
+        const t = isJSON ? JSON.stringify(await r.json()) : await r.text();
         appendBotHTML(`<div class="alert alert-danger">Greška: ${escapeHtml(t)}</div>`);
       } else {
-        const j = await r.json();
-        appendBotHTML(j?.result?.html || '<i>Nema rezultata.</i>');
+        const j = isJSON ? await r.json() : {};
+        if (j.mode && j.job_id && !j.result){
+          // async put – obavi polling
+          poll(j.job_id);
+        } else {
+          appendBotHTML(j?.result?.html || '<i>Nema rezultata.</i>');
+        }
       }
     } catch (e){
       appendBotHTML('<div class="alert alert-danger">Greška pri slanju zahtjeva.</div>');
@@ -276,8 +436,36 @@ document.addEventListener('DOMContentLoaded', () => {
       hideTyping();
       sendBtn.disabled = false;
       textarea.disabled = false;
-      razredSel.disabled = false;
+      document.querySelectorAll('.grade-btn').forEach(b=>b.disabled=false);
     }
+  }
+
+  // Async polling (ako server vrati 202)
+  async function poll(jobId){
+    showTyping();
+    const sleep = (ms)=> new Promise(r=>setTimeout(r, ms));
+    for (let i=0;i<180;i++){
+      await sleep(2000);
+      try{
+        const r = await fetch(`/status/${jobId}`, {cache:'no-store', credentials:'include'});
+        if (!r.ok) throw new Error('status http '+r.status);
+        const data = await r.json();
+        if (data.status === 'done'){
+          appendBotHTML((data.result && data.result.html) || '<i>Nema rezultata.</i>');
+          hideTyping();
+          return;
+        }
+        if (data.status === 'error'){
+          appendBotHTML('<div class="alert alert-danger">Greška u asinkronoj obradi.</div>');
+          hideTyping(); return;
+        }
+      }catch(_){
+        appendBotHTML('<div class="alert alert-danger">Greška pri provjeri statusa.</div>');
+        hideTyping(); return;
+      }
+    }
+    appendBotHTML('<div class="alert alert-warning">Istek vremena čekanja na rezultat.</div>');
+    hideTyping();
   }
 
   sendBtn.addEventListener('click', sendOne);
