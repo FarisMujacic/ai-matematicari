@@ -1,3 +1,4 @@
+# app.py — Async TEXT + IMAGE (Cloud Tasks + Firestore + GCS) + HYBRID (auto|sync|async) + LOCAL_MODE za razvoj
 from flask import Flask, render_template, request, session, redirect, url_for, send_from_directory, jsonify
 from dotenv import load_dotenv
 import os, re, base64, json, html, datetime, logging, mimetypes, threading, traceback
@@ -72,8 +73,6 @@ def _budgeted_timeout(default: float | int = None, margin: float = 5.0) -> float
 _OPENAI_API_KEY = (os.getenv("OPENAI_API_KEY") or "").strip()
 if not _OPENAI_API_KEY:
     log.error("OPENAI_API_KEY nije postavljen u okruženju.")
-# Uklonjeni timeouti i custom retry-jevi
-client = OpenAI(api_key=_OPENAI_API_KEY)
 client = OpenAI(api_key=_OPENAI_API_KEY, timeout=OPENAI_TIMEOUT, max_retries=OPENAI_MAX_RETRIES)
 
 MODEL_VISION_LIGHT = os.getenv("OPENAI_MODEL_VISION_LIGHT") or os.getenv("OPENAI_MODEL_VISION", "gpt-5")
@@ -183,7 +182,6 @@ def store_job(job_id: str, data: dict, merge: bool = True):
     if fs_db:
         fs_db.collection("jobs").document(job_id).set(data, merge=merge)
     else:
-        # merge simulacija
         JOB_STORE[job_id] = {**JOB_STORE.get(job_id, {}), **data}
 
 def read_job(job_id: str) -> dict:
@@ -256,8 +254,6 @@ def extract_plot_expression(user_text: str, razred: str = "", history=None) -> s
         return expr
     return None
 
-# ===== OpenAI helper (bez timeouta) =====
-def _openai_chat(model: str, messages: list, max_tokens: int | None = None):
 # ===== OpenAI helper =====
 def _openai_chat(model: str, messages: list, timeout: float = None, max_tokens: int | None = None):
     def _do(params):
@@ -267,19 +263,16 @@ def _openai_chat(model: str, messages: list, timeout: float = None, max_tokens: 
     if max_tokens is not None:
         params["max_completion_tokens"] = max_tokens
     try:
-        return client.chat.completions.create(**params)
         return _do(params)
     except Exception as e:
         msg = str(e)
         if "max_completion_tokens" in msg or "Unsupported parameter: 'max_completion_tokens'" in msg:
             params.pop("max_completion_tokens", None)
             if max_tokens is not None: params["max_tokens"] = max_tokens
-            return client.chat.completions.create(**params)
             return _do(params)
         raise
 
 # ===== Pipelines =====
-def answer_with_text_pipeline(pure_text: str, razred: str, history, requested):
 def answer_with_text_pipeline(pure_text: str, razred: str, history, requested, timeout_override: float | None = None):
     prompt_za_razred = PROMPTI_PO_RAZREDU.get(razred, PROMPTI_PO_RAZREDU["5"])
     only_clause = ""
@@ -303,7 +296,6 @@ def answer_with_text_pipeline(pure_text: str, razred: str, history, requested, t
         messages.append({"role":"user","content": msg["user"]})
         messages.append({"role":"assistant","content": msg["bot"]})
     messages.append({"role":"user","content": pure_text})
-    response = _openai_chat(MODEL_TEXT, messages)
     response = _openai_chat(MODEL_TEXT, messages, timeout=timeout_override or OPENAI_TIMEOUT)
     actual_model = getattr(response, "model", MODEL_TEXT)
     raw = response.choices[0].message.content
@@ -345,7 +337,6 @@ def _bytes_to_data_url(raw: bytes, mime_hint: str | None = None) -> str:
     b64 = base64.b64encode(raw).decode()
     return f"data:{mime};base64,{b64}"
 
-def route_image_flow_url(image_url: str, razred: str, history, user_text=None):
 def route_image_flow_url(image_url: str, razred: str, history, user_text=None, timeout_override: float | None = None):
     only_clause, strict_geom_policy = _vision_clauses()
     messages = _vision_messages_base(razred, history, only_clause, strict_geom_policy)
@@ -354,14 +345,12 @@ def route_image_flow_url(image_url: str, razred: str, history, user_text=None, t
     user_content.append({"type": "text", "text": "Na slici je matematički zadatak."})
     user_content.append({"type": "image_url", "image_url": {"url": image_url}})
     messages.append({"role": "user", "content": user_content})
-    resp = _openai_chat(MODEL_VISION, messages)
     resp = _openai_chat(MODEL_VISION, messages, timeout=timeout_override or OPENAI_TIMEOUT)
     actual_model = getattr(resp, "model", MODEL_VISION)
     raw = resp.choices[0].message.content
     raw = strip_ascii_graph_blocks(raw)
     return f"<p>{latexify_fractions(raw)}</p>", "vision_url", actual_model
 
-def route_image_flow(slika_bytes: bytes, razred: str, history, user_text=None, mime_hint: str | None = None):
 def route_image_flow(slika_bytes: bytes, razred: str, history, user_text=None, timeout_override: float | None = None, mime_hint: str | None = None):
     only_clause, strict_geom_policy = _vision_clauses()
     messages = _vision_messages_base(razred, history, only_clause, strict_geom_policy)
@@ -371,7 +360,6 @@ def route_image_flow(slika_bytes: bytes, razred: str, history, user_text=None, t
     user_content.append({"type": "text", "text": "Na slici je matematički zadatak."})
     user_content.append({"type": "image_url", "image_url": {"url": data_url}})
     messages.append({"role": "user", "content": user_content})
-    resp = _openai_chat(MODEL_VISION, messages)
     resp = _openai_chat(MODEL_VISION, messages, timeout=timeout_override or OPENAI_TIMEOUT)
     actual_model = getattr(resp, "model", MODEL_VISION)
     raw = resp.choices[0].message.content
@@ -460,7 +448,6 @@ def index():
 
             if image_url:
                 combined_text = pitanje
-                odgovor, used_path, used_model = route_image_flow_url(image_url, razred, history, user_text=combined_text)
                 odgovor, used_path, used_model = route_image_flow_url(image_url, razred, history, user_text=combined_text, timeout_override=HARD_TIMEOUT_S)
                 session["last_image_url"] = image_url
                 if (not plot_expression_added) and should_plot(combined_text):
@@ -469,7 +456,6 @@ def index():
                 display_user = (combined_text + " [slika]") if combined_text else "[slika]"
                 history.append({"user": display_user, "bot": odgovor.strip()})
                 history = history[-8:]; session["history"] = history
-                sync_job_id = f"sync-{uuid4().hex[:8]}"; log_to_sheet(sync_job_id, razred, combined_text, odgovor, used_path, used_model)
                 sync_job_id = f"sync-{uuid4().hex[:8]}"; log_to_sheet(sync_job_id, razred, combined_text, odgovor, "vision_url", used_model)
                 if is_ajax: return render_template("index.html", history=history, razred=razred)
                 return redirect(url_for("index"))
@@ -477,7 +463,6 @@ def index():
             if slika and slika.filename:
                 combined_text = pitanje
                 body = slika.read()
-                odgovor, used_path, used_model = route_image_flow(body, razred, history, user_text=combined_text, mime_hint=slika.mimetype or None)
                 odgovor, used_path, used_model = route_image_flow(body, razred, history, user_text=combined_text, timeout_override=HARD_TIMEOUT_S, mime_hint=slika.mimetype or None)
                 try:
                     ext = os.path.splitext(slika.filename or "")[1].lower() or ".img"
@@ -493,7 +478,6 @@ def index():
                 display_user = (combined_text + " [SLIKA]") if combined_text else "[SLIKA]"
                 history.append({"user": display_user, "bot": odgovor.strip()})
                 history = history[-8:]; session["history"] = history
-                sync_job_id = f"sync-{uuid4().hex[:8]}"; log_to_sheet(sync_job_id, razred, combined_text, odgovor, used_path, used_model)
                 sync_job_id = f"sync-{uuid4().hex[:8]}"; log_to_sheet(sync_job_id, razred, combined_text, odgovor, "vision_direct", used_model)
                 if is_ajax: return render_template("index.html", history=history, razred=razred)
                 return redirect(url_for("index"))
@@ -501,19 +485,16 @@ def index():
             requested = extract_requested_tasks(pitanje)
             last_url = session.get("last_image_url")
             if last_url and (requested or (pitanje and FOLLOWUP_TASK_RE.match(pitanje))):
-                odgovor, used_path, used_model = route_image_flow_url(last_url, razred, history, user_text=pitanje)
                 odgovor, used_path, used_model = route_image_flow_url(last_url, razred, history, user_text=pitanje, timeout_override=HARD_TIMEOUT_S)
                 if (not plot_expression_added) and should_plot(pitanje):
                     expr = extract_plot_expression(pitanje, razred=razred, history=history)
                     if expr: odgovor = add_plot_div_once(odgovor, expr); plot_expression_added = True
                 history.append({"user": pitanje, "bot": odgovor.strip()})
                 history = history[-8:]; session["history"] = history
-                sync_job_id = f"sync-{uuid4().hex[:8]}"; log_to_sheet(sync_job_id, razred, pitanje, odgovor, used_path, used_model)
                 sync_job_id = f"sync-{uuid4().hex[:8]}"; log_to_sheet(sync_job_id, razred, pitanje, odgovor, "vision_url", used_model)
                 if is_ajax: return render_template("index.html", history=history, razred=razred)
                 return redirect(url_for("index"))
 
-            odgovor, actual_model = answer_with_text_pipeline(pitanje, razred, history, requested)
             odgovor, actual_model = answer_with_text_pipeline(pitanje, razred, history, requested, timeout_override=HARD_TIMEOUT_S)
             if (not plot_expression_added) and should_plot(pitanje):
                 expr = extract_plot_expression(pitanje, razred=razred, history=history)
@@ -574,6 +555,51 @@ def add_no_cache_headers(resp):
     except KeyError: pass
     return resp
 
+
+# ---- Serve local uploads for preview/follow-ups ----
+@app.get("/uploads/<path:filename>")
+def serve_upload(filename):
+    return send_from_directory(UPLOAD_DIR, filename, as_attachment=False)
+
+# ---- (Optional) GCS signed upload so frontend can PUT directly ----
+@app.post("/gcs/signed-upload")
+def gcs_signed_upload():
+    # ako nema GCS klijenta ili si u LOCAL_MODE, elegantno reci klijentu da preskoči signed upload
+    if not storage_client or not GCS_BUCKET or LOCAL_MODE:
+        return jsonify({"ok": False, "reason": "no-gcs"}), 200
+
+    data = request.get_json(force=True, silent=True) or {}
+    content_type = (data.get("contentType") or "image/jpeg").strip()
+
+    # generiši jedinstven key
+    obj = f"uploads/{uuid4().hex}.bin"
+    bucket = storage_client.bucket(GCS_BUCKET)
+    blob = bucket.blob(obj)
+
+    # URL za direktni PUT sa klijenta
+    put_url = blob.generate_signed_url(
+        version="V4",
+        expiration=datetime.timedelta(minutes=15),
+        method="PUT",
+        content_type=content_type,
+    )
+    # URL za čitanje (signed GET ili public, ovisno o postavci)
+    if GCS_SIGNED_GET:
+        read_url = blob.generate_signed_url(
+            version="V4", expiration=datetime.timedelta(minutes=45), method="GET"
+        )
+    else:
+        try:
+            blob.make_public()
+            read_url = blob.public_url
+        except Exception:
+            read_url = blob.generate_signed_url(
+                version="V4", expiration=datetime.timedelta(minutes=45), method="GET"
+            )
+
+    return jsonify({"uploadUrl": put_url, "readUrl": read_url}), 200
+
+
 # ===================== ASINHRONO: Cloud Tasks + Firestore + GCS =====================
 PROJECT_ID        = (os.getenv("GOOGLE_CLOUD_PROJECT") or os.getenv("GCP_PROJECT") or "").strip()
 REGION            = os.getenv("REGION", "europe-west1")
@@ -619,7 +645,6 @@ def _process_job_core(payload: dict) -> dict:
     history = []
     task_ai_timeout = _budgeted_timeout(default=HARD_TIMEOUT_S, margin=5.0)
 
-    # Glavni tok (bez bilo kakvih timeout argumenata)
     # Glavni tok
     if image_path:
         if not storage_client:
@@ -627,20 +652,16 @@ def _process_job_core(payload: dict) -> dict:
         blob = storage_client.bucket(bucket).blob(image_path)
         img_bytes = blob.download_as_bytes()
         mime_hint = blob.content_type or mimetypes.guess_type(image_path)[0] or None
-        odgovor_html, used_path, used_model = route_image_flow(img_bytes, razred, history=history, user_text=user_text, mime_hint=mime_hint)
         odgovor_html, used_path, used_model = route_image_flow(img_bytes, razred, history=history, user_text=user_text,
                                                                timeout_override=task_ai_timeout, mime_hint=mime_hint)
     elif image_inline_b64:
         img_bytes = base64.b64decode(image_inline_b64)
-        odgovor_html, used_path, used_model = route_image_flow(img_bytes, razred, history=history, user_text=user_text, mime_hint=None)
         odgovor_html, used_path, used_model = route_image_flow(img_bytes, razred, history=history, user_text=user_text,
                                                                timeout_override=task_ai_timeout, mime_hint=None)
     elif image_url:
-        odgovor_html, used_path, used_model = route_image_flow_url(image_url, razred, history=history, user_text=user_text)
         odgovor_html, used_path, used_model = route_image_flow_url(image_url, razred, history=history, user_text=user_text,
                                                                    timeout_override=task_ai_timeout)
     else:
-        odgovor_html, used_model = answer_with_text_pipeline(user_text, razred, history, requested)
         odgovor_html, used_model = answer_with_text_pipeline(user_text, razred, history, requested,
                                                              timeout_override=task_ai_timeout)
         used_path = "text"
@@ -670,7 +691,6 @@ def _local_worker(payload: dict):
         store_job(job_id, {"status": "done", "result": {"html": err_html, "path": "error", "model": "n/a"},
                            "finished_at": datetime.datetime.utcnow().isoformat() + "Z"}, merge=True)
 
-# --------- SUBMIT (radi lokalno i u cloudu) ----------
 # --------- Heuristike i sync helperi (NOVO) ----------
 def estimate_tokens(text: str) -> int:
     if not text: return 0
@@ -735,7 +755,6 @@ def _prepare_async_payload(job_id: str, razred: str, user_text: str, requested: 
 
 # --------- HYBRID /submit (NOVO) ----------
 @app.route("/submit", methods=["POST", "OPTIONS"])
-def submit_async():
 def submit():
     if request.method == "OPTIONS":
         return ("", 204)
@@ -759,7 +778,6 @@ def submit():
 
     requested = extract_requested_tasks(user_text)
 
-    job_id = str(uuid4())
     # --- Slikovni ulazi (file/b64) ---
     file_storage = request.files.get("file")
     file_bytes = None
@@ -845,70 +863,25 @@ def submit():
             "result": {"html": html_out, "path": sync_try["result"]["path"], "model": sync_try["result"]["model"]}
         }), 200
 
-    # inicijalno upiši pending
     # Sinhroni nije uspio (timeout/greška) → fallback u red
     job_id = str(uuid4())
     store_job(job_id, {"status": "pending", "created_at": datetime.datetime.utcnow().isoformat() + "Z",
                        "razred": razred, "user_text": user_text, "requested": requested}, merge=True)
-
-    payload = {
-        "job_id": job_id, "razred": razred, "user_text": user_text, "requested": requested,
-        "bucket": GCS_BUCKET, "image_path": None, "image_url": image_url or None,
-        "image_inline_b64": None,
-    }
-
-    # FILE -> GCS (cloud) ili inline (local)
-    if "file" in request.files:
-        f = request.files["file"]
-        if not LOCAL_MODE and (storage_client and GCS_BUCKET):
-            name = f"uploads/{job_id}/{f.filename or 'image.bin'}"
-            bucket = storage_client.bucket(GCS_BUCKET)
-            blob = bucket.blob(name)
-            blob.upload_from_file(f, content_type=f.mimetype or "application/octet-stream")
-            payload["image_path"] = name
-        else:
-            raw = f.read()
-            payload["image_inline_b64"] = base64.b64encode(raw).decode()
-
-    else:
-        image_b64 = (data.get("image_b64") if data else None)
-        if image_b64:
-            if "," in image_b64: image_b64 = image_b64.split(",", 1)[1]
-            if not LOCAL_MODE and (storage_client and GCS_BUCKET):
-                raw = base64.b64decode(image_b64)
-                name = f"uploads/{job_id}/image.bin"
-                bucket = storage_client.bucket(GCS_BUCKET)
-                blob = bucket.blob(name)
-                blob.upload_from_string(raw, content_type="application/octet-stream")
-                payload["image_path"] = name
-            else:
-                payload["image_inline_b64"] = image_b64
-
     payload = _prepare_async_payload(job_id, razred, user_text, requested, image_url or None,
                                      file_bytes, file_name, file_mime, image_b64_str)
     try:
         if LOCAL_MODE:
             threading.Thread(target=_local_worker, args=(payload,), daemon=True).start()
-            return jsonify({"job_id": job_id, "status": "queued", "local_mode": True}), 202
         else:
             _create_task_cloud(payload)
-            return jsonify({"job_id": job_id, "status": "queued", "local_mode": False}), 202
         mode_tag = "auto(sync→async)" if mode == "auto" else "sync→async"
         return jsonify({
             "mode": mode_tag, "job_id": job_id, "status": "queued", "local_mode": LOCAL_MODE,
             "reason": sync_try.get("error", "soft-timeout-or-error")
         }), 202
     except Exception as e:
-        # Vrati detaljnu grešku umjesto "Internal Server Error"
-        log.error("submit_async failed: %s\n%s", e, traceback.format_exc())
         log.error("submit sync→async failed: %s\n%s", e, traceback.format_exc())
         store_job(job_id, {"status": "error", "error": str(e)}, merge=True)
-        return jsonify({
-            "error": "submit_failed",
-            "detail": str(e),
-            "hint": "Lokalno koristi LOCAL_MODE=1 (bez Cloud Tasks/Firestore/GCS) ili provjeri GCP kredencijale / queue.",
-            "job_id": job_id
-        }), 500
         return jsonify({"error": "submit_failed", "detail": str(e), "job_id": job_id}), 500
 
 # --------- STATUS ----------
@@ -954,16 +927,9 @@ def tasks_process():
                            "finished_at": datetime.datetime.utcnow().isoformat() + "Z"}, merge=True)
         return "OK", 200  # bez retrija
 
-
-@app.get("/healthz")
-def healthz():
-    return "ok", 200
-
-
 # ===================== Run =====================
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", "8080"))
     debug = os.getenv("FLASK_DEBUG", "0") == "1"
     log.info("Starting app on port %s, LOCAL_MODE=%s", port, LOCAL_MODE)
     app.run(host="0.0.0.0", port=port, debug=debug)
-
