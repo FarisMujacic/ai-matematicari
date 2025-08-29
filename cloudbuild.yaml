@@ -1,34 +1,29 @@
-# cloudbuild.yaml — build+push+deploy (Dockerfile) sa tagom koji radi i lokalno
-substitutions:
-  _AR_HOSTNAME: europe-west1-docker.pkg.dev
-  _AR_PROJECT_ID: $PROJECT_ID
-  _AR_REPOSITORY: matbot
-  _SERVICE_NAME: matbot
-  _DEPLOY_REGION: europe-west1
-  _PLATFORM: managed
-  _TAG: $BUILD_ID   # radi i za submit i za trigger; po želji možeš prepisati iz CLI-ja
-
+# cloudbuild.yaml — build + push + deploy (bez custom substitutions)
 timeout: "1200s"
 
 steps:
+  # 0) Auth za Artifact Registry
   - name: gcr.io/google.com/cloudsdktool/cloud-sdk
     entrypoint: bash
-    args: ['-c', 'gcloud auth configure-docker $_AR_HOSTNAME --quiet']
+    args: ['-c', 'gcloud auth configure-docker europe-west1-docker.pkg.dev --quiet']
 
+  # 1) Build image (Dockerfile u rootu)
   - name: gcr.io/cloud-builders/docker
-    args: ['build','--pull','-t','$_AR_HOSTNAME/$_AR_PROJECT_ID/$_AR_REPOSITORY/$_SERVICE_NAME:$_TAG','.']
+    args: ['build','--pull','-t','europe-west1-docker.pkg.dev/$PROJECT_ID/matbot/matbot:$BUILD_ID','.']
 
+  # 2) Push image
   - name: gcr.io/cloud-builders/docker
-    args: ['push','$_AR_HOSTNAME/$_AR_PROJECT_ID/$_AR_REPOSITORY/$_SERVICE_NAME:$_TAG']
+    args: ['push','europe-west1-docker.pkg.dev/$PROJECT_ID/matbot/matbot:$BUILD_ID']
 
+  # 3) Deploy na Cloud Run i prebaci 100% saobraćaja
   - name: gcr.io/google.com/cloudsdktool/cloud-sdk
     entrypoint: gcloud
     args: [
-      'run','deploy','$_SERVICE_NAME',
-      '--image=$_AR_HOSTNAME/$_AR_PROJECT_ID/$_AR_REPOSITORY/$_SERVICE_NAME:$_TAG',
-      '--region=$_DEPLOY_REGION','--platform=$_PLATFORM',
+      'run','deploy','matbot',
+      '--image=europe-west1-docker.pkg.dev/$PROJECT_ID/matbot/matbot:$BUILD_ID',
+      '--region=europe-west1','--platform=managed',
       '--quiet','--set-traffic','latest=100'
     ]
 
 images:
-  - '$_AR_HOSTNAME/$_AR_PROJECT_ID/$_AR_REPOSITORY/$_SERVICE_NAME:$_TAG'
+  - 'europe-west1-docker.pkg.dev/$PROJECT_ID/matbot/matbot:$BUILD_ID'
