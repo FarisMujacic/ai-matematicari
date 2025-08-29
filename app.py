@@ -665,6 +665,18 @@ def _create_task_cloud(payload: dict):
     }
     return tc.create_task(request={"parent": parent, "task": task})
 
+# --------- SIGURNI FALLBACK ENQUEUE ----------
+def _enqueue(payload: dict):
+    """
+    Jedna tačka za enqueuing:
+    - Ako je LOCAL_MODE ili Tasks nisu podešeni / biblioteka fali → lokalni thread
+    - Inače → Cloud Tasks
+    """
+    if LOCAL_MODE or (not tasks_v2) or (not TASKS_TARGET_URL) or (not PROJECT_ID):
+        threading.Thread(target=_local_worker, daemon=True, args=(payload,)).start()
+    else:
+        _create_task_cloud(payload)
+
 # --- Core worker logika (zajednička i za cloud i za lokalni thread) ---
 def _process_job_core(payload: dict) -> dict:
     job_id     = payload["job_id"]
@@ -830,10 +842,7 @@ def submit():
         payload = _prepare_async_payload(job_id, razred, user_text, requested, image_url or None,
                                          file_bytes, file_name, file_mime, image_b64_str)
         try:
-            if LOCAL_MODE:
-                threading.Thread(target=_local_worker, daemon=True, args=(payload,)).start()
-            else:
-                _create_task_cloud(payload)
+            _enqueue(payload)
             return jsonify({"mode": "async", "job_id": job_id, "status": "queued", "local_mode": LOCAL_MODE}), 202
         except Exception as e:
             log.error("submit async failed: %s\n%s", e, traceback.format_exc())
@@ -849,10 +858,7 @@ def submit():
         payload = _prepare_async_payload(job_id, razred, user_text, requested, image_url or None,
                                          file_bytes, file_name, file_mime, image_b64_str)
         try:
-            if LOCAL_MODE:
-                threading.Thread(target=_local_worker, daemon=True, args=(payload,)).start()
-            else:
-                _create_task_cloud(payload)
+            _enqueue(payload)
             return jsonify({"mode": "auto→async", "job_id": job_id, "status": "queued", "local_mode": LOCAL_MODE}), 202
         except Exception as e:
             log.error("submit auto→async failed: %s\n%s", e, traceback.format_exc())
@@ -888,10 +894,7 @@ def submit():
     payload = _prepare_async_payload(job_id, razred, user_text, requested, image_url or None,
                                      file_bytes, file_name, file_mime, image_b64_str)
     try:
-        if LOCAL_MODE:
-            threading.Thread(target=_local_worker, daemon=True, args=(payload,)).start()
-        else:
-            _create_task_cloud(payload)
+        _enqueue(payload)
         mode_tag = "auto(sync→async)" if mode == "auto" else "sync→async"
         return jsonify({
             "mode": mode_tag, "job_id": job_id, "status": "queued", "local_mode": LOCAL_MODE,
