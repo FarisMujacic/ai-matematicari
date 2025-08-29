@@ -39,7 +39,6 @@
   }
 
   *{box-sizing:border-box}
-  html,body{height:100%}
   body{font-family:"Segoe UI", Tahoma, Geneva, Verdana, sans-serif;background:var(--page-bg);color:var(--text);margin:0;padding:100px 0 32px}
 
   header{position:fixed;top:0;left:0;right:0;z-index:1000;background:#3d7d66;color:#fff;padding:.9rem 1rem;display:flex;align-items:center;justify-content:center;}
@@ -68,361 +67,106 @@
   .bubble,.bubble.user{padding:.9rem 1.1rem;border-radius:14px;font-size:1rem;line-height:1.75;box-shadow:0 1px 4px rgba(0,0,0,.05);white-space:pre-wrap;background:var(--bubble-bg);color:var(--bubble-text);max-width:75%;animation:fadeIn .25s ease;}
   .bubble{border-left:4px solid var(--accent-bot);margin:.35rem 0;}
   .bubble.user{background:#c8ebf0;border-right:4px solid var(--accent-user);border-left:0!important;margin:.35rem 0 .35rem auto;max-width:60%;}
-  .typing-indicator{position:sticky;bottom:0;align-self:flex-start;font-style:italic;font-size:1rem;padding:.5rem .75rem;color:#444;background:#fff2c2;border-left:4px solid #ffb84d;border-radius:8px;margin:.15rem 0 0;max-width:320px;display:none;z-index:2;}
-  .typing-indicator::after{content:'...';animation:dots 1s steps(3,end) infinite;}
-  @keyframes dots{0%{content:''}33%{content:'.'}66%{content:'..'}100%{content:'...'}}
-  @keyframes fadeIn{from{opacity:0;transform:translateY(6px);}to{opacity:1;transform:translateY(0);}}
+  .typing-indicator{align-self:flex-start;font-style:italic;font-size:1rem;padding:.5rem .75rem;color:#444;background:#fff2c2;border-left:4px solid #ffb84d;border-radius:8px;margin:.25rem 0;max-width:320px;display:none;}
 
-  form{display:flex;flex-direction:column;gap:1rem;} form,textarea,select{autocomplete: off;}
-  label{font-weight:600;}
-  select{padding:.5rem .6rem;border-radius:8px;border:1px solid var(--card-border);background:#fff;}
-  textarea{width:100%;min-height:140px;padding:1rem;font-size:1.08rem;border-radius:12px;border:2px solid #50e3c2;background:#f8fafd;outline:none;resize:vertical;box-shadow:0 2px 8px rgba(0,0,0,.04);}
+  form{display:flex;flex-direction:column;gap:1rem;}
+  textarea{width:100%;min-height:140px;padding:1rem;font-size:1.08rem;border-radius:12px;border:2px solid #50e3c2;background:#f8fafd;outline:none;resize:vertical;}
   textarea:focus{border-color:#3d7d66;box-shadow:0 4px 14px rgba(0,0,0,.08);}
 
   .file-row{display:flex;align-items:center;gap:.75rem;flex-wrap:wrap;}
   .file-input{display:none;}
   .file-chip{display:none;align-items:center;gap:.5rem;background:#eff6ff;border:1px dashed #b9d2ff;color:#2a4365;padding:.45rem .6rem;border-radius:999px;font-size:.92rem;}
-  .file-chip .remove{background:transparent;border:none;font-size:1rem;cursor:pointer;color:#2a4365;line-height:1;}
   .file-chip.show{display:inline-flex;}
+  .file-chip .remove{background:transparent;border:none;font-size:1rem;cursor:pointer;color:#2a4365;}
 
-  .btn{background:var(--btn-bg);color:#fff;border:none;padding:.85rem 1.1rem;font-size:1rem;border-radius:10px;cursor:pointer;width:fit-content;transition: transform .05s ease, background .15s ease;}
-  .btn:hover{background:var(--btn-bg-hover);} .btn:active{transform:translateY(1px);}
-  .btn.secondary{background:transparent;color:var(--btn-bg);border:2px solid var(--btn-bg);}
+  .btn{background:var(--btn-bg);color:#fff;border:none;padding:.65rem .9rem;font-size:.95rem;border-radius:10px;cursor:pointer;width:fit-content;transition: transform .05s ease, background .15s ease;}
+  .btn:hover{background:var(--btn-bg-hover);}
   .btn.danger{background:var(--danger);}
 
-  .form-actions{display:flex;align-items:center;justify-content:space-between;gap:1rem;flex-wrap:wrap;padding-top:.75rem;border-top:1px solid var(--card-border);}
-  .form-actions .left{display:flex;align-items:center;gap:.75rem;flex-wrap:wrap;}
-  .form-actions .right{display:flex;align-items:center;gap:.6rem;flex-wrap:wrap;}
-  @media (max-width:700px){
-    .form-actions{flex-direction:column;align-items:stretch;}
-    .form-actions .right .btn{width:100%}
-  }
-
-  .error-banner{max-width:900px;margin:12px auto 0;background:#ffe9e9;border:1px solid #f3b8b8;color:#7a1e1e;padding:.8rem 1rem;border-radius:10px;}
-  body.dark .error-banner{background:#3b1f1f;border-color:#7a3838;color:#ffd7d7;}
-
-  #to-bottom{position:fixed;right:18px;bottom:22px;z-index:1001;display:none;padding:.6rem .8rem;border-radius:12px;font-weight:600;background:var(--btn-bg);color:#fff;border:none;cursor:pointer;box-shadow:0 6px 18px rgba(0,0,0,.18);}
-  #to-bottom:hover{background:var(--btn-bg-hover);}
-
-  .muted{color:var(--muted);font-size:.95rem}
-  .hidden{display:none}
+  .form-actions{display:flex;flex-direction:column;gap:.6rem;align-items:flex-start;padding-top:.75rem;border-top:1px solid var(--card-border);}
+  .form-actions .btn{min-width:160px;text-align:center;}
   </style>
 </head>
 <body>
-  <header id="main-header">
-    <div class="title-container">MAT-BOT</div>
-    <div class="dropdown" id="menuWrap">
-      <button class="dropdown-toggle" onclick="toggleDropdown(event)">☰ Meni</button>
-      <div class="dropdown-content">
-        <div class="toggle-row">
-          <span class="toggle-label">🌙 Dark Mode</span>
-          <label style="display:flex;align-items:center;gap:.5rem;">
-            <input type="checkbox" id="darkToggle">
-            <span class="toggle-slider"></span>
-          </label>
-        </div>
+<header id="main-header">
+  <div class="title-container">MAT-BOT</div>
+  <div class="dropdown" id="menuWrap">
+    <button class="dropdown-toggle" onclick="toggleDropdown(event)">☰ Meni</button>
+    <div class="dropdown-content">
+      <div class="toggle-row">
+        <span class="toggle-label">🌙 Dark Mode</span>
+        <label style="display:flex;align-items:center;gap:.5rem;">
+          <input type="checkbox" id="darkToggle"><span class="toggle-slider"></span>
+        </label>
       </div>
+      <hr>
+      <button onclick="resetRazred()" class="btn danger">🔄 Promijeni razred</button>
     </div>
-  </header>
+  </div>
+</header>
 
-  {% if error %}<div class="error-banner">{{ error }}</div>{% endif %}
-
-  <main class="stack">
-    <div class="card">
-      <div id="chat-container">
-        {% for message in history %}
-        <div class="qa-pair">
-          <div class="chat-message user-message"><div class="bubble user"><p>{{ message.user }}</p></div></div>
-          <div class="chat-message bot-message"><div class="bubble">{{ message.bot|safe }}</div></div>
-        </div>
-        {% endfor %}
-        <div id="typing" class="typing-indicator" style="display:none;">🤖 MAT-BOT piše odgovor</div>
+<main class="stack">
+  <div class="card">
+    <div id="chat-container">
+      {% for message in history %}
+      <div class="qa-pair">
+        <div class="chat-message user-message"><div class="bubble user"><p>{{ message.user }}</p></div></div>
+        <div class="chat-message bot-message"><div class="bubble">{{ message.bot|safe }}</div></div>
       </div>
+      {% endfor %}
+      <div id="typing" class="typing-indicator">🤖 MAT-BOT piše odgovor…</div>
     </div>
+  </div>
 
-    <div class="card">
-      <!-- Jedna forma, jedno dugme -->
-      <form id="ask-form" method="POST" enctype="multipart/form-data" autocomplete="off" action="/submit">
-        <input type="hidden" name="history_json" id="history_json_main" value='{{ history|tojson|safe }}'>
-        <div id="razred-wrapper" {% if razred and not error %}style="display: none;"{% endif %}>
-          <label for="razred">Koji si razred?</label>
-          <select name="razred" id="razred" required>
-            <option value="" disabled {% if not razred %}selected{% endif %}>-- Odaberi razred --</option>
-            <option value="5" {% if razred == '5' %}selected{% endif %}>5. razred</option>
-            <option value="6" {% if razred == '6' %}selected{% endif %}>6. razred</option>
-            <option value="7" {% if razred == '7' %}selected{% endif %}>7. razred</option>
-            <option value="8" {% if razred == '8' %}selected{% endif %}>8. razred</option>
-            <option value="9" {% if razred == '9' %}selected{% endif %}>9. razred</option>
-          </select>
-        </div>
+  <div class="card">
+    <form id="ask-form" method="POST" enctype="multipart/form-data" autocomplete="off" action="/submit">
+      <div id="razred-wrapper" {% if razred %}style="display:none"{% endif %}>
+        <label for="razred">Koji si razred?</label>
+        <select name="razred" id="razred" required>
+          <option value="" disabled selected>-- Odaberi razred --</option>
+          <option value="5">5. razred</option>
+          <option value="6">6. razred</option>
+          <option value="7">7. razred</option>
+          <option value="8">8. razred</option>
+          <option value="9">9. razred</option>
+        </select>
+      </div>
 
-        <label for="pitanje">Postavi mi matematičko pitanje (tekst ili slika):</label>
-        <textarea name="pitanje" id="pitanje" placeholder="Ovdje možeš unijeti zadatak ili pitanje..." autofocus autocomplete="off"></textarea>
+      <label for="pitanje">Postavi pitanje (tekst ili slika):</label>
+      <textarea name="pitanje" id="pitanje" placeholder="Unesi zadatak..." autofocus></textarea>
 
-        <div class="form-actions">
-          <div class="left">
-            <label for="slika">Ili učitaj / uslikaj sliku:</label>
-            <div class="file-row">
-              <input class="file-input" id="slika" type="file" name="file" accept="image/*" />
-              <label for="slika" class="btn secondary">📎 Izaberi fajl / Kamera</label>
-              <span id="file-chip" class="file-chip">
-                <span id="file-name">Nije odabran fajl</span>
-                <button type="button" class="remove" id="remove-file" title="Ukloni fajl">×</button>
-              </span>
-            </div>
-          </div>
+      <div class="form-actions">
+        <label for="slika">📎 Izaberi fajl / Kamera</label>
+        <input class="file-input" id="slika" type="file" name="file" accept="image/*" />
+        <span id="file-chip" class="file-chip"><span id="file-name"></span><button type="button" id="remove-file">×</button></span>
 
-          <div class="right">
-            <button id="sendBtn" type="button" class="btn">✉️ Pošalji</button>
-            <button type="submit" form="clear-form" class="btn danger">🗑️ Očisti</button>
-          </div>
-        </div>
-      </form>
-
-      <form id="clear-form" method="POST" action="/clear" autocomplete="off">
-        <input type="hidden" name="ajax" value="1" />
-        <input type="hidden" name="confirm_clear" value="1" />
-      </form>
-    </div>
-  </main>
-
-  <button id="to-bottom" onclick="scrollToBottom()">⬇ Do dna</button>
+        <button id="sendBtn" type="button" class="btn">✉️ Pošalji</button>
+        <button type="submit" form="clear-form" class="btn danger">🗑️ Ocisti chat</button>
+        <button type="button" onclick="resetRazred()" class="btn">🔄 Promijeni razred</button>
+      </div>
+    </form>
+    <form id="clear-form" method="POST" action="/clear">
+      <input type="hidden" name="ajax" value="1" />
+      <input type="hidden" name="confirm_clear" value="1" />
+    </form>
+  </div>
+</main>
 
 <script>
 function toggleDropdown(e){ e.preventDefault(); document.getElementById('menuWrap').classList.toggle('open'); }
 function initDarkToggle(){
-  const cb = document.getElementById('darkToggle');
-  const saved = localStorage.getItem('matbot_dark') === '1';
-  if (saved){ document.body.classList.add('dark'); cb.checked = true; }
-  cb.addEventListener('change', ()=>{ document.body.classList.toggle('dark', cb.checked); localStorage.setItem('matbot_dark', cb.checked ? '1' : '0');});
+  const cb=document.getElementById('darkToggle'); const saved=localStorage.getItem('matbot_dark')==='1';
+  if(saved){document.body.classList.add('dark');cb.checked=true;}
+  cb.addEventListener('change',()=>{document.body.classList.toggle('dark',cb.checked);localStorage.setItem('matbot_dark',cb.checked?'1':'0');});
 }
-
-function showTyping(){ const el = document.getElementById('typing'); if(!el) return; el.style.display='block'; scrollToBottom(); }
-function hideTyping(){ const el = document.getElementById('typing'); if(el) el.style.display='none'; }
-function scrollToBottom(){ const chat=document.getElementById('chat-container'); if(chat) chat.scrollTop = chat.scrollHeight; }
-
-(function setupScrollButton(){
-  const chat = document.getElementById('chat-container');
-  const btn = document.getElementById('to-bottom');
-  if(!chat || !btn) return;
-  const toggleBtn = ()=>{ const nearBottom = (chat.scrollHeight - chat.scrollTop - chat.clientHeight) < 40; btn.style.display = nearBottom ? 'none' : 'block'; };
-  chat.addEventListener('scroll', toggleBtn); setTimeout(toggleBtn, 200);
-})();
-
-function getCID(){
-  const key='matbot_cid';
-  if(!localStorage.getItem(key)){
-    const cid = (crypto.randomUUID)? crypto.randomUUID() : (Date.now()+'_'+Math.random());
-    localStorage.setItem(key,cid);
-  }
-  return localStorage.getItem(key);
+function showTyping(){document.getElementById('typing').style.display='block';}
+function hideTyping(){document.getElementById('typing').style.display='none';}
+function resetRazred(){
+  document.getElementById('razred-wrapper').style.display='block';
+  document.getElementById('chat-container').innerHTML='<div id="typing" class="typing-indicator">🤖 MAT-BOT piše odgovor…</div>';
+  localStorage.clear();
 }
-function resetHistory(HIST_KEY, hiddenMain){
-  localStorage.removeItem(HIST_KEY);
-  if (hiddenMain) hiddenMain.value = '[]';
-}
-function pushHistory(HIST_KEY, user, bot){
-  let arr=[]; try{ arr = JSON.parse(localStorage.getItem(HIST_KEY) || '[]'); }catch(_){}
-  arr.push({user, bot}); arr = arr.slice(-8);
-  localStorage.setItem(HIST_KEY, JSON.stringify(arr));
-  const hidden = document.getElementById('history_json_main');
-  if (hidden) hidden.value = JSON.stringify(arr.slice(-5));
-}
-
-function updateFileUI(){
-  const fileInput = document.getElementById('slika');
-  const fileName = document.getElementById('file-name');
-  const fileChip  = document.getElementById('file-chip');
-  const hasFile = fileInput && fileInput.files && fileInput.files[0];
-  if (hasFile){ fileName.textContent = fileInput.files[0].name; fileChip.classList.add('show');}
-  else{ fileName.textContent='Nije odabran fajl'; fileChip.classList.remove('show');}
-}
-function clearFile(){
-  const fileInput = document.getElementById('slika'); if (!fileInput) return;
-  const dt = new DataTransfer(); fileInput.files = dt.files; fileInput.value = ""; updateFileUI();
-}
-
-document.addEventListener('DOMContentLoaded', () => {
-  initDarkToggle();
-
-  const askForm   = document.getElementById('ask-form');
-  const clearForm = document.getElementById('clear-form');
-  const hiddenMain= document.getElementById('history_json_main');
-  const fileInput = document.getElementById('slika');
-  const removeBtn = document.getElementById('remove-file');
-  const textarea  = document.getElementById('pitanje');
-  const razredSel = document.getElementById('razred');
-
-  const cid = getCID();
-  const HIST_KEY = 'matbot_history_' + cid;
-  const serverHistory = {{ history|tojson|safe }};
-
-  if (Array.isArray(serverHistory) && serverHistory.length) {
-    const last5 = serverHistory.slice(-5);
-    localStorage.setItem(HIST_KEY, JSON.stringify(last5));
-    if (hiddenMain) hiddenMain.value = JSON.stringify(last5);
-  } else { resetHistory(HIST_KEY, hiddenMain); }
-
-  if (fileInput){ fileInput.addEventListener('change', updateFileUI); }
-  if (removeBtn) removeBtn.addEventListener('click', clearFile);
-
-  function ensureChatContainer(){ return document.getElementById('chat-container'); }
-  function escapeHtml(s){ return (s||'').replace(/[&<>"']/g, m=>({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[m])); }
-
-  function appendUserBubble(text){
-    const chat = ensureChatContainer(); if(!chat) return;
-    const pair = document.createElement('div'); pair.className='qa-pair';
-    const u = document.createElement('div'); u.className='chat-message user-message'; 
-    u.innerHTML = `<div class="bubble user"><p>${escapeHtml(text)}</p></div>`;
-    const b = document.createElement('div'); b.className='chat-message bot-message'; 
-    b.innerHTML = `<div class="bubble"><i class="muted">Obrada…</i></div>`;
-    pair.appendChild(u); pair.appendChild(b); chat.appendChild(pair); scrollToBottom();
-    return b.querySelector('.bubble'); // vraća bot balon koji ćemo zamijeniti
-  }
-
-  async function poll(jobId, userLabel, botBubble){
-    const sleep = (ms)=> new Promise(r=>setTimeout(r, ms));
-    for (let i=0;i<180;i++){ // ~6 min @ 2s
-      await sleep(2000);
-      try{
-        const r = await fetch(`/status/${jobId}`, {cache:'no-store', credentials:'include'});
-        if (!r.ok) throw new Error('status http '+r.status);
-        const data = await r.json();
-        if (data.status === 'done'){
-          const html = (data.result && data.result.html) || '<i>Nema rezultata.</i>';
-          botBubble.innerHTML = html;
-          if (window.MathJax && MathJax.typesetPromise) { MathJax.typesetPromise([botBubble]); }
-          applyPlotsIn(botBubble);
-          pushHistory(HIST_KEY, userLabel, html);
-          hideTyping();
-          return;
-        }
-        if (data.status === 'error'){
-          botBubble.innerHTML = `<div class="alert alert-danger">Greška: ${data.error || 'nepoznato'}</div>`;
-          hideTyping(); return;
-        }
-      }catch(_){
-        botBubble.innerHTML = '<div class="alert alert-danger">Greška pri provjeri statusa.</div>';
-        hideTyping(); return;
-      }
-    }
-    botBubble.innerHTML = '<div class="alert alert-warning">Istek vremena čekanja na rezultat.</div>';
-    hideTyping();
-  }
-
-  async function sendOneButton(){
-    const f = fileInput?.files?.[0] || null;
-    const razred  = razredSel?.value || '';
-    const tekst   = textarea?.value?.trim() || '';
-
-    if (!razred){ alert('Odaberi razred.'); return; }
-    if (!f && !tekst){ alert('Unesi pitanje ili dodaj sliku.'); return; }
-
-    const userLabel = tekst || (f ? '[SLIKA]' : '');
-    showTyping();
-    const botBubble = appendUserBubble(userLabel);
-
-    const fd = new FormData();
-    fd.append('razred', razred);
-    /* AKO backend traži 'pitanje', promijeni liniju ispod u fd.append('pitanje', tekst) */
-    fd.append('user_text', tekst);
-    if (f) fd.append('file', f, f.name);
-
-    try{
-      const r = await fetch('/submit', { method:'POST', body: fd, credentials:'include' });
-      const j = await r.json();
-
-      // SYNC (200)
-      if (r.status === 200 && j && j.result && j.result.html){
-        botBubble.innerHTML = j.result.html;
-        if (window.MathJax && MathJax.typesetPromise) { MathJax.typesetPromise([botBubble]); }
-        applyPlotsIn(botBubble);
-        pushHistory(HIST_KEY, userLabel, j.result.html);
-        hideTyping();
-        textarea.value = ''; clearFile();
-        return;
-      }
-
-      // ASYNC (202)
-      if (r.status === 202 && j && j.job_id){
-        botBubble.innerHTML = '<span class="muted">Zahtjev prihvaćen, obrađujem…</span>';
-        textarea.value = ''; clearFile();
-        poll(j.job_id, userLabel, botBubble);
-        return;
-      }
-
-      botBubble.innerHTML = '<div class="alert alert-danger">Neočekivan odgovor servera.</div>';
-      hideTyping();
-    }catch(_){
-      botBubble.innerHTML = 'Greška pri slanju zahtjeva.';
-      hideTyping();
-    }
-  }
-
-  document.getElementById('sendBtn')?.addEventListener('click', sendOneButton);
-  askForm?.addEventListener('submit', (e)=>{ e.preventDefault(); sendOneButton(); });
-
-  // Clear
-  if (clearForm){
-    clearForm.addEventListener('submit', async (e)=>{
-      e.preventDefault();
-      const fd = new FormData(clearForm);
-      try{ await fetch(clearForm.action || '/clear', { method:'POST', body: fd, credentials:'include' }); }
-      catch(_){}
-      const chat = document.getElementById('chat-container');
-      if (chat) chat.innerHTML = '<div id="typing" class="typing-indicator" style="display:none;">🤖 MAT-BOT piše odgovor</div>';
-      resetHistory(HIST_KEY, hiddenMain);
-    });
-  }
-});
-
-window.onload = ()=> setTimeout(scrollToBottom, 150);
-
-// ------- Plot helpers -------
-function transformExpression(expr){
-  return expr.replace(/\s+/g,'')
-    .replace(/([0-9])([a-zA-Z])/g,'$1*$2')
-    .replace(/([a-zA-Z])([a-zA-Z])/g,'$1*$2')
-    .replace(/([a-zA-Z])(\d)/g,'$1*$2')
-    .replace(/(\))(\()/g,'$1*$2')
-    .replace(/(\))([a-zA-Z])/g,'$1*$2')
-    .replace(/([a-zA-Z])(\()/g,'$1*$2')
-    .replace(/(\d+|\w+)\^(\d+|\w+)/g,'Math.pow($1,$2)')
-    .replace(/(?<!\.)\b(sin|cos|tan|exp|log|sqrt|abs)\b/g,'Math.$1')
-    .replace(/\bln\b/g,'Math.log');
-}
-function drawPlot(expression, container){
-  const parsed = transformExpression(expression);
-  const x=[], y=[]; let f;
-  try{ f=new Function('x',`return ${parsed}`); }catch(e){ return; }
-  for(let i=-10;i<=10;i+=0.1){
-    try{ const res=f(i); x.push(i); y.push(isFinite(res)?res:null);}catch{ x.push(i); y.push(null);}
-  }
-  const data=[{x,y,mode:'lines',line:{color:'#0077cc',width:3},name:expression}];
-  const layout={title:`Graf funkcije: y = ${expression}`,xaxis:{title:'x'},yaxis:{title:'y'},margin:{t:40},plot_bgcolor:'#fff',paper_bgcolor:'#fff'};
-  const graphDiv=document.createElement("div");
-  graphDiv.style="width:100%;max-width:700px;height:400px;margin-top:1rem;";
-  container.appendChild(graphDiv);
-  Plotly.newPlot(graphDiv,data,layout);
-}
-function applyPlotsIn(root){
-  root.querySelectorAll('.plot-request').forEach(plotDiv=>{
-    let expression=plotDiv.getAttribute("data-expression");
-    const parent=plotDiv.closest(".bubble") || root;
-    if(!expression||!parent) return;
-    if(expression.trim().startsWith("y=")) expression=expression.replace(/^y\s*=\s*/i,"").trim();
-    drawPlot(expression,parent);
-    plotDiv.remove();
-  });
-}
-// primjena na već renderovani sadržaj (ako ga ima u initial history)
-document.querySelectorAll('.plot-request').forEach(plotDiv=>{
-  const parent=plotDiv.closest(".bubble") || document.body;
-  let expression=plotDiv.getAttribute("data-expression")||'';
-  if(expression.trim().startsWith("y=")) expression=expression.replace(/^y\s*=\s*/i,"").trim();
-  drawPlot(expression,parent);
-  plotDiv.remove();
-});
+document.addEventListener('DOMContentLoaded',initDarkToggle);
 </script>
 </body>
 </html>
