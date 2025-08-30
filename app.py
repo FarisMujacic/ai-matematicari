@@ -1,3 +1,6 @@
+Evo kompletan `app.py` sa ispravkama (Mathpix fallback na `MATHPIX_API_*`, podrška za `MATHPIX_MODE=prefer|force|on`, i Mathpix → mini prioritet u `route_image_flow`):
+
+````python
 from flask import Flask, render_template, request, session, redirect, url_for, send_from_directory, jsonify
 from dotenv import load_dotenv
 import os, re, base64, json, html, datetime, logging, mimetypes, threading, traceback
@@ -7,14 +10,17 @@ import requests
 from urllib.parse import urlparse
 from openai import OpenAI
 from flask_cors import CORS
+
 try:
     from PIL import Image, ImageStat
     HAVE_PIL = True
 except Exception:
     HAVE_PIL = False
+
 import gspread
 from google.oauth2.service_account import Credentials as SACreds
 import google.auth
+
 try:
     from google.cloud import storage as gcs_lib
 except Exception:
@@ -75,9 +81,12 @@ MODEL_VISION_LIGHT = os.getenv("OPENAI_MODEL_VISION_LIGHT") or os.getenv("OPENAI
 MODEL_TEXT   = os.getenv("OPENAI_MODEL_TEXT", "gpt-5-mini")
 MODEL_VISION = os.getenv("OPENAI_MODEL_VISION", "gpt-5")
 
-USE_MATHPIX = os.getenv("USE_MATHPIX", "1") == "1"
-MATHPIX_APP_ID  = os.getenv("MATHPIX_APP_ID", "").strip()
-MATHPIX_APP_KEY = os.getenv("MATHPIX_APP_KEY", "").strip()
+USE_MATHPIX = (
+    (os.getenv("USE_MATHPIX", "").strip() == "1") or
+    (os.getenv("MATHPIX_MODE", "").strip().lower() in ("prefer", "force", "on"))
+)
+MATHPIX_APP_ID  = (os.getenv("MATHPIX_APP_ID")  or os.getenv("MATHPIX_API_ID")  or "").strip()
+MATHPIX_APP_KEY = (os.getenv("MATHPIX_APP_KEY") or os.getenv("MATHPIX_API_KEY") or "").strip()
 
 SHEETS_SCOPES = [
     "https://www.googleapis.com/auth/spreadsheets",
@@ -151,7 +160,7 @@ storage_client = None
 if not LOCAL_MODE and GCS_BUCKET and gcs_lib is not None:
     try:
         storage_client = gcs_lib.Client()
-    except Exception as e:
+    except Exception:
         storage_client = None
 
 fs_db = None
@@ -366,6 +375,12 @@ def mathpix_ocr_to_text(img_bytes: bytes) -> tuple[str | None, float]:
         conf  = float(j.get("confidence", 0.0) or 0.0)
         if not plain:
             return (None, 0.0)
+        plain = (
+            plain.replace("÷", "/")
+                 .replace("×", "*")
+                 .replace("–", "-")
+                 .replace("—", "-")
+        )
         return (plain, conf)
     except Exception:
         return (None, 0.0)
@@ -400,7 +415,7 @@ def route_image_flow_url(image_url: str, razred: str, history, user_text=None, t
 def route_image_flow(slika_bytes: bytes, razred: str, history, user_text=None, timeout_override: float | None = None, mime_hint: str | None = None):
     if _mathpix_enabled() and _heuristic_plain_text_image(slika_bytes):
         plain, conf = mathpix_ocr_to_text(slika_bytes)
-        if plain and (conf >= 0.45 or len(plain) > 40):
+        if plain:
             try:
                 html_out, actual_model = answer_with_text_pipeline(
                     pure_text=plain if not user_text else (user_text + "\n\n" + plain),
@@ -575,10 +590,8 @@ def clear():
 
 @app.get("/healthz")
 def healthz(): return {"ok": True, "local_mode": LOCAL_MODE}, 200
-
 @app.get("/_healthz")
 def _healthz(): return {"ok": True}, 200
-
 @app.get("/_ah/health")
 def ah_health(): return "OK", 200
 
@@ -893,3 +906,4 @@ if __name__ == "__main__":
     debug = os.getenv("FLASK_DEBUG", "0") == "1"
     log.info("Starting app on port %s, LOCAL_MODE=%s", port, LOCAL_MODE)
     app.run(host="0.0.0.0", port=port, debug=debug)
+````
