@@ -60,13 +60,13 @@
   header{
     position:fixed;top:0;left:0;right:0;z-index:1000;
     background:#2f5c4e;color:#fff;
-    padding:1rem 1.25rem; /* više prostora */
+    padding:1rem 1.25rem;
     display:flex;align-items:center;justify-content:center;
     box-shadow:0 4px 14px rgba(0,0,0,.15);
   }
   .logo-left{position:absolute;left:1rem;display:flex;align-items:center;gap:.5rem}
-  .logo-left img{height:80px;width:auto;display:block} /* POVEĆAN LOGO */
-  .title-container{font-size:2.05rem;font-weight:800;letter-spacing:.6px;} /* veći naslov */
+  .logo-left img{height:80px;width:auto;display:block}
+  .title-container{font-size:2.05rem;font-weight:800;letter-spacing:.6px;}
   .dropdown{position:absolute;right:1rem;top:.6rem;}
   .dropdown-toggle{background:var(--btn-bg);color:#fff;border:none;padding:.65rem 1rem;font-size:1.05rem;border-radius:12px;cursor:pointer;}
   .dropdown-toggle:hover{background:var(--btn-bg-hover);}
@@ -96,8 +96,13 @@
   .bubble.user{background:#c8ebf0;border-right:4px solid var(--accent-user);border-left:0!important;margin:.35rem 0 .35rem auto;max-width:60%;}
   body.dark .bubble.user{background:var(--bubble-bg);border-right:4px solid var(--accent-user);}
 
-  .typing-indicator{position:sticky;bottom:0;align-self:flex-start;font-style:italic;font-size:1rem;padding:.5rem .75rem;color:var(--text);background:var(--type-bg);border-left:4px solid var(--type-border);border-radius:8px;margin:.15rem 0 0;max-width:520px;display:none;z-index:2;}
-  .typing-indicator .dots::after{content:'...';animation:dots 1s steps(3,end) infinite;}
+  /* TIPKANJE – indikator sa fazama */
+  .typing-indicator{
+    position:sticky;bottom:0;align-self:flex-start;font-size:1rem;padding:.6rem .8rem;color:var(--text);
+    background:var(--type-bg);border-left:4px solid var(--type-border);border-radius:10px;margin:.15rem 0 0;
+    max-width:520px;display:none;z-index:2;font-weight:600;
+  }
+  .typing-indicator .dots::after{content:'...';animation:dots 1s steps(3,end) infinite;margin-left:.2rem;}
   @keyframes dots{0%{content:''}33%{content:'.'}66%{content:'..'}100%{content:'...'}}
   @keyframes fadeIn{from{opacity:0;transform:translateY(6px);}to{opacity:1;transform:translateY(0);}}
 
@@ -138,7 +143,7 @@
   .grade-select{font-size:1.08rem;padding:.5rem .8rem;border-radius:10px;border:1px solid var(--input-border);background:var(--input-bg);min-width:140px;}
   .grade-confirm{padding:.6rem 1rem}
 
-  /* TOAST: donji centar ali više prema gore */
+  /* TOAST */
   .toast-wrap{
     position:fixed;left:50%;bottom:120px;transform:translateX(-50%);
     display:flex;flex-direction:column;gap:.6rem;align-items:center;z-index:1200;
@@ -157,7 +162,7 @@
   .card.is-empty{display:none}
   </style>
 </head>
-<body data-current-razred="{{ razred or '' }}">
+<body>
   <header id="main-header">
     <div class="logo-left">
       <img src="https://s3.amazonaws.com/thinkific-import/307785/cmQxwUYXTjWxCFQJjrA4_MATEMATICAR_3_01_Transparent_png" alt="Matematicari logo">
@@ -187,24 +192,20 @@
             <button class="btn sm secondary grade-btn" data-grade="8">8</button>
             <button class="btn sm secondary grade-btn" data-grade="9">9</button>
           </div>
-          <div class="muted" style="margin-top:.4rem">Trenutni: <span id="curGradeLabel">{{ razred or '—' }}</span></div>
+          <div class="muted" style="margin-top:.4rem">Trenutni: <span id="curGradeLabel">—</span></div>
         </div>
       </div>
     </div>
   </header>
 
-  {% if error %}<div class="error-banner">{{ error }}</div>{% endif %}
-
   <main class="stack">
     <!-- CHAT -->
-    <div class="card {% if not history %}is-empty{% endif %}" id="chat-card">
-      <div id="chat-container">
-        {% for message in history %}
-        <div class="chat-message user-message"><div class="bubble user"><p>{{ message.user }}</p></div></div>
-        <div class="chat-message bot-message"><div class="bubble">{{ message.bot|safe }}</div></div>
-        {% endfor %}
+    <div class="card is-empty" id="chat-card">
+      <div id="chat-container"></div>
+      <!-- TIPKANJE sa fazama -->
+      <div id="typing" class="typing-indicator" aria-live="polite">
+        🤖 <span id="phaseText">Razmišljam</span><span class="dots"></span>
       </div>
-      <div id="typing" class="typing-indicator"><span class="dots">🤖 MAT-BOT piše odgovor</span></div>
     </div>
 
     <!-- FORMA -->
@@ -274,6 +275,7 @@
   </div>
 
 <script>
+/* --- MENI & TEMA --- */
 function toggleDropdown(e){ e.preventDefault(); document.getElementById('menuWrap').classList.toggle('open'); }
 function closeDropdown(){ document.getElementById('menuWrap')?.classList.remove('open'); }
 function initDarkToggle(){
@@ -282,26 +284,44 @@ function initDarkToggle(){
   if (saved){ document.body.classList.add('dark'); cb.checked = true; }
   cb.addEventListener('change', ()=>{ document.body.classList.toggle('dark', cb.checked); localStorage.setItem('matbot_dark', cb.checked ? '1' : '0');});
 }
-function showTyping(){ document.getElementById('chat-card')?.classList.remove('is-empty'); document.getElementById('typing').style.display='block'; }
-function hideTyping(){ document.getElementById('typing').style.display='none'; }
+
+/* --- TIPKANJE: rotirajuće faze --- */
+let phaseTimer=null;
+function showTyping(){
+  const t = document.getElementById('typing');
+  const phase = document.getElementById('phaseText');
+  const phases = ["Razmišljam o zadatku", "Sastavljam odgovor uz korake", "Molim za strpljenje, skoro gotovo"];
+  let i = 0;
+  phase.textContent = phases[i];
+  clearInterval(phaseTimer);
+  phaseTimer = setInterval(()=>{ i = (i+1)%phases.length; phase.textContent = phases[i]; }, 2200);
+  document.getElementById('chat-card')?.classList.remove('is-empty');
+  t.style.display='block';
+}
+function hideTyping(){
+  clearInterval(phaseTimer);
+  document.getElementById('typing').style.display='none';
+}
 function scrollToBottom(){ const chat=document.getElementById('chat-container'); if(chat) chat.scrollTop = chat.scrollHeight; }
 
+/* --- MODALI --- */
 function openModal(id){ document.getElementById('overlay').style.display='block'; document.querySelector(id).style.display='flex'; }
 function closeModal(id){ document.getElementById('overlay').style.display='none'; document.querySelector(id).style.display='none'; }
 document.getElementById('overlay').addEventListener('click', ()=>{ document.querySelectorAll('.modal').forEach(m=>m.style.display='none'); document.getElementById('overlay').style.display='none'; });
 document.addEventListener('click',(e)=>{ const closeSel=e.target.getAttribute?.('data-close'); if (closeSel){ e.preventDefault(); closeModal(closeSel); }});
 
-// auto-zatvaranje menija klikom izvan
+/* auto-zatvori meni klikom izvan */
 document.addEventListener('click', (e)=>{
   const menu = document.getElementById('menuWrap');
   if(!menu) return;
   if(!menu.contains(e.target) && menu.classList.contains('open')) menu.classList.remove('open');
 });
 
+/* --- TOAST --- */
 function showToast(msg, type='warn', timeout=2600){
   const wrap = document.getElementById('toastWrap');
   if(!wrap) return;
-  wrap.innerHTML = ''; // max 1 toast
+  wrap.innerHTML = '';
   const div = document.createElement('div');
   div.className = 'toast ' + (type==='ok' ? 'ok' : type==='err' ? 'err' : '');
   div.textContent = msg;
@@ -312,6 +332,37 @@ function showToast(msg, type='warn', timeout=2600){
 document.addEventListener('DOMContentLoaded', () => {
   initDarkToggle();
 
+  /* ====== 1) SAMO UNUTAR THINKIFICA ====== */
+  const isIframe = (window.top !== window.self);
+  let isThinkific = false;
+  try{
+    const ref = document.referrer || "";
+    const host = ref ? new URL(ref).hostname : "";
+    isThinkific = /\.thinkific\.com$/i.test(host) || /(^|\.)thinkific\.com$/i.test(host);
+  }catch(_){}
+  if(!(isIframe && isThinkific)){
+    // zaključaj UI
+    document.body.innerHTML = `
+      <div style="min-height:100vh;display:flex;align-items:center;justify-content:center;padding:2rem;text-align:center">
+        <div style="background:var(--card-bg);border:1px solid var(--card-border);padding:1.2rem 1.4rem;border-radius:14px;max-width:640px;box-shadow:0 10px 40px rgba(0,0,0,.18)">
+          <h2 style="margin:.2rem 0 0.6rem">Pristup ograničen</h2>
+          <p>Ova aplikacija je dostupna <strong>samo unutar Thinkific platforme</strong>.</p>
+          <p class="muted">Otvorite lekciju u Thinkificu da biste koristili MAT-BOT.</p>
+        </div>
+      </div>`;
+    return;
+  }
+
+  /* ====== 2) OBRIŠI RAZRED NA SVAKI REFRESH ====== */
+  try{
+    localStorage.removeItem('mb_grade_confirmed');
+    localStorage.removeItem('mb_grade_value');
+  }catch(_){}
+  const razredHidden = document.getElementById('razredHidden');
+  if (razredHidden) razredHidden.value = "";
+  document.getElementById('curGradeLabel').textContent = '—';
+
+  /* ====== Inic i elementi ====== */
   const form = document.getElementById('ask-form');
   const sendBtn = document.getElementById('sendBtn');
   const textarea = document.getElementById('pitanje');
@@ -321,9 +372,8 @@ document.addEventListener('DOMContentLoaded', () => {
   const fileName = document.getElementById('file-name');
   const removeFileBtn = document.getElementById('remove-file');
   const chat = document.getElementById('chat-container');
-  const razredHidden = document.getElementById('razredHidden');
 
-  // helper: enable/disable unosa
+  /* helper: enable/disable unosa */
   function setInputsEnabled(on){
     textarea.disabled = !on;
     fileInput.disabled = !on;
@@ -332,21 +382,11 @@ document.addEventListener('DOMContentLoaded', () => {
     uploadLabel.style.opacity = on ? '1' : '.6';
   }
 
-  // ------ START RAZRED BOX ------
+  /* ------ START RAZRED BOX ------ */
   const gradeStart = document.getElementById('grade-start');
   const gradeSelStart = document.getElementById('gradeSelectStart');
   const gradeBtnStart = document.getElementById('gradeConfirmStart');
-
-  // ako je ranije potvrđen razred, sakrij box i omogući unos
-  if (localStorage.getItem('mb_grade_confirmed') === '1'){
-    gradeStart.classList.add('hidden');
-    const saved = localStorage.getItem('mb_grade_value') || '';
-    razredHidden.value = saved;
-    document.getElementById('curGradeLabel').textContent = saved || '—';
-    setInputsEnabled(!!saved);
-  } else {
-    setInputsEnabled(false);
-  }
+  setInputsEnabled(false); // razred je obrisan na refresh
 
   gradeBtnStart.addEventListener('click', ()=>{
     const g = gradeSelStart.value;
@@ -357,13 +397,11 @@ document.addEventListener('DOMContentLoaded', () => {
     document.getElementById('curGradeLabel').textContent = g;
     gradeStart.classList.add('hidden');
     gradeStart.style.display = 'none';
-    localStorage.setItem('mb_grade_confirmed','1');
-    localStorage.setItem('mb_grade_value', g);
     setInputsEnabled(true);
     showToast(`Razred postavljen na ${g}.`, 'ok');
   });
 
-  // file chip + validacija tipa
+  /* file chip + validacija tipa */
   function updateFileUI(){
     if(fileInput.files && fileInput.files[0]){
       const f = fileInput.files[0];
@@ -385,7 +423,7 @@ document.addEventListener('DOMContentLoaded', () => {
   fileInput.addEventListener('change', updateFileUI);
   removeFileBtn.addEventListener('click', clearFile);
 
-  // menu: clear
+  /* meni: clear */
   document.getElementById('menuClear').addEventListener('click', (e)=>{ e.preventDefault(); openModal('#confirm-clear'); closeDropdown(); });
   document.getElementById('doClear').addEventListener('click', async ()=>{
     const chatEmpty = !document.querySelector('#chat-container .chat-message');
@@ -399,16 +437,11 @@ document.addEventListener('DOMContentLoaded', () => {
       await fetch("/clear",{method:"POST", body:fd, credentials:"include"});
     }catch(_){}
     closeModal('#confirm-clear');
-    localStorage.removeItem('mb_first_sent');
-    localStorage.removeItem('mb_grade_confirmed');
-    localStorage.removeItem('mb_grade_value');
     location.reload();
   });
 
-  // menu: grades (hide current)
-  const currentGrade = razredHidden.value || '';
+  /* promjena razreda kroz meni */
   document.querySelectorAll('.grade-btn').forEach(btn=>{
-    if(btn.dataset.grade === currentGrade && currentGrade){ btn.style.display='none'; }
     btn.addEventListener('click',(e)=>{
       e.preventDefault();
       const g = btn.dataset.grade;
@@ -425,8 +458,6 @@ document.addEventListener('DOMContentLoaded', () => {
       const r = await fetch("/set-razred",{method:"POST", body:fd, credentials:"include"});
       if(r.ok){
         razredHidden.value = g;
-        localStorage.setItem('mb_grade_confirmed','1');
-        localStorage.setItem('mb_grade_value', g);
         closeModal('#confirm-grade');
         location.reload();
       }
@@ -477,11 +508,6 @@ document.addEventListener('DOMContentLoaded', () => {
     }
     if(file && (!file.type || !file.type.startsWith('image/'))){
       showToast('Fajl nije prepoznat kao slika. Pošalji JPG/PNG ili samo tekst.', 'err'); return;
-    }
-
-    if (!localStorage.getItem('mb_first_sent')) {
-      document.getElementById('grade-start')?.classList.add('hidden');
-      localStorage.setItem('mb_first_sent','1');
     }
 
     document.getElementById('chat-card')?.classList.remove('is-empty');
@@ -554,11 +580,11 @@ document.addEventListener('DOMContentLoaded', () => {
     hideTyping();
   }
 
-  sendBtn.addEventListener('click', sendOne);
+  document.getElementById('sendBtn').addEventListener('click', sendOne);
   form.addEventListener('submit',(e)=>{ e.preventDefault(); sendOne(); });
 });
 
-// ------- Plot helpers -------
+/* ------- Plot helpers ------- */
 function transformExpression(expr){
   return expr.replace(/\s+/g,'')
     .replace(/([0-9])([a-zA-Z])/g,'$1*$2')
