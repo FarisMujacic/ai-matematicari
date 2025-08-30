@@ -903,4 +903,3 @@ if __name__ == "__main__":
     debug = os.getenv("FLASK_DEBUG", "0") == "1"
     log.info("Starting app on port %s, LOCAL_MODE=%s", port, LOCAL_MODE)
     app.run(host="0.0.0.0", port=port, debug=debug)
-````
