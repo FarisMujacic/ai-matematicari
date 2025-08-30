@@ -126,9 +126,17 @@
   .modal .box p{margin:.3rem 0 .9rem}
   .modal .actions{display:flex;gap:.5rem;justify-content:flex-end;margin-top:.6rem}
 
-  /* start-grade box */
+  /* start-grade box (kompaktno) */
   .grade-start{display:flex;align-items:center;gap:.6rem;flex-wrap:wrap;background:#fff6e6;border:2px dashed #f0b25f;padding:.6rem .8rem;border-radius:12px;margin-bottom:.8rem}
-  body.dark .grade-start{background:#1e1a12}
+  .grade-start label{font-weight:700;margin-right:.25rem}
+  .grade-select{font-size:1.05rem;padding:.45rem .7rem;border-radius:10px;border:1px solid var(--input-border);background:var(--input-bg);}
+  .grade-confirm{padding:.5rem .9rem}
+
+  /* toast poruke */
+  .toast-wrap{position:fixed;right:16px;bottom:16px;display:flex;flex-direction:column;gap:.5rem;z-index:1200}
+  .toast{background:var(--modal-bg);color:var(--text);border:1px solid var(--modal-border);border-left:4px solid #f0b25f;border-radius:10px;padding:.6rem .8rem;box-shadow:0 10px 30px rgba(0,0,0,.18);min-width:260px;max-width:340px;opacity:.98}
+  .toast.ok{border-left-color:#4caf50}
+  .toast.err{border-left-color:#c94f4f}
 
   /* sakrij prazan chat-karton na startu */
   .card.is-empty{display:none}
@@ -137,8 +145,7 @@
 <body data-current-razred="{{ razred or '5' }}">
   <header id="main-header">
     <div class="logo-left">
-      <!-- PROMIJENI SRC ako je druga putanja -->
-      <img src="/static/matematicari-logo.png" alt="Matematicari logo">
+      <img src="https://s3.amazonaws.com/thinkific-import/307785/cmQxwUYXTjWxCFQJjrA4_MATEMATICAR_3_01_Transparent_png" alt="Matematicari logo">
     </div>
     <div class="title-container">MAT-BOT</div>
     <div class="dropdown" id="menuWrap">
@@ -189,16 +196,15 @@
     <div class="card">
       <!-- START GRADE ASK -->
       <div id="grade-start" class="grade-start">
-        <strong>Koji si razred?</strong>
-        <select id="gradeSelectStart" aria-label="Razred">
+        <label for="gradeSelectStart">Koji si razred?</label>
+        <select id="gradeSelectStart" class="grade-select" aria-label="Razred">
           <option value="5">5</option>
           <option value="6">6</option>
           <option value="7">7</option>
           <option value="8">8</option>
           <option value="9">9</option>
         </select>
-        <button id="gradeConfirmStart" class="btn sm secondary">Potvrdi</button>
-        <span class="muted">Uvijek možeš promijeniti kasnije u meniju.</span>
+        <button id="gradeConfirmStart" class="btn secondary sm grade-confirm">Potvrdi</button>
       </div>
 
       <form id="ask-form" method="POST" enctype="multipart/form-data" autocomplete="off" action="/submit">
@@ -208,7 +214,7 @@
 
         <div class="form-actions">
           <div class="left">
-            <!-- VAŽNO: ukinut capture da mobiteli otvore galeriju -->
+            <!-- ukinut capture: telefoni otvaraju galeriju -->
             <input id="slika" type="file" name="file" accept="image/*" style="display:none;" />
             <label for="slika" class="btn secondary sm">📤 Upload slike</label>
             <span id="file-chip" class="file-chip">
@@ -223,6 +229,9 @@
       </form>
     </div>
   </main>
+
+  <!-- TOASTS -->
+  <div class="toast-wrap" id="toastWrap"></div>
 
   <!-- MODALS -->
   <div class="overlay" id="overlay"></div>
@@ -267,6 +276,24 @@ function closeModal(id){ document.getElementById('overlay').style.display='none'
 document.getElementById('overlay').addEventListener('click', ()=>{ document.querySelectorAll('.modal').forEach(m=>m.style.display='none'); document.getElementById('overlay').style.display='none'; });
 document.addEventListener('click',(e)=>{ const closeSel=e.target.getAttribute?.('data-close'); if (closeSel){ e.preventDefault(); closeModal(closeSel); }});
 
+// auto-zatvaranje menija klikom izvan
+document.addEventListener('click', (e)=>{
+  const menu = document.getElementById('menuWrap');
+  if(!menu) return;
+  const isInside = menu.contains(e.target);
+  if(!isInside && menu.classList.contains('open')) menu.classList.remove('open');
+});
+
+function showToast(msg, type='warn', timeout=2800){
+  const wrap = document.getElementById('toastWrap');
+  if(!wrap) return;
+  const div = document.createElement('div');
+  div.className = 'toast ' + (type==='ok' ? 'ok' : type==='err' ? 'err' : '');
+  div.textContent = msg;
+  wrap.appendChild(div);
+  setTimeout(()=>{ div.remove(); }, timeout);
+}
+
 document.addEventListener('DOMContentLoaded', () => {
   initDarkToggle();
 
@@ -285,19 +312,17 @@ document.addEventListener('DOMContentLoaded', () => {
   const gradeSelStart = document.getElementById('gradeSelectStart');
   const gradeBtnStart = document.getElementById('gradeConfirmStart');
 
-  // postavi početnu vrijednost
   const initialGrade = document.body.getAttribute('data-current-razred') || '5';
   gradeSelStart.value = initialGrade;
-  // sakrij ako smo već slali ranije (pohranimo flag nakon prve poruke)
   if (localStorage.getItem('mb_first_sent') === '1') {
     gradeStart.classList.add('hidden');
   }
-
   gradeBtnStart.addEventListener('click', ()=>{
     const g = gradeSelStart.value || '5';
     razredHidden.value = g;
     document.getElementById('curGradeLabel').textContent = g;
     gradeStart.classList.add('hidden');
+    showToast(`Razred postavljen na ${g}.`, 'ok');
   });
 
   // file chip + validacija tipa
@@ -305,9 +330,8 @@ document.addEventListener('DOMContentLoaded', () => {
     if(fileInput.files && fileInput.files[0]){
       const f = fileInput.files[0];
       if (!f.type || !f.type.startsWith('image/')) {
-        // očistimo i javimo poruku
         clearFile();
-        appendBotHTML('<div class="alert alert-warning">Odabrani fajl nije slika. Molim pošalji sliku (JPG/PNG) ili samo tekst zadatka.</div>');
+        showToast('To nije slika. Pošalji JPG/PNG ili tekst zadatka.', 'err');
         return;
       }
       fileName.textContent = f.name;
@@ -326,6 +350,12 @@ document.addEventListener('DOMContentLoaded', () => {
   // menu: clear
   document.getElementById('menuClear').addEventListener('click', (e)=>{ e.preventDefault(); openModal('#confirm-clear'); closeDropdown(); });
   document.getElementById('doClear').addEventListener('click', async ()=>{
+    const chatEmpty = !document.querySelector('#chat-container .chat-message');
+    if (chatEmpty){
+      showToast('Chat je već prazan.', 'warn');
+      closeModal('#confirm-clear');
+      return;
+    }
     try{
       const fd = new URLSearchParams({confirm_clear:"1", ajax:"1"});
       await fetch("/clear",{method:"POST", body:fd, credentials:"include"});
@@ -355,7 +385,7 @@ document.addEventListener('DOMContentLoaded', () => {
       const r = await fetch("/set-razred",{method:"POST", body:fd, credentials:"include"});
       if(r.ok){
         razredHidden.value = g;
-        localStorage.removeItem('mb_first_sent'); // prikaži start box ako želiš nakon promjene
+        localStorage.removeItem('mb_first_sent');
         closeModal('#confirm-grade');
         location.reload();
       }
@@ -398,20 +428,17 @@ document.addEventListener('DOMContentLoaded', () => {
     const text = textarea.value.trim();
     const file = fileInput.files[0];
 
-    if(!razred){ appendBotHTML('<div class="alert alert-warning">Odaberi razred.</div>'); return; }
-    if(!text && !file){ appendBotHTML('<div class="alert alert-warning">Unesi pitanje ili dodaj sliku.</div>'); return; }
+    if(!razred){ showToast('Odaberi razred.', 'err'); return; }
+    if(!text && !file){ showToast('Unesi pitanje ili dodaj sliku prije slanja.', 'err'); return; }
     if(file && (!file.type || !file.type.startsWith('image/'))){
-      appendBotHTML('<div class="alert alert-warning">Fajl nije prepoznat kao slika. Pošalji JPG/PNG ili samo tekst.</div>');
-      return;
+      showToast('Fajl nije prepoznat kao slika. Pošalji JPG/PNG ili samo tekst.', 'err'); return;
     }
 
-    // sakrij početni grade box nakon PRVOG slanja
     if (!localStorage.getItem('mb_first_sent')) {
       document.getElementById('grade-start')?.classList.add('hidden');
       localStorage.setItem('mb_first_sent','1');
     }
 
-    // UI lock + typing
     document.getElementById('chat-card')?.classList.remove('is-empty');
     showTyping();
     sendBtn.disabled = true;
@@ -420,7 +447,6 @@ document.addEventListener('DOMContentLoaded', () => {
 
     appendUserBubble({text, fileName: file?.name});
 
-    // očisti inpute da se ne može dvaput slati
     textarea.value = '';
     clearFile();
 
@@ -458,7 +484,6 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   }
 
-  // Async polling
   async function poll(jobId){
     const sleep = (ms)=> new Promise(r=>setTimeout(r, ms));
     for (let i=0;i<180;i++){
