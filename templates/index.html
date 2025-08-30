@@ -15,7 +15,7 @@
   :root{
     --page-bg:linear-gradient(180deg,#eef5ff 0%,#f7fbff 100%);
     --card-bg:rgba(255,255,255,.92);
-    --card-border:rgba(0,0,0,.06);
+    --card-border:rgba(0,0,0,.10);
     --text:#1a1a1a;
     --accent-bot:#4caf50;
     --accent-user:#05afc5;
@@ -36,7 +36,7 @@
   body.dark{
     --page-bg:linear-gradient(180deg,#0b1113 0%,#090d0f 100%);
     --card-bg:rgba(19,26,29,.94);
-    --card-border:rgba(255,255,255,.08);
+    --card-border:rgba(255,255,255,.18);
     --text:#e6edf0;
     --bubble-bg:#1e2a2f;
     --bubble-text:#e6edf0;
@@ -49,25 +49,28 @@
     --type-border:#3d7d66;
     --overlay: rgba(0,0,0,.6);
     --modal-bg:#162126;
-    --modal-border: rgba(255,255,255,.08);
+    --modal-border: rgba(255,255,255,.12);
   }
 
   *{box-sizing:border-box}
   html,body{height:100%}
   body{font-family:"Segoe UI", Tahoma, Geneva, Verdana, sans-serif;background:var(--page-bg);color:var(--text);margin:0;padding:100px 0 32px}
 
-  header{position:fixed;top:0;left:0;right:0;z-index:1000;background:#2f5c4e;color:#fff;padding:.9rem 1rem;display:flex;align-items:center;justify-content:center;box-shadow:0 4px 14px rgba(0,0,0,.15);}
+  /* header + logo */
+  header{position:fixed;top:0;left:0;right:0;z-index:1000;background:#2f5c4e;color:#fff;padding:.7rem 1rem;display:flex;align-items:center;justify-content:center;box-shadow:0 4px 14px rgba(0,0,0,.15);}
+  .logo-left{position:absolute;left:1rem;display:flex;align-items:center;gap:.5rem}
+  .logo-left img{height:38px;width:auto;display:block}
   .title-container{font-size:1.85rem;font-weight:700;letter-spacing:.5px;}
-  .dropdown{position:absolute;right:1rem;top:.6rem;}
+  .dropdown{position:absolute;right:1rem;top:.35rem;}
   .dropdown-toggle{background:var(--btn-bg);color:#fff;border:none;padding:.55rem .9rem;font-size:1rem;border-radius:10px;cursor:pointer;}
   .dropdown-toggle:hover{background:var(--btn-bg-hover);}
-  .dropdown-content{display:none;position:absolute;top:115%;right:0;min-width:260px;background:var(--card-bg);color:var(--text);border:1px solid var(--card-border);box-shadow:0 12px 30px rgba(0,0,0,.22);border-radius:12px;padding:.9rem;backdrop-filter:blur(8px)}
+  .dropdown-content{display:none;position:absolute;top:115%;right:0;min-width:260px;background:var(--card-bg);color:var(--text);border:2px solid var(--card-border);box-shadow:0 12px 30px rgba(0,0,0,.22);border-radius:12px;padding:.9rem;backdrop-filter:blur(8px)}
   .dropdown.open .dropdown-content{display:block;}
-  .menu-item{width:100%;text-align:left;background:transparent;border:1px solid var(--card-border);color:var(--text);padding:.6rem .75rem;border-radius:10px;cursor:pointer;margin-top:.7rem}
+  .menu-item{width:100%;text-align:left;background:transparent;border:2px solid var(--card-border);color:var(--text);padding:.6rem .75rem;border-radius:10px;cursor:pointer;margin-top:.7rem}
   .menu-item:hover{background:rgba(127,255,212,.06)}
-  .menu-line{margin:.6rem 0;border-top:1px dashed var(--card-border);}
+  .menu-line{margin:.6rem 0;border-top:2px dashed var(--card-border);}
 
-  .toggle-row{display:flex;align-items:center;justify-content:space-between;gap:.75rem;}
+  .toggle-row{display:flex;align-items:center;justify-content:space-between;gap:.75rem;border:2px solid var(--card-border);padding:.45rem .6rem;border-radius:10px;}
   .toggle-slider{position:relative;width:64px;height:32px;background:#cfd8dc;border-radius:32px;cursor:pointer;transition:background .25s;}
   .toggle-slider::before{content:"";position:absolute;top:3px;left:3px;width:26px;height:26px;background:#fff;border-radius:50%;box-shadow:0 2px 6px rgba(0,0,0,.25);transition:transform .25s;}
   #darkToggle{display:none;}
@@ -123,12 +126,20 @@
   .modal .box p{margin:.3rem 0 .9rem}
   .modal .actions{display:flex;gap:.5rem;justify-content:flex-end;margin-top:.6rem}
 
+  /* start-grade box */
+  .grade-start{display:flex;align-items:center;gap:.6rem;flex-wrap:wrap;background:#fff6e6;border:2px dashed #f0b25f;padding:.6rem .8rem;border-radius:12px;margin-bottom:.8rem}
+  body.dark .grade-start{background:#1e1a12}
+
   /* sakrij prazan chat-karton na startu */
   .card.is-empty{display:none}
   </style>
 </head>
 <body data-current-razred="{{ razred or '5' }}">
   <header id="main-header">
+    <div class="logo-left">
+      <!-- PROMIJENI SRC ako je druga putanja -->
+      <img src="/static/matematicari-logo.png" alt="Matematicari logo">
+    </div>
     <div class="title-container">MAT-BOT</div>
     <div class="dropdown" id="menuWrap">
       <button class="dropdown-toggle" onclick="toggleDropdown(event)">☰ Meni</button>
@@ -176,6 +187,20 @@
 
     <!-- FORMA -->
     <div class="card">
+      <!-- START GRADE ASK -->
+      <div id="grade-start" class="grade-start">
+        <strong>Koji si razred?</strong>
+        <select id="gradeSelectStart" aria-label="Razred">
+          <option value="5">5</option>
+          <option value="6">6</option>
+          <option value="7">7</option>
+          <option value="8">8</option>
+          <option value="9">9</option>
+        </select>
+        <button id="gradeConfirmStart" class="btn sm secondary">Potvrdi</button>
+        <span class="muted">Uvijek možeš promijeniti kasnije u meniju.</span>
+      </div>
+
       <form id="ask-form" method="POST" enctype="multipart/form-data" autocomplete="off" action="/submit">
         <input type="hidden" id="razredHidden" name="razred" value="{{ razred or '5' }}">
         <label for="pitanje">Postavi mi matematičko pitanje (tekst ili slika):</label>
@@ -183,8 +208,9 @@
 
         <div class="form-actions">
           <div class="left">
-            <input id="slika" type="file" name="file" accept="image/*" capture="environment" style="display:none;" />
-            <label for="slika" class="btn secondary sm">📎 Fajl/Kamera</label>
+            <!-- VAŽNO: ukinut capture da mobiteli otvore galeriju -->
+            <input id="slika" type="file" name="file" accept="image/*" style="display:none;" />
+            <label for="slika" class="btn secondary sm">📤 Upload slike</label>
             <span id="file-chip" class="file-chip">
               <span id="file-name">Nije odabran fajl</span>
               <button type="button" class="remove" id="remove-file" title="Ukloni fajl">×</button>
@@ -232,11 +258,7 @@ function initDarkToggle(){
   if (saved){ document.body.classList.add('dark'); cb.checked = true; }
   cb.addEventListener('change', ()=>{ document.body.classList.toggle('dark', cb.checked); localStorage.setItem('matbot_dark', cb.checked ? '1' : '0');});
 }
-function showTyping(){
-  // kad kreće prva poruka, osiguraj da se pojavi chat karton
-  document.getElementById('chat-card')?.classList.remove('is-empty');
-  document.getElementById('typing').style.display='block';
-}
+function showTyping(){ document.getElementById('chat-card')?.classList.remove('is-empty'); document.getElementById('typing').style.display='block'; }
 function hideTyping(){ document.getElementById('typing').style.display='none'; }
 function scrollToBottom(){ const chat=document.getElementById('chat-container'); if(chat) chat.scrollTop = chat.scrollHeight; }
 
@@ -258,10 +280,37 @@ document.addEventListener('DOMContentLoaded', () => {
   const chat = document.getElementById('chat-container');
   const razredHidden = document.getElementById('razredHidden');
 
-  // file chip
+  // ------ START RAZRED BOX ------
+  const gradeStart = document.getElementById('grade-start');
+  const gradeSelStart = document.getElementById('gradeSelectStart');
+  const gradeBtnStart = document.getElementById('gradeConfirmStart');
+
+  // postavi početnu vrijednost
+  const initialGrade = document.body.getAttribute('data-current-razred') || '5';
+  gradeSelStart.value = initialGrade;
+  // sakrij ako smo već slali ranije (pohranimo flag nakon prve poruke)
+  if (localStorage.getItem('mb_first_sent') === '1') {
+    gradeStart.classList.add('hidden');
+  }
+
+  gradeBtnStart.addEventListener('click', ()=>{
+    const g = gradeSelStart.value || '5';
+    razredHidden.value = g;
+    document.getElementById('curGradeLabel').textContent = g;
+    gradeStart.classList.add('hidden');
+  });
+
+  // file chip + validacija tipa
   function updateFileUI(){
     if(fileInput.files && fileInput.files[0]){
-      fileName.textContent = fileInput.files[0].name;
+      const f = fileInput.files[0];
+      if (!f.type || !f.type.startsWith('image/')) {
+        // očistimo i javimo poruku
+        clearFile();
+        appendBotHTML('<div class="alert alert-warning">Odabrani fajl nije slika. Molim pošalji sliku (JPG/PNG) ili samo tekst zadatka.</div>');
+        return;
+      }
+      fileName.textContent = f.name;
       fileChip.classList.add('show');
     }else{
       fileName.textContent = 'Nije odabran fajl';
@@ -269,7 +318,7 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   }
   function clearFile(){
-    const dt = new DataTransfer(); fileInput.files = dt.files; fileInput.value = ""; updateFileUI();
+    const dt = new DataTransfer(); fileInput.files = dt.files; fileInput.value = ""; fileChip.classList.remove('show'); fileName.textContent='Nije odabran fajl';
   }
   fileInput.addEventListener('change', updateFileUI);
   removeFileBtn.addEventListener('click', clearFile);
@@ -282,6 +331,7 @@ document.addEventListener('DOMContentLoaded', () => {
       await fetch("/clear",{method:"POST", body:fd, credentials:"include"});
     }catch(_){}
     closeModal('#confirm-clear');
+    localStorage.removeItem('mb_first_sent');
     location.reload();
   });
 
@@ -305,6 +355,7 @@ document.addEventListener('DOMContentLoaded', () => {
       const r = await fetch("/set-razred",{method:"POST", body:fd, credentials:"include"});
       if(r.ok){
         razredHidden.value = g;
+        localStorage.removeItem('mb_first_sent'); // prikaži start box ako želiš nakon promjene
         closeModal('#confirm-grade');
         location.reload();
       }
@@ -349,8 +400,18 @@ document.addEventListener('DOMContentLoaded', () => {
 
     if(!razred){ appendBotHTML('<div class="alert alert-warning">Odaberi razred.</div>'); return; }
     if(!text && !file){ appendBotHTML('<div class="alert alert-warning">Unesi pitanje ili dodaj sliku.</div>'); return; }
+    if(file && (!file.type || !file.type.startsWith('image/'))){
+      appendBotHTML('<div class="alert alert-warning">Fajl nije prepoznat kao slika. Pošalji JPG/PNG ili samo tekst.</div>');
+      return;
+    }
 
-    // UI lock + prikaži chat karton + typing
+    // sakrij početni grade box nakon PRVOG slanja
+    if (!localStorage.getItem('mb_first_sent')) {
+      document.getElementById('grade-start')?.classList.add('hidden');
+      localStorage.setItem('mb_first_sent','1');
+    }
+
+    // UI lock + typing
     document.getElementById('chat-card')?.classList.remove('is-empty');
     showTyping();
     sendBtn.disabled = true;
@@ -381,7 +442,7 @@ document.addEventListener('DOMContentLoaded', () => {
       } else {
         const j = isJSON ? await r.json() : {};
         if (j.mode && j.job_id && !j.result){
-          keepTyping = true;            // ostavi indikator tokom pollinga
+          keepTyping = true;
           poll(j.job_id);
         } else {
           appendBotHTML(j?.result?.html || '<i>Nema rezultata.</i>');
@@ -408,8 +469,7 @@ document.addEventListener('DOMContentLoaded', () => {
         const data = await r.json();
         if (data.status === 'done'){
           appendBotHTML((data.result && data.result.html) || '<i>Nema rezultata.</i>');
-          hideTyping();
-          return;
+          hideTyping(); return;
         }
         if (data.status === 'error'){
           appendBotHTML('<div class="alert alert-danger">Greška u asinkronoj obradi.</div>');
