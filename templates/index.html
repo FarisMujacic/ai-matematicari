@@ -21,8 +21,8 @@
     --accent-user:#05afc5;
     --bubble-bg:#eaf7e8;
     --bubble-text:#1a1a1a;
-    --btn-bg:#3d7d66;
-    --btn-bg-hover:#2f5c4e;
+    --btn-bg:#2f6e5b;
+    --btn-bg-hover:#255e4e;
     --danger:#c94f4f;
     --muted:#6b7a86;
     --input-bg:#f8fafd;
@@ -54,28 +54,34 @@
 
   *{box-sizing:border-box}
   html,body{height:100%}
-  body{font-family:"Segoe UI", Tahoma, Geneva, Verdana, sans-serif;background:var(--page-bg);color:var(--text);margin:0;padding:100px 0 32px}
+  body{font-family:"Segoe UI", Tahoma, Geneva, Verdana, sans-serif;background:var(--page-bg);color:var(--text);margin:0;padding:110px 0 32px}
 
-  /* header + logo */
-  header{position:fixed;top:0;left:0;right:0;z-index:1000;background:#2f5c4e;color:#fff;padding:.7rem 1rem;display:flex;align-items:center;justify-content:center;box-shadow:0 4px 14px rgba(0,0,0,.15);}
+  /* header + logo (VEĆI NAVBAR) */
+  header{
+    position:fixed;top:0;left:0;right:0;z-index:1000;
+    background:#2f5c4e;color:#fff;
+    padding:1rem 1.25rem; /* više prostora */
+    display:flex;align-items:center;justify-content:center;
+    box-shadow:0 4px 14px rgba(0,0,0,.15);
+  }
   .logo-left{position:absolute;left:1rem;display:flex;align-items:center;gap:.5rem}
-  .logo-left img{height:56px;width:auto;display:block} /* POVECANO */
-  .title-container{font-size:1.85rem;font-weight:700;letter-spacing:.5px;}
-  .dropdown{position:absolute;right:1rem;top:.35rem;}
-  .dropdown-toggle{background:var(--btn-bg);color:#fff;border:none;padding:.55rem .9rem;font-size:1rem;border-radius:10px;cursor:pointer;}
+  .logo-left img{height:80px;width:auto;display:block} /* POVEĆAN LOGO */
+  .title-container{font-size:2.05rem;font-weight:800;letter-spacing:.6px;} /* veći naslov */
+  .dropdown{position:absolute;right:1rem;top:.6rem;}
+  .dropdown-toggle{background:var(--btn-bg);color:#fff;border:none;padding:.65rem 1rem;font-size:1.05rem;border-radius:12px;cursor:pointer;}
   .dropdown-toggle:hover{background:var(--btn-bg-hover);}
-  .dropdown-content{display:none;position:absolute;top:115%;right:0;min-width:260px;background:var(--card-bg);color:var(--text);border:2px solid var(--card-border);box-shadow:0 12px 30px rgba(0,0,0,.22);border-radius:12px;padding:.9rem;backdrop-filter:blur(8px)}
+  .dropdown-content{display:none;position:absolute;top:115%;right:0;min-width:280px;background:var(--card-bg);color:var(--text);border:2px solid var(--card-border);box-shadow:0 12px 30px rgba(0,0,0,.22);border-radius:12px;padding:1rem;backdrop-filter:blur(8px)}
   .dropdown.open .dropdown-content{display:block;}
-  .menu-item{width:100%;text-align:left;background:transparent;border:2px solid var(--card-border);color:var(--text);padding:.6rem .75rem;border-radius:10px;cursor:pointer;margin-top:.7rem}
+  .menu-item{width:100%;text-align:left;background:transparent;border:2px solid var(--card-border);color:var(--text);padding:.7rem .85rem;border-radius:12px;cursor:pointer;margin-top:.75rem}
   .menu-item:hover{background:rgba(127,255,212,.06)}
-  .menu-line{margin:.6rem 0;border-top:2px dashed var(--card-border);}
+  .menu-line{margin:.7rem 0;border-top:2px dashed var(--card-border);}
 
-  .toggle-row{display:flex;align-items:center;justify-content:space-between;gap:.75rem;border:2px solid var(--card-border);padding:.45rem .6rem;border-radius:10px;}
-  .toggle-slider{position:relative;width:64px;height:32px;background:#cfd8dc;border-radius:32px;cursor:pointer;transition:background .25s;}
-  .toggle-slider::before{content:"";position:absolute;top:3px;left:3px;width:26px;height:26px;background:#fff;border-radius:50%;box-shadow:0 2px 6px rgba(0,0,0,.25);transition:transform .25s;}
+  .toggle-row{display:flex;align-items:center;justify-content:space-between;gap:.9rem;border:2px solid var(--card-border);padding:.55rem .7rem;border-radius:12px;}
+  .toggle-slider{position:relative;width:68px;height:34px;background:#cfd8dc;border-radius:34px;cursor:pointer;transition:background .25s;}
+  .toggle-slider::before{content:"";position:absolute;top:4px;left:4px;width:26px;height:26px;background:#fff;border-radius:50%;box-shadow:0 2px 6px rgba(0,0,0,.25);transition:transform .25s;}
   #darkToggle{display:none;}
   #darkToggle:checked + .toggle-slider{background:#4caf50;}
-  #darkToggle:checked + .toggle-slider::before{transform: translateX(32px);}
+  #darkToggle:checked + .toggle-slider::before{transform: translateX(34px);}
 
   main{max-width:900px;margin:0 auto;padding:16px;}
   .card{background:var(--card-bg);border:1px solid var(--card-border);border-radius:16px;padding:1.25rem;box-shadow:0 8px 30px rgba(0,0,0,.18);backdrop-filter: blur(10px);}
@@ -100,11 +106,11 @@
   textarea{width:100%;min-height:140px;padding:1rem;font-size:1.08rem;outline:none;resize:vertical;box-shadow:0 2px 8px rgba(0,0,0,.04);}
   textarea:focus{border-color:#3d7d66;box-shadow:0 4px 14px rgba(0,0,0,.08);}
 
-  .btn{background:var(--btn-bg);color:#fff;border:none;padding:.85rem 1.1rem;font-size:1rem;border-radius:10px;cursor:pointer;width:fit-content;transition: transform .05s ease, background .15s ease;}
+  .btn{background:var(--btn-bg);color:#fff;border:none;padding:.9rem 1.15rem;font-size:1rem;border-radius:12px;cursor:pointer;width:fit-content;transition: transform .05s ease, background .15s ease;}
   .btn:hover{background:var(--btn-bg-hover);} .btn:active{transform:translateY(1px);}
   .btn.secondary{background:transparent;color:var(--btn-bg);border:2px solid var(--btn-bg);}
   .btn.danger{background:var(--danger);}
-  .btn.sm{padding:.5rem .7rem;font-size:.92rem;border-radius:9px;}
+  .btn.sm{padding:.55rem .75rem;font-size:.95rem;border-radius:10px;}
 
   .form-actions{display:flex;align-items:flex-start;justify-content:space-between;gap:1rem;flex-wrap:wrap;padding-top:.75rem;border-top:1px solid var(--card-border);}
   .form-actions .right{display:flex;align-items:center;gap:.6rem;flex-wrap:wrap;}
@@ -127,20 +133,20 @@
   .modal .actions{display:flex;gap:.5rem;justify-content:flex-end;margin-top:.6rem}
 
   /* start-grade box (kompaktno) */
-  .grade-start{display:flex;align-items:center;gap:.6rem;flex-wrap:wrap;background:#fff6e6;border:2px dashed #f0b25f;padding:.6rem .8rem;border-radius:12px;margin-bottom:.8rem}
+  .grade-start{display:flex;align-items:center;gap:.6rem;flex-wrap:wrap;background:#fff6e6;border:2px dashed #f0b25f;padding:.75rem .9rem;border-radius:12px;margin-bottom:.9rem}
   .grade-start label{font-weight:700;margin-right:.25rem}
-  .grade-select{font-size:1.05rem;padding:.45rem .7rem;border-radius:10px;border:1px solid var(--input-border);background:var(--input-bg);}
-  .grade-confirm{padding:.5rem .9rem}
+  .grade-select{font-size:1.08rem;padding:.5rem .8rem;border-radius:10px;border:1px solid var(--input-border);background:var(--input-bg);min-width:140px;}
+  .grade-confirm{padding:.6rem 1rem}
 
-  /* TOAST: centar ekrana (donji centar) */
+  /* TOAST: donji centar ali više prema gore */
   .toast-wrap{
-    position:fixed;left:50%;bottom:24px;transform:translateX(-50%);
+    position:fixed;left:50%;bottom:120px;transform:translateX(-50%);
     display:flex;flex-direction:column;gap:.6rem;align-items:center;z-index:1200;
     pointer-events:none;
   }
   .toast{
     background:var(--modal-bg);color:var(--text);border:1px solid var(--modal-border);
-    border-left:4px solid #f0b25f;border-radius:12px;padding:.7rem 1rem;
+    border-left:4px solid #f0b25f;border-radius:12px;padding:.75rem 1rem;
     box-shadow:0 10px 30px rgba(0,0,0,.18);min-width:280px;max-width:min(92vw,520px);
     pointer-events:auto;
   }
@@ -151,7 +157,7 @@
   .card.is-empty{display:none}
   </style>
 </head>
-<body data-current-razred="{{ razred or '5' }}">
+<body data-current-razred="{{ razred or '' }}">
   <header id="main-header">
     <div class="logo-left">
       <img src="https://s3.amazonaws.com/thinkific-import/307785/cmQxwUYXTjWxCFQJjrA4_MATEMATICAR_3_01_Transparent_png" alt="Matematicari logo">
@@ -181,7 +187,7 @@
             <button class="btn sm secondary grade-btn" data-grade="8">8</button>
             <button class="btn sm secondary grade-btn" data-grade="9">9</button>
           </div>
-          <div class="muted" style="margin-top:.4rem">Trenutni: <span id="curGradeLabel">{{ razred or '5' }}</span></div>
+          <div class="muted" style="margin-top:.4rem">Trenutni: <span id="curGradeLabel">{{ razred or '—' }}</span></div>
         </div>
       </div>
     </div>
@@ -207,6 +213,7 @@
       <div id="grade-start" class="grade-start">
         <label for="gradeSelectStart">Koji si razred?</label>
         <select id="gradeSelectStart" class="grade-select" aria-label="Razred">
+          <option value="" selected disabled>— odaberi —</option>
           <option value="5">5</option>
           <option value="6">6</option>
           <option value="7">7</option>
@@ -217,21 +224,21 @@
       </div>
 
       <form id="ask-form" method="POST" enctype="multipart/form-data" autocomplete="off" action="/submit">
-        <input type="hidden" id="razredHidden" name="razred" value="{{ razred or '5' }}">
+        <input type="hidden" id="razredHidden" name="razred" value="">
         <label for="pitanje">Postavi mi matematičko pitanje (tekst ili slika):</label>
-        <textarea name="pitanje" id="pitanje" placeholder="Ovdje možeš unijeti zadatak ili pitanje..." autofocus></textarea>
+        <textarea name="pitanje" id="pitanje" placeholder="Ovdje možeš unijeti zadatak ili pitanje..." disabled></textarea>
 
         <div class="form-actions">
           <div class="left">
-            <input id="slika" type="file" name="file" accept="image/*" style="display:none;" />
-            <label for="slika" class="btn secondary sm">📤 Upload slike</label>
+            <input id="slika" type="file" name="file" accept="image/*" style="display:none;" disabled />
+            <label for="slika" id="uploadLabel" class="btn secondary sm" aria-disabled="true">📤 Upload slike</label>
             <span id="file-chip" class="file-chip">
               <span id="file-name">Nije odabran fajl</span>
               <button type="button" class="remove" id="remove-file" title="Ukloni fajl">×</button>
             </span>
           </div>
           <div class="right">
-            <button id="sendBtn" type="button" class="btn">✉️ Pošalji</button>
+            <button id="sendBtn" type="button" class="btn" disabled>✉️ Pošalji</button>
           </div>
         </div>
       </form>
@@ -294,8 +301,7 @@ document.addEventListener('click', (e)=>{
 function showToast(msg, type='warn', timeout=2600){
   const wrap = document.getElementById('toastWrap');
   if(!wrap) return;
-  // drži maksimalno 1 toast odjednom
-  wrap.innerHTML = '';
+  wrap.innerHTML = ''; // max 1 toast
   const div = document.createElement('div');
   div.className = 'toast ' + (type==='ok' ? 'ok' : type==='err' ? 'err' : '');
   div.textContent = msg;
@@ -310,30 +316,50 @@ document.addEventListener('DOMContentLoaded', () => {
   const sendBtn = document.getElementById('sendBtn');
   const textarea = document.getElementById('pitanje');
   const fileInput = document.getElementById('slika');
+  const uploadLabel = document.getElementById('uploadLabel');
   const fileChip = document.getElementById('file-chip');
   const fileName = document.getElementById('file-name');
   const removeFileBtn = document.getElementById('remove-file');
   const chat = document.getElementById('chat-container');
   const razredHidden = document.getElementById('razredHidden');
 
+  // helper: enable/disable unosa
+  function setInputsEnabled(on){
+    textarea.disabled = !on;
+    fileInput.disabled = !on;
+    sendBtn.disabled = !on;
+    uploadLabel.setAttribute('aria-disabled', on ? 'false' : 'true');
+    uploadLabel.style.opacity = on ? '1' : '.6';
+  }
+
   // ------ START RAZRED BOX ------
   const gradeStart = document.getElementById('grade-start');
   const gradeSelStart = document.getElementById('gradeSelectStart');
   const gradeBtnStart = document.getElementById('gradeConfirmStart');
 
-  const initialGrade = document.body.getAttribute('data-current-razred') || '5';
-  gradeSelStart.value = initialGrade;
-  if (localStorage.getItem('mb_first_sent') === '1' || localStorage.getItem('mb_grade_confirmed') === '1') {
+  // ako je ranije potvrđen razred, sakrij box i omogući unos
+  if (localStorage.getItem('mb_grade_confirmed') === '1'){
     gradeStart.classList.add('hidden');
+    const saved = localStorage.getItem('mb_grade_value') || '';
+    razredHidden.value = saved;
+    document.getElementById('curGradeLabel').textContent = saved || '—';
+    setInputsEnabled(!!saved);
+  } else {
+    setInputsEnabled(false);
   }
+
   gradeBtnStart.addEventListener('click', ()=>{
-    const g = gradeSelStart.value || '5';
+    const g = gradeSelStart.value;
+    if(!g){
+      showToast('Prvo odaberi razred.', 'err'); return;
+    }
     razredHidden.value = g;
     document.getElementById('curGradeLabel').textContent = g;
-    // sakrij ODMAH
     gradeStart.classList.add('hidden');
     gradeStart.style.display = 'none';
     localStorage.setItem('mb_grade_confirmed','1');
+    localStorage.setItem('mb_grade_value', g);
+    setInputsEnabled(true);
     showToast(`Razred postavljen na ${g}.`, 'ok');
   });
 
@@ -375,13 +401,14 @@ document.addEventListener('DOMContentLoaded', () => {
     closeModal('#confirm-clear');
     localStorage.removeItem('mb_first_sent');
     localStorage.removeItem('mb_grade_confirmed');
+    localStorage.removeItem('mb_grade_value');
     location.reload();
   });
 
   // menu: grades (hide current)
-  const currentGrade = document.body.getAttribute('data-current-razred') || '5';
+  const currentGrade = razredHidden.value || '';
   document.querySelectorAll('.grade-btn').forEach(btn=>{
-    if(btn.dataset.grade === currentGrade){ btn.style.display='none'; }
+    if(btn.dataset.grade === currentGrade && currentGrade){ btn.style.display='none'; }
     btn.addEventListener('click',(e)=>{
       e.preventDefault();
       const g = btn.dataset.grade;
@@ -398,8 +425,8 @@ document.addEventListener('DOMContentLoaded', () => {
       const r = await fetch("/set-razred",{method:"POST", body:fd, credentials:"include"});
       if(r.ok){
         razredHidden.value = g;
-        localStorage.removeItem('mb_first_sent');
         localStorage.setItem('mb_grade_confirmed','1');
+        localStorage.setItem('mb_grade_value', g);
         closeModal('#confirm-grade');
         location.reload();
       }
@@ -438,12 +465,16 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   async function sendOne(){
-    const razred = razredHidden.value || '5';
+    const razred = razredHidden.value;
     const text = textarea.value.trim();
     const file = fileInput.files[0];
 
-    if(!razred){ showToast('Odaberi razred.', 'err'); return; }
-    if(!text && !file){ showToast('Unesi pitanje ili dodaj sliku prije slanja.', 'err'); return; }
+    if(!razred){
+      showToast('Prvo postavi razred.', 'err'); return;
+    }
+    if(!text && !file){
+      showToast('Unesi pitanje ili dodaj sliku prije slanja.', 'err'); return;
+    }
     if(file && (!file.type || !file.type.startsWith('image/'))){
       showToast('Fajl nije prepoznat kao slika. Pošalji JPG/PNG ili samo tekst.', 'err'); return;
     }
