@@ -17,25 +17,18 @@
     --card-bg:rgba(255,255,255,.92);
     --card-border:rgba(0,0,0,.06);
     --text:#1a1a1a;
-
     --accent-bot:#4caf50;
     --accent-user:#05afc5;
-
     --bubble-bg:#eaf7e8;
     --bubble-text:#1a1a1a;
-
     --btn-bg:#3d7d66;
     --btn-bg-hover:#2f5c4e;
-
     --danger:#c94f4f;
     --muted:#6b7a86;
-
     --input-bg:#f8fafd;
     --input-border:#dbe5ea;
-
     --type-bg:#fff3bf;
     --type-border:#ffb84d;
-
     --overlay: rgba(0,0,0,.45);
     --modal-bg: #ffffff;
     --modal-border: rgba(0,0,0,.08);
@@ -45,21 +38,15 @@
     --card-bg:rgba(19,26,29,.94);
     --card-border:rgba(255,255,255,.08);
     --text:#e6edf0;
-
     --bubble-bg:#1e2a2f;
     --bubble-text:#e6edf0;
-
     --btn-bg:#2a4b42;
     --btn-bg-hover:#213c35;
-
     --muted:#a7bac4;
-
     --input-bg:#111a1d;
     --input-border:#203139;
-
     --type-bg:#0f1b20;
     --type-border:#3d7d66;
-
     --overlay: rgba(0,0,0,.6);
     --modal-bg:#162126;
     --modal-border: rgba(255,255,255,.08);
@@ -67,28 +54,16 @@
 
   *{box-sizing:border-box}
   html,body{height:100%}
-  body{
-    font-family:"Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
-    background:var(--page-bg);color:var(--text);margin:0;padding:100px 0 32px
-  }
+  body{font-family:"Segoe UI", Tahoma, Geneva, Verdana, sans-serif;background:var(--page-bg);color:var(--text);margin:0;padding:100px 0 32px}
 
-  header{
-    position:fixed;top:0;left:0;right:0;z-index:1000;
-    background:#2f5c4e;color:#fff;
-    padding:.9rem 1rem;display:flex;align-items:center;justify-content:center;
-    box-shadow:0 4px 14px rgba(0,0,0,.15);
-  }
+  header{position:fixed;top:0;left:0;right:0;z-index:1000;background:#2f5c4e;color:#fff;padding:.9rem 1rem;display:flex;align-items:center;justify-content:center;box-shadow:0 4px 14px rgba(0,0,0,.15);}
   .title-container{font-size:1.85rem;font-weight:700;letter-spacing:.5px;}
   .dropdown{position:absolute;right:1rem;top:.6rem;}
   .dropdown-toggle{background:var(--btn-bg);color:#fff;border:none;padding:.55rem .9rem;font-size:1rem;border-radius:10px;cursor:pointer;}
   .dropdown-toggle:hover{background:var(--btn-bg-hover);}
-  .dropdown-content{
-    display:none;position:absolute;top:115%;right:0;min-width:260px;background:var(--card-bg);color:var(--text);
-    border:1px solid var(--card-border);box-shadow:0 12px 30px rgba(0,0,0,.22);border-radius:12px;padding:.9rem;backdrop-filter:blur(8px)
-  }
+  .dropdown-content{display:none;position:absolute;top:115%;right:0;min-width:260px;background:var(--card-bg);color:var(--text);border:1px solid var(--card-border);box-shadow:0 12px 30px rgba(0,0,0,.22);border-radius:12px;padding:.9rem;backdrop-filter:blur(8px)}
   .dropdown.open .dropdown-content{display:block;}
-  .menu-item{width:100%;text-align:left;background:transparent;border:1px solid var(--card-border);color:var(--text);
-    padding:.6rem .75rem;border-radius:10px;cursor:pointer;margin-top:.7rem}
+  .menu-item{width:100%;text-align:left;background:transparent;border:1px solid var(--card-border);color:var(--text);padding:.6rem .75rem;border-radius:10px;cursor:pointer;margin-top:.7rem}
   .menu-item:hover{background:rgba(127,255,212,.06)}
   .menu-line{margin:.6rem 0;border-top:1px dashed var(--card-border);}
 
@@ -107,36 +82,22 @@
   .chat-message{display:flex;width:100%;word-break:break-word;}
   .user-message{justify-content:flex-end;}
   .bot-message{justify-content:flex-start;}
-  .bubble,.bubble.user{
-    padding:.9rem 1.1rem;border-radius:14px;font-size:1rem;line-height:1.7;box-shadow:0 1px 4px rgba(0,0,0,.05);
-    white-space:pre-wrap;background:var(--bubble-bg);color:var(--bubble-text);max-width:75%;animation:fadeIn .25s ease;
-  }
+  .bubble,.bubble.user{padding:.9rem 1.1rem;border-radius:14px;font-size:1rem;line-height:1.7;box-shadow:0 1px 4px rgba(0,0,0,.05);white-space:pre-wrap;background:var(--bubble-bg);color:var(--bubble-text);max-width:75%;animation:fadeIn .25s ease;}
   .bubble{border-left:4px solid var(--accent-bot);margin:.35rem 0;}
-  .bubble.user{
-    background:#c8ebf0;border-right:4px solid var(--accent-user);border-left:0!important;margin:.35rem 0 .35rem auto;max-width:60%;
-  }
-  body.dark .bubble.user{ background:var(--bubble-bg); border-right:4px solid var(--accent-user); }
+  .bubble.user{background:#c8ebf0;border-right:4px solid var(--accent-user);border-left:0!important;margin:.35rem 0 .35rem auto;max-width:60%;}
+  body.dark .bubble.user{background:var(--bubble-bg);border-right:4px solid var(--accent-user);}
 
-  .typing-indicator{
-    position:sticky;bottom:0;align-self:flex-start;font-style:italic;font-size:1rem;padding:.5rem .75rem;
-    color:var(--text);background:var(--type-bg);border-left:4px solid var(--type-border);
-    border-radius:8px;margin:.15rem 0 0;max-width:520px;display:none;z-index:2;
-  }
+  .typing-indicator{position:sticky;bottom:0;align-self:flex-start;font-style:italic;font-size:1rem;padding:.5rem .75rem;color:var(--text);background:var(--type-bg);border-left:4px solid var(--type-border);border-radius:8px;margin:.15rem 0 0;max-width:520px;display:none;z-index:2;}
   .typing-indicator .dots::after{content:'...';animation:dots 1s steps(3,end) infinite;}
   @keyframes dots{0%{content:''}33%{content:'.'}66%{content:'..'}100%{content:'...'}}
   @keyframes fadeIn{from{opacity:0;transform:translateY(6px);}to{opacity:1;transform:translateY(0);}}
 
   label{font-weight:600;}
-  select, textarea{
-    background:var(--input-bg); color:var(--text);
-    border:1px solid var(--input-border); border-radius:12px;
-  }
-  select{padding:.5rem .6rem;border-radius:10px;}
+  select, textarea{background:var(--input-bg); color:var(--text);border:1px solid var(--input-border); border-radius:12px;}
   textarea{width:100%;min-height:140px;padding:1rem;font-size:1.08rem;outline:none;resize:vertical;box-shadow:0 2px 8px rgba(0,0,0,.04);}
   textarea:focus{border-color:#3d7d66;box-shadow:0 4px 14px rgba(0,0,0,.08);}
 
-  .btn{background:var(--btn-bg);color:#fff;border:none;padding:.85rem 1.1rem;font-size:1rem;border-radius:10px;cursor:pointer;width:fit-content;
-       transition: transform .05s ease, background .15s ease;}
+  .btn{background:var(--btn-bg);color:#fff;border:none;padding:.85rem 1.1rem;font-size:1rem;border-radius:10px;cursor:pointer;width:fit-content;transition: transform .05s ease, background .15s ease;}
   .btn:hover{background:var(--btn-bg-hover);} .btn:active{transform:translateY(1px);}
   .btn.secondary{background:transparent;color:var(--btn-bg);border:2px solid var(--btn-bg);}
   .btn.danger{background:var(--danger);}
@@ -148,7 +109,6 @@
   .error-banner{max-width:900px;margin:12px auto 0;background:#ffe9e9;border:1px solid #f3b8b8;color:#7a1e1e;padding:.8rem 1rem;border-radius:10px;}
   .muted{color:var(--muted);font-size:.95rem}
   .hidden{display:none}
-  .card.is-empty{display:none}
 
   /* file chip */
   .file-chip{display:none;align-items:center;gap:.5rem;background:#eff6ff;border:1px dashed #b9d2ff;color:#2a4365;padding:.35rem .55rem;border-radius:999px;font-size:.88rem;}
@@ -162,6 +122,9 @@
   .modal .box h3{margin:.2rem 0 .6rem;font-size:1.25rem}
   .modal .box p{margin:.3rem 0 .9rem}
   .modal .actions{display:flex;gap:.5rem;justify-content:flex-end;margin-top:.6rem}
+
+  /* sakrij prazan chat-karton na startu */
+  .card.is-empty{display:none}
   </style>
 </head>
 <body data-current-razred="{{ razred or '5' }}">
@@ -201,7 +164,7 @@
 
   <main class="stack">
     <!-- CHAT -->
-    <div class="card" id="chat-card">
+    <div class="card {% if not history %}is-empty{% endif %}" id="chat-card">
       <div id="chat-container">
         {% for message in history %}
         <div class="chat-message user-message"><div class="bubble user"><p>{{ message.user }}</p></div></div>
@@ -269,26 +232,18 @@ function initDarkToggle(){
   if (saved){ document.body.classList.add('dark'); cb.checked = true; }
   cb.addEventListener('change', ()=>{ document.body.classList.toggle('dark', cb.checked); localStorage.setItem('matbot_dark', cb.checked ? '1' : '0');});
 }
-function showTyping(){ document.getElementById('typing').style.display='block'; }
+function showTyping(){
+  // kad kreće prva poruka, osiguraj da se pojavi chat karton
+  document.getElementById('chat-card')?.classList.remove('is-empty');
+  document.getElementById('typing').style.display='block';
+}
 function hideTyping(){ document.getElementById('typing').style.display='none'; }
 function scrollToBottom(){ const chat=document.getElementById('chat-container'); if(chat) chat.scrollTop = chat.scrollHeight; }
 
-function openModal(id){
-  document.getElementById('overlay').style.display='block';
-  document.querySelector(id).style.display='flex';
-}
-function closeModal(id){
-  document.getElementById('overlay').style.display='none';
-  document.querySelector(id).style.display='none';
-}
-document.getElementById('overlay').addEventListener('click', ()=>{
-  document.querySelectorAll('.modal').forEach(m=>m.style.display='none');
-  document.getElementById('overlay').style.display='none';
-});
-document.addEventListener('click',(e)=>{
-  const closeSel=e.target.getAttribute?.('data-close');
-  if (closeSel){ e.preventDefault(); closeModal(closeSel); }
-});
+function openModal(id){ document.getElementById('overlay').style.display='block'; document.querySelector(id).style.display='flex'; }
+function closeModal(id){ document.getElementById('overlay').style.display='none'; document.querySelector(id).style.display='none'; }
+document.getElementById('overlay').addEventListener('click', ()=>{ document.querySelectorAll('.modal').forEach(m=>m.style.display='none'); document.getElementById('overlay').style.display='none'; });
+document.addEventListener('click',(e)=>{ const closeSel=e.target.getAttribute?.('data-close'); if (closeSel){ e.preventDefault(); closeModal(closeSel); }});
 
 document.addEventListener('DOMContentLoaded', () => {
   initDarkToggle();
@@ -395,15 +350,16 @@ document.addEventListener('DOMContentLoaded', () => {
     if(!razred){ appendBotHTML('<div class="alert alert-warning">Odaberi razred.</div>'); return; }
     if(!text && !file){ appendBotHTML('<div class="alert alert-warning">Unesi pitanje ili dodaj sliku.</div>'); return; }
 
-    // UI lock + prikaz user poruke
+    // UI lock + prikaži chat karton + typing
+    document.getElementById('chat-card')?.classList.remove('is-empty');
+    showTyping();
     sendBtn.disabled = true;
     textarea.disabled = true;
     document.querySelectorAll('.grade-btn').forEach(b=>b.disabled=true);
-    showTyping();
 
     appendUserBubble({text, fileName: file?.name});
 
-    // Očisti inpute odmah da se ne može dvaput slati
+    // očisti inpute da se ne može dvaput slati
     textarea.value = '';
     clearFile();
 
@@ -412,6 +368,7 @@ document.addEventListener('DOMContentLoaded', () => {
     if (text) fd.append('user_text', text);
     if (file) fd.append('file', file, file.name);
 
+    let keepTyping = false;
     try{
       const r = await fetch(form.action || '/submit', { method:'POST', body: fd, credentials:'include' });
       const ct = r.headers.get('content-type') || '';
@@ -424,7 +381,7 @@ document.addEventListener('DOMContentLoaded', () => {
       } else {
         const j = isJSON ? await r.json() : {};
         if (j.mode && j.job_id && !j.result){
-          // async put – obavi polling
+          keepTyping = true;            // ostavi indikator tokom pollinga
           poll(j.job_id);
         } else {
           appendBotHTML(j?.result?.html || '<i>Nema rezultata.</i>');
@@ -433,16 +390,15 @@ document.addEventListener('DOMContentLoaded', () => {
     } catch (e){
       appendBotHTML('<div class="alert alert-danger">Greška pri slanju zahtjeva.</div>');
     } finally {
-      hideTyping();
+      if (!keepTyping) hideTyping();
       sendBtn.disabled = false;
       textarea.disabled = false;
       document.querySelectorAll('.grade-btn').forEach(b=>b.disabled=false);
     }
   }
 
-  // Async polling (ako server vrati 202)
+  // Async polling
   async function poll(jobId){
-    showTyping();
     const sleep = (ms)=> new Promise(r=>setTimeout(r, ms));
     for (let i=0;i<180;i++){
       await sleep(2000);
@@ -472,7 +428,7 @@ document.addEventListener('DOMContentLoaded', () => {
   form.addEventListener('submit',(e)=>{ e.preventDefault(); sendOne(); });
 });
 
-// ------- Plot helpers (isti kao prije) -------
+// ------- Plot helpers -------
 function transformExpression(expr){
   return expr.replace(/\s+/g,'')
     .replace(/([0-9])([a-zA-Z])/g,'$1*$2')
