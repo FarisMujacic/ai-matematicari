@@ -332,26 +332,26 @@ function showToast(msg, type='warn', timeout=2600){
 document.addEventListener('DOMContentLoaded', () => {
   initDarkToggle();
 
-  /* ====== 1) SAMO UNUTAR THINKIFICA ====== */
-  const isIframe = (window.top !== window.self);
-  let isThinkific = false;
-  try{
-    const ref = document.referrer || "";
-    const host = ref ? new URL(ref).hostname : "";
-    isThinkific = /\.thinkific\.com$/i.test(host) || /(^|\.)thinkific\.com$/i.test(host);
-  }catch(_){}
-  if(!(isIframe && isThinkific)){
-    // zaključaj UI
-    document.body.innerHTML = `
-      <div style="min-height:100vh;display:flex;align-items:center;justify-content:center;padding:2rem;text-align:center">
-        <div style="background:var(--card-bg);border:1px solid var(--card-border);padding:1.2rem 1.4rem;border-radius:14px;max-width:640px;box-shadow:0 10px 40px rgba(0,0,0,.18)">
-          <h2 style="margin:.2rem 0 0.6rem">Pristup ograničen</h2>
-          <p>Ova aplikacija je dostupna <strong>samo unutar Thinkific platforme</strong>.</p>
-          <p class="muted">Otvorite lekciju u Thinkificu da biste koristili MAT-BOT.</p>
-        </div>
-      </div>`;
-    return;
-  }
+/* ====== 1) SAMO UNUTAR THINKIFICA (iframe check) ====== */
+const isIframe = (window.top !== window.self);
+
+// (opcija) dozvoli i direktan pristup ako je prisutan tajni token u URL-u
+const urlParams = new URLSearchParams(location.search);
+const hasBypassToken = urlParams.get('from') === 'thinkific' && !!urlParams.get('t');
+
+if(!(isIframe || hasBypassToken)){
+  // zaključaj UI ako nije u iframe-u i nema bypass token
+  document.body.innerHTML = `
+    <div style="min-height:100vh;display:flex;align-items:center;justify-content:center;padding:2rem;text-align:center">
+      <div style="background:var(--card-bg);border:1px solid var(--card-border);padding:1.2rem 1.4rem;border-radius:14px;max-width:640px;box-shadow:0 10px 40px rgba(0,0,0,.18)">
+        <h2 style="margin:.2rem 0 0.6rem">Pristup ograničen</h2>
+        <p>Ova aplikacija je dostupna <strong>samo unutar Thinkific platforme</strong>.</p>
+        <p class="muted">Otvorite lekciju u Thinkificu da biste koristili MAT-BOT.</p>
+      </div>
+    </div>`;
+  return;
+}
+
 
   /* ====== 2) OBRIŠI RAZRED NA SVAKI REFRESH ====== */
   try{
