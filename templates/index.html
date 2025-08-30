@@ -59,7 +59,7 @@
   /* header + logo */
   header{position:fixed;top:0;left:0;right:0;z-index:1000;background:#2f5c4e;color:#fff;padding:.7rem 1rem;display:flex;align-items:center;justify-content:center;box-shadow:0 4px 14px rgba(0,0,0,.15);}
   .logo-left{position:absolute;left:1rem;display:flex;align-items:center;gap:.5rem}
-  .logo-left img{height:38px;width:auto;display:block}
+  .logo-left img{height:56px;width:auto;display:block} /* POVECANO */
   .title-container{font-size:1.85rem;font-weight:700;letter-spacing:.5px;}
   .dropdown{position:absolute;right:1rem;top:.35rem;}
   .dropdown-toggle{background:var(--btn-bg);color:#fff;border:none;padding:.55rem .9rem;font-size:1rem;border-radius:10px;cursor:pointer;}
@@ -132,9 +132,18 @@
   .grade-select{font-size:1.05rem;padding:.45rem .7rem;border-radius:10px;border:1px solid var(--input-border);background:var(--input-bg);}
   .grade-confirm{padding:.5rem .9rem}
 
-  /* toast poruke */
-  .toast-wrap{position:fixed;right:16px;bottom:16px;display:flex;flex-direction:column;gap:.5rem;z-index:1200}
-  .toast{background:var(--modal-bg);color:var(--text);border:1px solid var(--modal-border);border-left:4px solid #f0b25f;border-radius:10px;padding:.6rem .8rem;box-shadow:0 10px 30px rgba(0,0,0,.18);min-width:260px;max-width:340px;opacity:.98}
+  /* TOAST: centar ekrana (donji centar) */
+  .toast-wrap{
+    position:fixed;left:50%;bottom:24px;transform:translateX(-50%);
+    display:flex;flex-direction:column;gap:.6rem;align-items:center;z-index:1200;
+    pointer-events:none;
+  }
+  .toast{
+    background:var(--modal-bg);color:var(--text);border:1px solid var(--modal-border);
+    border-left:4px solid #f0b25f;border-radius:12px;padding:.7rem 1rem;
+    box-shadow:0 10px 30px rgba(0,0,0,.18);min-width:280px;max-width:min(92vw,520px);
+    pointer-events:auto;
+  }
   .toast.ok{border-left-color:#4caf50}
   .toast.err{border-left-color:#c94f4f}
 
@@ -214,7 +223,6 @@
 
         <div class="form-actions">
           <div class="left">
-            <!-- ukinut capture: telefoni otvaraju galeriju -->
             <input id="slika" type="file" name="file" accept="image/*" style="display:none;" />
             <label for="slika" class="btn secondary sm">📤 Upload slike</label>
             <span id="file-chip" class="file-chip">
@@ -280,13 +288,14 @@ document.addEventListener('click',(e)=>{ const closeSel=e.target.getAttribute?.(
 document.addEventListener('click', (e)=>{
   const menu = document.getElementById('menuWrap');
   if(!menu) return;
-  const isInside = menu.contains(e.target);
-  if(!isInside && menu.classList.contains('open')) menu.classList.remove('open');
+  if(!menu.contains(e.target) && menu.classList.contains('open')) menu.classList.remove('open');
 });
 
-function showToast(msg, type='warn', timeout=2800){
+function showToast(msg, type='warn', timeout=2600){
   const wrap = document.getElementById('toastWrap');
   if(!wrap) return;
+  // drži maksimalno 1 toast odjednom
+  wrap.innerHTML = '';
   const div = document.createElement('div');
   div.className = 'toast ' + (type==='ok' ? 'ok' : type==='err' ? 'err' : '');
   div.textContent = msg;
@@ -314,14 +323,17 @@ document.addEventListener('DOMContentLoaded', () => {
 
   const initialGrade = document.body.getAttribute('data-current-razred') || '5';
   gradeSelStart.value = initialGrade;
-  if (localStorage.getItem('mb_first_sent') === '1') {
+  if (localStorage.getItem('mb_first_sent') === '1' || localStorage.getItem('mb_grade_confirmed') === '1') {
     gradeStart.classList.add('hidden');
   }
   gradeBtnStart.addEventListener('click', ()=>{
     const g = gradeSelStart.value || '5';
     razredHidden.value = g;
     document.getElementById('curGradeLabel').textContent = g;
+    // sakrij ODMAH
     gradeStart.classList.add('hidden');
+    gradeStart.style.display = 'none';
+    localStorage.setItem('mb_grade_confirmed','1');
     showToast(`Razred postavljen na ${g}.`, 'ok');
   });
 
@@ -362,6 +374,7 @@ document.addEventListener('DOMContentLoaded', () => {
     }catch(_){}
     closeModal('#confirm-clear');
     localStorage.removeItem('mb_first_sent');
+    localStorage.removeItem('mb_grade_confirmed');
     location.reload();
   });
 
@@ -386,6 +399,7 @@ document.addEventListener('DOMContentLoaded', () => {
       if(r.ok){
         razredHidden.value = g;
         localStorage.removeItem('mb_first_sent');
+        localStorage.setItem('mb_grade_confirmed','1');
         closeModal('#confirm-grade');
         location.reload();
       }
