@@ -197,15 +197,27 @@ def read_job(job_id: str) -> dict:
         return (doc.to_dict() or {}) if doc.exists else {}
     return JOB_STORE.get(job_id, {})
 
-# --- Pedagoški promptovi ---
+# --- Pedagoški promptovi (osnovni po razredu) ---
 PROMPTI_PO_RAZREDU = {
     "5": "Ti si pomoćnik iz matematike za učenike 5. razreda osnovne škole. Objašnjavaj jednostavnim i razumljivim jezikom. Pomaži učenicima da razumiju zadatke iz prirodnih brojeva, osnovnih računskih operacija, jednostavne geometrije i tekstualnih zadataka. Svako rješenje objasni jasno, korak po korak.",
-    "6": "Ti si pomoćnik iz matematike za učenike 6. razreda osnovne škole. Odgovaraj detaljno i pedagoški, koristeći primjere primjerene njihovom uzrastu. Pomaži im da razumiju razlomke, decimalne brojeve, procente, geometriju i tekstualne zadatke. Objasni rješenje jasno i korak po korak.",
-    "7": "Ti si pomoćnik iz matematike za učenike 7. razreda osnovne škole. Pomaži im u razumijevanju složenijih zadataka iz algebre, geometrije i funkcija. Koristi jasan, primjeren jezik i objasni svaki korak logično i precizno.",
-    "8": "Ti si pomoćnik iz matematike za učenike 8. razreda osnovne škole. Fokusiraj se na linearne izraze, sisteme jednačina, geometriju i statistiku. Pomaži učenicima da razumiju postupke i objasni svako rješenje detaljno, korak po korak.",
-    "9": "Ti si pomoćnik iz matematike za učenike 9. razreda osnovne škole. Pomaži im u savladavanju zadataka iz algebre, funkcija, geometrije i statistike. Koristi jasan i stručan jezik, ali primjeren njihovom nivou. Objasni svaki korak rješenja jasno i precizno."
+    "6": "Ti si pomoćnik iz matematike za učenike 6. razreda osnovne škole. Odgovaraj detaljno i pedagoški, koristeći primjere prikladne njihovom uzrastu. Pomaži im da razumiju razlomke, decimalne brojeve, procente, geometriju i tekstualne zadatke. Objasni rješenje jasno i korak po korak.",
+    "7": "Ti si pomoćnik iz matematike za učenike 7. razreda osnovne škole. Pomaži u razumijevanju složenijih zadataka iz algebre, geometrije i funkcija. Koristi jasan, primjeren jezik i objasni svaki korak logično i precizno.",
+    "8": "Ti si pomoćnik iz matematike za učenike 8. razreda osnovne škole. Fokusiraj se na linearne izraze, sisteme jednačina, geometriju i statistiku. Objasni postupke detaljno, korak po korak.",
+    "9": "Ti si pomoćnik iz matematike za učenike 9. razreda osnovne škole. Pomaži u zadacima iz algebre, funkcija, geometrije i statistike. Koristi jasan i stručan jezik, ali primjeren nivou učenika. Objasni svaki korak rješenja jasno i precizno."
 }
 DOZVOLJENI_RAZREDI = set(PROMPTI_PO_RAZREDU.keys())
+
+# --- COMMON TEACHING RULES (ljudski, univerzalno) ---
+COMMON_RULES = (
+    " Razgovaraj prirodno i strpljivo, kao nastavnik. "
+    " Ako učenik pošalje nejasnu poruku ili napiše da nije shvatio, PODRAZUMIJEVAJ da se to odnosi na TVOJ POSLJEDNJI odgovor ili zadatak, "
+    " osim ako učenik izričito ne kaže da mijenja temu. "
+    " U tom slučaju objasni isti sadržaj DRUGAČIJE (jednostavnije, intuitivno ili sa kratkim paralelnim primjerom), "
+    " a na kraju dodaj kratku rečenicu: 'Ako ti i dalje nije jasno, napiši šta ti tačno nije jasno.' "
+    " Kod razlomaka koristi termine 'brojnik' i 'nazivnik' (osim ako korisnik uporno koristi druge nazive). "
+    " Za linearne funkcije koristi isključivo zapis y = kx + n, gdje je k koeficijent pravca, a n odsječak na y-osi. "
+    " Po difoltu odgovaraj bosanskim (ijekavica) i ne koristi ASCII grafove osim ako su traženi."
+)
 
 ORDINAL_WORDS = {
     "prvi": 1, "drugi": 2, "treći": 3, "treci": 3, "četvrti": 4, "cetvrti": 4,
@@ -297,11 +309,13 @@ def answer_with_text_pipeline(pure_text: str, razred: str, history, requested, t
     strict_geom_policy = (" Ako problem uključuje geometriju: 1) koristi samo eksplicitno date podatke; 2) ne pretpostavljaj ništa bez oznake; 3) navedi nazive teorema (npr. unutrašnji naspramni, Thales...).")
     if requested:
         only_clause = (" Riješi ISKLJUČIVO sljedeće zadatke: " + ", ".join(map(str, requested)) + ". Sve ostale primjere ignoriraj.")
+    # --- COMMON RULES ubačene ovdje ---
     system_message = {
         "role": "system",
-        "content": (prompt_za_razred + " Odgovaraj jezikom pitanja (po difoltu bosanski ijekavica). Ako pitanje nije iz matematike, reci: 'Molim te, postavi matematičko pitanje.' Ako ne znaš tačno rješenje, reci: 'Za ovaj zadatak se obrati instruktorima na info@matematicari.com'. Ne crtati ASCII grafove osim ako je traženo." + only_clause + strict_geom_policy)
+        "content": (prompt_za_razred + COMMON_RULES + only_clause + strict_geom_policy)
     }
     messages = [system_message]
+    # koristi zadnjih 5 izmjena iz historije
     for msg in history[-5:]:
         messages.append({"role":"user","content": msg["user"]})
         messages.append({"role":"assistant","content": msg["bot"]})
@@ -315,9 +329,10 @@ def answer_with_text_pipeline(pure_text: str, razred: str, history, requested, t
 
 def _vision_messages_base(razred: str, history, only_clause: str, strict_geom_policy: str):
     prompt_za_razred = PROMPTI_PO_RAZREDU.get(razred, PROMPTI_PO_RAZREDU["5"])
+    # --- COMMON RULES ubačene i u viziju ---
     system_message = {
         "role": "system",
-        "content": (prompt_za_razred + " Odgovaraj jezikom pitanja (bosanski/ijekavica). Ne prikazuj ASCII grafove osim ako su izričito traženi. " + only_clause + " " + strict_geom_policy)
+        "content": (prompt_za_razred + COMMON_RULES + " " + only_clause + " " + strict_geom_policy)
     }
     messages = [system_message]
     for msg in history[-5:]:
@@ -740,7 +755,7 @@ def _process_job_core(payload: dict) -> dict:
         img_bytes = base64.b64decode(image_inline_b64)
         odgovor_html, used_path, used_model = route_image_flow(img_bytes, razred, history=history, user_text=user_text, timeout_override=task_ai_timeout, mime_hint=None)
     elif image_url:
-        odgovor_html, used_path, used_model = route_image_flow_url(image_url, razred, history=history, user_text=user_text, timeout_override=task_ai_timeout)
+        odgovor_html, used_path, used_model = route_image_flow_url(image_url, razred, history, user_text=user_text, timeout_override=task_ai_timeout)
     else:
         odgovor_html, used_model = answer_with_text_pipeline(user_text, razred, history, requested, timeout_override=task_ai_timeout)
         used_path = "text"
