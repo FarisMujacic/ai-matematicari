@@ -84,20 +84,21 @@ MODEL_VISION_LIGHT = os.getenv("OPENAI_MODEL_VISION_LIGHT") or os.getenv("OPENAI
 MODEL_TEXT   = os.getenv("OPENAI_MODEL_TEXT", "gpt-5-mini")
 MODEL_VISION = os.getenv("OPENAI_MODEL_VISION", "gpt-5")
 
-# --- Mathpix: auto-enable ako postoje ključevi ---
+# --- Mathpix: auto-enable i default "prefer" ---
 MATHPIX_APP_ID  = (os.getenv("MATHPIX_APP_ID")  or os.getenv("MATHPIX_API_ID")  or "").strip()
 MATHPIX_APP_KEY = (os.getenv("MATHPIX_APP_KEY") or os.getenv("MATHPIX_API_KEY") or "").strip()
 
 _use_flag = (os.getenv("USE_MATHPIX", "").strip())
-_mode     = (os.getenv("MATHPIX_MODE", "").strip().lower())
-if _use_flag == "0" or _mode in ("off", "disable", "disabled"):
+# default MATHPIX_MODE = "prefer" (ako korisnik nije ništa postavio)
+MATHPIX_MODE = (os.getenv("MATHPIX_MODE", "prefer").strip().lower())
+
+if _use_flag == "0" or MATHPIX_MODE in ("off", "disable", "disabled"):
     USE_MATHPIX = False
 else:
-    USE_MATHPIX = bool(MATHPIX_APP_ID and MATHPIX_APP_KEY) or (_use_flag == "1") or (_mode in ("prefer", "force", "on"))
+    USE_MATHPIX = bool(MATHPIX_APP_ID and MATHPIX_APP_KEY) or (_use_flag == "1") or (MATHPIX_MODE in ("prefer","force","on"))
 
 def _mathpix_enabled() -> bool:
-    # Dovoljan uslov su validni ključevi (auto-enable već gore podešen).
-    return bool(MATHPIX_APP_ID and MATHPIX_APP_KEY)
+    return bool(MATHPIX_APP_ID and MATHPIX_APP_KEY) and USE_MATHPIX
 
 # --- Google Sheets ---
 SHEETS_SCOPES = [
@@ -424,7 +425,9 @@ def route_image_flow_url(image_url: str, razred: str, history, user_text=None, t
     return f"<p>{latexify_fractions(raw)}</p>", "vision_url", actual_model
 
 def route_image_flow(slika_bytes: bytes, razred: str, history, user_text=None, timeout_override: float | None = None, mime_hint: str | None = None):
-    if _mathpix_enabled() and _heuristic_plain_text_image(slika_bytes):
+    # Try Mathpix first if mode prefers/forces it, OR if heuristika prepoznaje plain-tekst
+    try_mathpix = _mathpix_enabled() and (MATHPIX_MODE in ("prefer","force","on") or _heuristic_plain_text_image(slika_bytes))
+    if try_mathpix:
         plain, conf = mathpix_ocr_to_text(slika_bytes)
         if plain:
             try:
@@ -436,6 +439,8 @@ def route_image_flow(slika_bytes: bytes, razred: str, history, user_text=None, t
                 return html_out, "mathpix", actual_model
             except Exception:
                 pass
+        # ako je mode == "force" a Mathpix nije dao tekst, ipak fallback na Vision radi robusnosti
+    # fallback → Vision
     only_clause, strict_geom_policy = _vision_clauses()
     messages = _vision_messages_base(razred, history, only_clause, strict_geom_policy)
     data_url = _bytes_to_data_url(slika_bytes, mime_hint=mime_hint)
@@ -449,6 +454,7 @@ def route_image_flow(slika_bytes: bytes, razred: str, history, user_text=None, t
     raw = resp.choices[0].message.content
     raw = strip_ascii_graph_blocks(raw)
     return f"<p>{latexify_fractions(raw)}</p>", "vision_direct", actual_model
+
 
 def get_history_from_request():
     try:
