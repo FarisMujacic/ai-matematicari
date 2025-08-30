@@ -1,6 +1,3 @@
-Evo kompletan `app.py` sa ispravkama (Mathpix fallback na `MATHPIX_API_*`, podrška za `MATHPIX_MODE=prefer|force|on`, i Mathpix → mini prioritet u `route_image_flow`):
-
-````python
 from flask import Flask, render_template, request, session, redirect, url_for, send_from_directory, jsonify
 from dotenv import load_dotenv
 import os, re, base64, json, html, datetime, logging, mimetypes, threading, traceback
