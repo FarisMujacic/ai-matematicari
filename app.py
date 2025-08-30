@@ -1,3 +1,5 @@
+# app.py — MAT-BOT (auto Mathpix enable + robust OCR + text/vision hybrid)
+
 from flask import Flask, render_template, request, session, redirect, url_for, send_from_directory, jsonify
 from dotenv import load_dotenv
 import os, re, base64, json, html, datetime, logging, mimetypes, threading, traceback
@@ -8,8 +10,9 @@ from urllib.parse import urlparse
 from openai import OpenAI
 from flask_cors import CORS
 
+# --- Optional PIL (for image heuristics and selftest) ---
 try:
-    from PIL import Image, ImageStat
+    from PIL import Image, ImageStat, ImageDraw, ImageFont
     HAVE_PIL = True
 except Exception:
     HAVE_PIL = False
@@ -18,6 +21,7 @@ import gspread
 from google.oauth2.service_account import Credentials as SACreds
 import google.auth
 
+# --- Optional GCP clients ---
 try:
     from google.cloud import storage as gcs_lib
 except Exception:
@@ -31,6 +35,7 @@ try:
 except Exception:
     tasks_v2 = None
 
+# ---------------- Bootstrapping ----------------
 load_dotenv(override=False)
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
 log = logging.getLogger("matbot")
@@ -69,6 +74,7 @@ def _budgeted_timeout(default: float | int = None, margin: float = 5.0) -> float
     want = float(default if default is not None else OPENAI_TIMEOUT)
     return max(5.0, min(want, run_lim - margin))
 
+# --- OpenAI client ---
 _OPENAI_API_KEY = (os.getenv("OPENAI_API_KEY") or "").strip()
 if not _OPENAI_API_KEY:
     log.error("OPENAI_API_KEY nije postavljen u okruženju.")
@@ -78,13 +84,22 @@ MODEL_VISION_LIGHT = os.getenv("OPENAI_MODEL_VISION_LIGHT") or os.getenv("OPENAI
 MODEL_TEXT   = os.getenv("OPENAI_MODEL_TEXT", "gpt-5-mini")
 MODEL_VISION = os.getenv("OPENAI_MODEL_VISION", "gpt-5")
 
-USE_MATHPIX = (
-    (os.getenv("USE_MATHPIX", "").strip() == "1") or
-    (os.getenv("MATHPIX_MODE", "").strip().lower() in ("prefer", "force", "on"))
-)
+# --- Mathpix: auto-enable ako postoje ključevi ---
 MATHPIX_APP_ID  = (os.getenv("MATHPIX_APP_ID")  or os.getenv("MATHPIX_API_ID")  or "").strip()
 MATHPIX_APP_KEY = (os.getenv("MATHPIX_APP_KEY") or os.getenv("MATHPIX_API_KEY") or "").strip()
 
+_use_flag = (os.getenv("USE_MATHPIX", "").strip())
+_mode     = (os.getenv("MATHPIX_MODE", "").strip().lower())
+if _use_flag == "0" or _mode in ("off", "disable", "disabled"):
+    USE_MATHPIX = False
+else:
+    USE_MATHPIX = bool(MATHPIX_APP_ID and MATHPIX_APP_KEY) or (_use_flag == "1") or (_mode in ("prefer", "force", "on"))
+
+def _mathpix_enabled() -> bool:
+    # Dovoljan uslov su validni ključevi (auto-enable već gore podešen).
+    return bool(MATHPIX_APP_ID and MATHPIX_APP_KEY)
+
+# --- Google Sheets ---
 SHEETS_SCOPES = [
     "https://www.googleapis.com/auth/spreadsheets",
     "https://www.googleapis.com/auth/drive",
@@ -151,6 +166,7 @@ def log_to_sheet(job_id, razred, user_text, odgovor_html, source_tag, model_name
     ts = datetime.datetime.utcnow().isoformat()
     sheets_append_row_safe([ts, razred, user_text, odgovor_html, f"{source_tag}|{model_name}", job_id])
 
+# --- GCS & Firestore ---
 GCS_BUCKET = (os.getenv("GCS_BUCKET") or "").strip()
 GCS_SIGNED_GET = os.getenv("GCS_SIGNED_GET", "1") == "1"
 storage_client = None
@@ -180,6 +196,7 @@ def read_job(job_id: str) -> dict:
         return (doc.to_dict() or {}) if doc.exists else {}
     return JOB_STORE.get(job_id, {})
 
+# --- Pedagoški promptovi ---
 PROMPTI_PO_RAZREDU = {
     "5": "Ti si pomoćnik iz matematike za učenike 5. razreda osnovne škole. Objašnjavaj jednostavnim i razumljivim jezikom. Pomaži učenicima da razumiju zadatke iz prirodnih brojeva, osnovnih računskih operacija, jednostavne geometrije i tekstualnih zadataka. Svako rješenje objasni jasno, korak po korak.",
     "6": "Ti si pomoćnik iz matematike za učenike 6. razreda osnovne škole. Odgovaraj detaljno i pedagoški, koristeći primjere primjerene njihovom uzrastu. Pomaži im da razumiju razlomke, decimalne brojeve, procente, geometriju i tekstualne zadatke. Objasni rješenje jasno i korak po korak.",
@@ -325,9 +342,6 @@ def _bytes_to_data_url(raw: bytes, mime_hint: str | None = None) -> str:
     b64 = base64.b64encode(raw).decode()
     return f"data:{mime};base64,{b64}"
 
-def _mathpix_enabled() -> bool:
-    return USE_MATHPIX and bool(MATHPIX_APP_ID and MATHPIX_APP_KEY)
-
 def _heuristic_plain_text_image(img_bytes: bytes) -> bool:
     try:
         if len(img_bytes) > 4_000_000:
@@ -364,12 +378,12 @@ def mathpix_ocr_to_text(img_bytes: bytes) -> tuple[str | None, float]:
             "data_options": {"include_asciimath": False, "include_latex": False},
             "rm_spaces": True
         }
-        r = requests.post("https://api.mathpix.com/v3/text", headers=headers, json=payload, timeout=20)
+        r = requests.post("https://api.mathpix.com/v3/text", headers=headers, json=payload, timeout=30)
         if r.status_code != 200:
             return (None, 0.0)
-        j = r.json()
+        j = r.json() or {}
         plain = (j.get("text") or "").strip()
-        conf  = float(j.get("confidence", 0.0) or 0.0)
+        conf  = float(j.get("confidence") or 0.0)
         if not plain:
             return (None, 0.0)
         plain = (
@@ -494,6 +508,7 @@ def gcs_upload_filestorage(f):
     except Exception:
         return None
 
+# ---------------- Web routes ----------------
 @app.route("/", methods=["GET", "POST"])
 def index():
     plot_expression_added = False
@@ -602,6 +617,25 @@ def sheets_selftest():
     row = [datetime.datetime.utcnow().isoformat(), "selftest", "Hello from /sheets/selftest", "<p>OK</p>", "selftest|none", f"self-{uuid4().hex[:8]}"]
     ok = sheets_append_row_safe(row); return jsonify({"ok": ok}), (200 if ok else 500)
 
+# --- Mathpix selftest (opcionalno) ---
+@app.get("/mathpix/selftest")
+def mathpix_selftest():
+    if not _mathpix_enabled():
+        return jsonify({"ok": False, "reason": "no-keys"}), 400
+    if not HAVE_PIL:
+        return jsonify({"ok": False, "reason": "no-PIL"}), 400
+    try:
+        import io
+        img = Image.new("RGB", (320, 80), "white")
+        d = ImageDraw.Draw(img)
+        d.text((10, 20), "12/3 + 5", fill="black")
+        buf = io.BytesIO()
+        img.save(buf, format="PNG")
+        out, conf = mathpix_ocr_to_text(buf.getvalue())
+        return jsonify({"ok": True, "text": out, "confidence": conf}), 200
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
 @app.after_request
 def add_no_cache_headers(resp):
     resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0, private"
@@ -645,6 +679,7 @@ def gcs_signed_upload():
             )
     return jsonify({"uploadUrl": put_url, "readUrl": read_url}), 200
 
+# --- Cloud Tasks (async) ---
 PROJECT_ID        = (os.getenv("GOOGLE_CLOUD_PROJECT") or os.getenv("GCP_PROJECT") or "").strip()
 REGION            = os.getenv("REGION", "europe-west1")
 TASKS_QUEUE       = os.getenv("TASKS_QUEUE", "matbot-queue")
@@ -741,7 +776,7 @@ def _sync_process_once(razred: str, user_text: str, requested: list, image_url: 
         if file_bytes:
             html_out, used_path, used_model = route_image_flow(file_bytes, razred, history, user_text=user_text, timeout_override=timeout_s, mime_hint=file_mime or None)
             return {"ok": True, "result": {"html": html_out, "path": used_path, "model": used_model}}
-        html_out, used_model = answer_with_text_pipeline(user_text, razred, history, requested, timeout_override=timeout_s)
+        html_out, used_model = answer_with_text_pipeline(user_text, razred, history, requested, timeout_s)
         return {"ok": True, "result": {"html": html_out, "path": "text", "model": used_model}}
     except Exception as e:
         return {"ok": False, "error": str(e)}
