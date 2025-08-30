@@ -1,5 +1,4 @@
-# app.py — Async TEXT + IMAGE (Cloud Tasks + Firestore + GCS) + HYBRID (auto|sync|async) + LOCAL_MODE + session guard
-from flask import Flask, render_template, request, session, redirect, url_for, send_from_directory, jsonify, abort
+from flask import Flask, render_template, request, session, redirect, url_for, send_from_directory, jsonify
 from dotenv import load_dotenv
 import os, re, base64, json, html, datetime, logging, mimetypes, threading, traceback
 from datetime import timedelta
@@ -8,34 +7,33 @@ import requests
 from urllib.parse import urlparse
 from openai import OpenAI
 from flask_cors import CORS
-
+try:
+    from PIL import Image, ImageStat
+    HAVE_PIL = True
+except Exception:
+    HAVE_PIL = False
 import gspread
 from google.oauth2.service_account import Credentials as SACreds
 import google.auth
-
-# --- Opcionalni GCP klijenti ---
 try:
-    from google.cloud import storage as gcs_lib  # type: ignore
+    from google.cloud import storage as gcs_lib
 except Exception:
     gcs_lib = None
 try:
-    from google.cloud import firestore as fs_lib  # type: ignore
+    from google.cloud import firestore as fs_lib
 except Exception:
     fs_lib = None
 try:
-    from google.cloud import tasks_v2  # type: ignore
+    from google.cloud import tasks_v2
 except Exception:
     tasks_v2 = None
 
-# ---------------- Bootstrapping ----------------
 load_dotenv(override=False)
-
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
 log = logging.getLogger("matbot")
 
 SECURE_COOKIES = os.getenv("COOKIE_SECURE", "0") == "1"
 app = Flask(__name__)
-
 app.config.update(
     SESSION_COOKIE_SAMESITE="Lax",
     SESSION_COOKIE_SECURE=SECURE_COOKIES,
@@ -47,7 +45,6 @@ app.config.update(
 CORS(app, supports_credentials=True)
 app.secret_key = os.getenv("SECRET_KEY", "tajna_lozinka")
 
-# ------ MODE ------
 LOCAL_MODE = os.getenv("LOCAL_MODE", "0") == "1"
 USE_FIRESTORE = os.getenv("USE_FIRESTORE", "1") == "1" and not LOCAL_MODE
 
@@ -57,12 +54,10 @@ app.config["MAX_CONTENT_LENGTH"] = MAX_MB * 1024 * 1024
 UPLOAD_DIR = "/tmp/uploads"
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
-# --- TIMEOUT ---
 HARD_TIMEOUT_S = float(os.getenv("HARD_TIMEOUT_S", "120"))
 OPENAI_TIMEOUT = HARD_TIMEOUT_S
 OPENAI_MAX_RETRIES = 2
 
-# --- HYBRID pragovi/timeouti ---
 SYNC_SOFT_TIMEOUT_S = float(os.getenv("SYNC_SOFT_TIMEOUT_S", "8"))
 HEAVY_TOKEN_THRESHOLD = int(os.getenv("HEAVY_TOKEN_THRESHOLD", "1500"))
 
@@ -71,7 +66,6 @@ def _budgeted_timeout(default: float | int = None, margin: float = 5.0) -> float
     want = float(default if default is not None else OPENAI_TIMEOUT)
     return max(5.0, min(want, run_lim - margin))
 
-# --- OpenAI ---
 _OPENAI_API_KEY = (os.getenv("OPENAI_API_KEY") or "").strip()
 if not _OPENAI_API_KEY:
     log.error("OPENAI_API_KEY nije postavljen u okruženju.")
@@ -81,7 +75,10 @@ MODEL_VISION_LIGHT = os.getenv("OPENAI_MODEL_VISION_LIGHT") or os.getenv("OPENAI
 MODEL_TEXT   = os.getenv("OPENAI_MODEL_TEXT", "gpt-5-mini")
 MODEL_VISION = os.getenv("OPENAI_MODEL_VISION", "gpt-5")
 
-# ---------------- Sheets ----------------
+USE_MATHPIX = os.getenv("USE_MATHPIX", "1") == "1"
+MATHPIX_APP_ID  = os.getenv("MATHPIX_APP_ID", "").strip()
+MATHPIX_APP_KEY = os.getenv("MATHPIX_APP_KEY", "").strip()
+
 SHEETS_SCOPES = [
     "https://www.googleapis.com/auth/spreadsheets",
     "https://www.googleapis.com/auth/drive",
@@ -113,25 +110,20 @@ try:
         creds = SACreds.from_service_account_info(info, scopes=SHEETS_SCOPES)
         gc = gspread.authorize(creds)
         _sheets_diag["mode"] = "b64"; _sheets_diag["sa_email"] = info.get("client_email")
-        log.info("Sheets via service_account_b64 (sa=%s)", info.get("client_email"))
     elif os.path.exists("credentials.json"):
         creds = SACreds.from_service_account_file("credentials.json", scopes=SHEETS_SCOPES)
         gc = gspread.authorize(creds)
         _sheets_diag["mode"] = "file"; _sheets_diag["sa_email"] = _try_get_sa_email_from_creds(creds)
-        log.info("Sheets via service_account_file")
     else:
         adc_creds, _ = google.auth.default(scopes=SHEETS_SCOPES)
         gc = gspread.authorize(adc_creds)
         _sheets_diag["mode"] = "adc"; _sheets_diag["sa_email"] = _try_get_sa_email_from_creds(adc_creds)
-        log.info("Sheets via ADC default credentials")
 
     if not GSHEET_ID and not GSHEET_NAME:
         raise RuntimeError("GSHEET_ID ili GSHEET_NAME moraju biti postavljeni.")
-
     ss = gc.open_by_key(GSHEET_ID) if GSHEET_ID else gc.open(GSHEET_NAME)
     try: ws = ss.sheet1
     except Exception: ws = ss.get_worksheet(0)
-
     sheet = ws
     _sheets_diag.update({
         "enabled": True,
@@ -139,46 +131,36 @@ try:
         "spreadsheet_id": getattr(ss, "id", None),
         "worksheet_title": getattr(ws, "title", None),
     })
-    log.info("Sheets enabled (title=%s id=%s ws=%s)", _sheets_diag["spreadsheet_title"], _sheets_diag["spreadsheet_id"], _sheets_diag["worksheet_title"])
 except Exception as e:
-    log.warning("Sheets disabled: %s", e)
     _sheets_diag["error"] = str(e); sheet = None
 
 def sheets_append_row_safe(values):
     if not sheet: return False
     try:
         sheet.append_row(values, value_input_option="USER_ENTERED"); return True
-    except Exception as e:
-        log.warning("Sheets append error: %s", e); return False
+    except Exception:
+        return False
 
 def log_to_sheet(job_id, razred, user_text, odgovor_html, source_tag, model_name):
     ts = datetime.datetime.utcnow().isoformat()
     sheets_append_row_safe([ts, razred, user_text, odgovor_html, f"{source_tag}|{model_name}", job_id])
 
-# ---------------- GCS ----------------
 GCS_BUCKET = (os.getenv("GCS_BUCKET") or "").strip()
 GCS_SIGNED_GET = os.getenv("GCS_SIGNED_GET", "1") == "1"
 storage_client = None
 if not LOCAL_MODE and GCS_BUCKET and gcs_lib is not None:
     try:
         storage_client = gcs_lib.Client()
-        log.info("GCS enabled (bucket=%s, signed_get=%s)", GCS_BUCKET, GCS_SIGNED_GET)
     except Exception as e:
-        log.error("GCS client init failed: %s", e); storage_client = None
-else:
-    if not GCS_BUCKET: log.info("GCS disabled (no GCS_BUCKET set or LOCAL_MODE=1).")
-    elif gcs_lib is None: log.warning("google-cloud-storage lib not available, GCS disabled.")
+        storage_client = None
 
-# ---------------- Firestore or local store ----------------
 fs_db = None
-JOB_STORE = {}  # lokalni in-memory store kad Firestore nije u upotrebi
-
+JOB_STORE = {}
 if USE_FIRESTORE and fs_lib is not None:
     try:
         fs_db = fs_lib.Client(project=os.getenv("GOOGLE_CLOUD_PROJECT") or None)
-        log.info("Firestore enabled.")
-    except Exception as e:
-        log.error("Firestore init failed: %s", e); fs_db = None
+    except Exception:
+        fs_db = None
 
 def store_job(job_id: str, data: dict, merge: bool = True):
     if fs_db:
@@ -192,41 +174,6 @@ def read_job(job_id: str) -> dict:
         return (doc.to_dict() or {}) if doc.exists else {}
     return JOB_STORE.get(job_id, {})
 
-# ===================== Session helpers (guard) =====================
-def _ensure_sid():
-    if "sid" not in session:
-        session["sid"] = str(uuid4())
-    session.permanent = True
-
-@app.before_request
-def _prepare_session():
-    _ensure_sid()
-
-def _session_has_active_job() -> bool:
-    job_id = session.get("active_job_id")
-    if not job_id:
-        return False
-    data = read_job(job_id)
-    status = (data or {}).get("status", "pending")
-    return status not in ("done", "error")
-
-def _set_active_job(job_id: str | None):
-    if job_id:
-        session["active_job_id"] = job_id
-    else:
-        session.pop("active_job_id", None)
-
-def _lock_inflight_or_409():
-    if session.get("in_flight"):
-        abort(409, description="Već je u toku generisanje odgovora.")
-    if _session_has_active_job():
-        abort(409, description="Postoji aktivan zahtjev u obradi.")
-    session["in_flight"] = True
-
-def _unlock_inflight():
-    session["in_flight"] = False
-
-# ===================== Helpers =====================
 PROMPTI_PO_RAZREDU = {
     "5": "Ti si pomoćnik iz matematike za učenike 5. razreda osnovne škole. Objašnjavaj jednostavnim i razumljivim jezikom. Pomaži učenicima da razumiju zadatke iz prirodnih brojeva, osnovnih računskih operacija, jednostavne geometrije i tekstualnih zadataka. Svako rješenje objasni jasno, korak po korak.",
     "6": "Ti si pomoćnik iz matematike za učenike 6. razreda osnovne škole. Odgovaraj detaljno i pedagoški, koristeći primjere primjerene njihovom uzrastu. Pomaži im da razumiju razlomke, decimalne brojeve, procente, geometriju i tekstualne zadatke. Objasni rješenje jasno i korak po korak.",
@@ -270,11 +217,10 @@ def add_plot_div_once(odgovor_html: str, expression: str) -> str:
     if (marker in odgovor_html) and (expr_attr in odgovor_html): return odgovor_html
     return odgovor_html + f'<div class="plot-request" data-expression="{html.escape(expression)}"></div>'
 
-TRIGGER_PHRASES = [r"\bnacrtaj\b", r"\bnacrtati\b", r"\bcrtaj\b", r"\biscrtaj\b", r"\bskiciraj\b",
-                   r"\bgraf\b", r"\bgrafik\b", r"\bprika[žz]i\s+graf\b", r"\bplot\b", r"\bvizualizuj\b", r"\bnasrtaj\b"]
+TRIGGER_PHRASES = [r"\bnacrtaj\b", r"\bnacrtati\b", r"\bcrtaj\b", r"\biscrtaj\b", r"\bskiciraj\b", r"\bgraf\b", r"\bgrafik\b", r"\bprika[žz]i\s+graf\b", r"\bplot\b", r"\bvizualizuj\b", r"\bnasrtaj\b"]
 NEGATION_PHRASES = [r"\bbez\s+grafa\b", r"\bne\s+crt(a|aj)\b", r"\bnemoj\s+crtati\b", r"\bne\s+treba\s+graf\b"]
 _trigger_re  = re.compile("|".join(TRIGGER_PHRASES), flags=re.IGNORECASE)
-_negation_re = re.compile("|".join(NEGATION_PHRASES), re.IGNORECASE)
+_negation_re = re.compile("|".join(NEGATION_PHRASES), flags=re.IGNORECASE)
 
 def should_plot(text: str) -> bool:
     if not text: return False
@@ -290,7 +236,6 @@ def extract_plot_expression(user_text: str, razred: str = "", history=None) -> s
         return expr
     return None
 
-# ====== Helperi za prikaz imena slike ======
 def _short_name_for_display(name: str, maxlen: int = 60) -> str:
     n = os.path.basename(name or "").strip() or "nepoznato"
     if len(n) > maxlen:
@@ -305,7 +250,6 @@ def _name_from_url(u: str) -> str:
     except Exception:
         return _short_name_for_display(u)
 
-# ===== OpenAI helper =====
 def _openai_chat(model: str, messages: list, timeout: float = None, max_tokens: int | None = None):
     def _do(params):
         cli = client if timeout is None else client.with_options(timeout=timeout)
@@ -323,24 +267,15 @@ def _openai_chat(model: str, messages: list, timeout: float = None, max_tokens: 
             return _do(params)
         raise
 
-# ===== Pipelines =====
 def answer_with_text_pipeline(pure_text: str, razred: str, history, requested, timeout_override: float | None = None):
     prompt_za_razred = PROMPTI_PO_RAZREDU.get(razred, PROMPTI_PO_RAZREDU["5"])
     only_clause = ""
-    strict_geom_policy = (" Ako problem uključuje geometriju: "
-                          "1) koristi samo eksplicitno date podatke; "
-                          "2) ne pretpostavljaj ništa bez oznake; "
-                          "3) navedi nazive teorema (npr. unutrašnji naspramni, Thales...).")
+    strict_geom_policy = (" Ako problem uključuje geometriju: 1) koristi samo eksplicitno date podatke; 2) ne pretpostavljaj ništa bez oznake; 3) navedi nazive teorema (npr. unutrašnji naspramni, Thales...).")
     if requested:
-        only_clause = (" Riješi ISKLJUČIVO sljedeće zadatke: " + ", ".join(map(str, requested)) +
-                       ". Sve ostale primjere ignoriraj.")
+        only_clause = (" Riješi ISKLJUČIVO sljedeće zadatke: " + ", ".join(map(str, requested)) + ". Sve ostale primjere ignoriraj.")
     system_message = {
         "role": "system",
-        "content": (prompt_za_razred +
-                    " Odgovaraj jezikom pitanja (po difoltu bosanski ijekavica). "
-                    "Ako pitanje nije iz matematike, reci: 'Molim te, postavi matematičko pitanje.' "
-                    "Ako ne znaš tačno rješenje, reci: 'Za ovaj zadatak se obrati instruktorima na info@matematicari.com'. "
-                    "Ne crtati ASCII grafove osim ako je traženo." + only_clause + strict_geom_policy)
+        "content": (prompt_za_razred + " Odgovaraj jezikom pitanja (po difoltu bosanski ijekavica). Ako pitanje nije iz matematike, reci: 'Molim te, postavi matematičko pitanje.' Ako ne znaš tačno rješenje, reci: 'Za ovaj zadatak se obrati instruktorima na info@matematicari.com'. Ne crtati ASCII grafove osim ako je traženo." + only_clause + strict_geom_policy)
     }
     messages = [system_message]
     for msg in history[-5:]:
@@ -358,10 +293,7 @@ def _vision_messages_base(razred: str, history, only_clause: str, strict_geom_po
     prompt_za_razred = PROMPTI_PO_RAZREDU.get(razred, PROMPTI_PO_RAZREDU["5"])
     system_message = {
         "role": "system",
-        "content": (prompt_za_razred +
-                    " Odgovaraj jezikom pitanja (bosanski/ijekavica). "
-                    "Ne prikazuj ASCII grafove osim ako su izričito traženi. " +
-                    only_clause + " " + strict_geom_policy)
+        "content": (prompt_za_razred + " Odgovaraj jezikom pitanja (bosanski/ijekavica). Ne prikazuj ASCII grafove osim ako su izričito traženi. " + only_clause + " " + strict_geom_policy)
     }
     messages = [system_message]
     for msg in history[-5:]:
@@ -372,7 +304,6 @@ def _vision_messages_base(razred: str, history, only_clause: str, strict_geom_po
 def _vision_clauses():
     return "", " Radi tačno i oprezno. Ako nešto nedostaje, navedi šta nedostaje i stani."
 
-# ---- MIME sniff bez imghdr ----
 def _sniff_image_mime(raw: bytes) -> str:
     if len(raw) >= 12:
         if raw.startswith(b"\x89PNG\r\n\x1a\n"): return "image/png"
@@ -388,6 +319,57 @@ def _bytes_to_data_url(raw: bytes, mime_hint: str | None = None) -> str:
     b64 = base64.b64encode(raw).decode()
     return f"data:{mime};base64,{b64}"
 
+def _mathpix_enabled() -> bool:
+    return USE_MATHPIX and bool(MATHPIX_APP_ID and MATHPIX_APP_KEY)
+
+def _heuristic_plain_text_image(img_bytes: bytes) -> bool:
+    try:
+        if len(img_bytes) > 4_000_000:
+            return False
+        if not HAVE_PIL:
+            return True
+        from io import BytesIO
+        im = Image.open(BytesIO(img_bytes)).convert("RGB")
+        w, h = im.size
+        if w*h > 8_000_000:
+            return False
+        stat = ImageStat.Stat(im)
+        mean = sum(stat.mean) / 3.0
+        var  = sum(stat.var) / 3.0
+        is_whiteish = mean > 200
+        low_var = var < 1200
+        return is_whiteish and low_var
+    except Exception:
+        return False
+
+def mathpix_ocr_to_text(img_bytes: bytes) -> tuple[str | None, float]:
+    if not _mathpix_enabled():
+        return (None, 0.0)
+    try:
+        headers = {
+            "app_id": MATHPIX_APP_ID,
+            "app_key": MATHPIX_APP_KEY,
+            "Content-type": "application/json"
+        }
+        img_b64 = base64.b64encode(img_bytes).decode()
+        payload = {
+            "src": f"data:image/png;base64,{img_b64}",
+            "formats": ["text"],
+            "data_options": {"include_asciimath": False, "include_latex": False},
+            "rm_spaces": True
+        }
+        r = requests.post("https://api.mathpix.com/v3/text", headers=headers, json=payload, timeout=20)
+        if r.status_code != 200:
+            return (None, 0.0)
+        j = r.json()
+        plain = (j.get("text") or "").strip()
+        conf  = float(j.get("confidence", 0.0) or 0.0)
+        if not plain:
+            return (None, 0.0)
+        return (plain, conf)
+    except Exception:
+        return (None, 0.0)
+
 def route_image_flow_url(image_url: str, razred: str, history, user_text=None, timeout_override: float | None = None):
     only_clause, strict_geom_policy = _vision_clauses()
     try:
@@ -402,7 +384,6 @@ def route_image_flow_url(image_url: str, razred: str, history, user_text=None, t
         )
     except Exception as e:
         log.error("route_image_flow_url: download failed: %s", e)
-
     messages = _vision_messages_base(razred, history, only_clause, strict_geom_policy)
     user_content = []
     if user_text:
@@ -417,6 +398,18 @@ def route_image_flow_url(image_url: str, razred: str, history, user_text=None, t
     return f"<p>{latexify_fractions(raw)}</p>", "vision_url", actual_model
 
 def route_image_flow(slika_bytes: bytes, razred: str, history, user_text=None, timeout_override: float | None = None, mime_hint: str | None = None):
+    if _mathpix_enabled() and _heuristic_plain_text_image(slika_bytes):
+        plain, conf = mathpix_ocr_to_text(slika_bytes)
+        if plain and (conf >= 0.45 or len(plain) > 40):
+            try:
+                html_out, actual_model = answer_with_text_pipeline(
+                    pure_text=plain if not user_text else (user_text + "\n\n" + plain),
+                    razred=razred, history=history, requested=extract_requested_tasks(user_text or ""),
+                    timeout_override=timeout_override or OPENAI_TIMEOUT
+                )
+                return html_out, "mathpix", actual_model
+            except Exception:
+                pass
     only_clause, strict_geom_policy = _vision_clauses()
     messages = _vision_messages_base(razred, history, only_clause, strict_geom_policy)
     data_url = _bytes_to_data_url(slika_bytes, mime_hint=mime_hint)
@@ -431,7 +424,6 @@ def route_image_flow(slika_bytes: bytes, razred: str, history, user_text=None, t
     raw = strip_ascii_graph_blocks(raw)
     return f"<p>{latexify_fractions(raw)}</p>", "vision_direct", actual_model
 
-# ===== Request helpers =====
 def get_history_from_request():
     try:
         hx = request.form.get("history_json")
@@ -442,7 +434,6 @@ def get_history_from_request():
         pass
     return None
 
-# ===== Utils =====
 def strip_ascii_graph_blocks(text: str) -> str:
     fence = re.compile(r"```([\s\S]*?)```", flags=re.MULTILINE)
     def looks_like_ascii_graph(block: str) -> bool:
@@ -459,7 +450,6 @@ def strip_ascii_graph_blocks(text: str) -> str:
     text = graf_re.sub(lambda m: "" if "```" in m.group(0) else m.group(0), text)
     return fence.sub(repl, text)
 
-# ===================== GCS upload helper (samo u cloud modu) =====================
 def gcs_upload_bytes(job_id: str, raw: bytes, filename_hint: str = "image.bin", content_type: str | None = None) -> str | None:
     if not (storage_client and GCS_BUCKET):
         return None
@@ -470,8 +460,7 @@ def gcs_upload_bytes(job_id: str, raw: bytes, filename_hint: str = "image.bin", 
     try:
         blob.upload_from_string(raw, content_type=content_type or "application/octet-stream")
         return blob_name
-    except Exception as e:
-        log.error("GCS upload_from_string failed: %s", e)
+    except Exception:
         return None
 
 def gcs_upload_filestorage(f):
@@ -490,27 +479,23 @@ def gcs_upload_filestorage(f):
             try: blob.make_public(); url = blob.public_url
             except Exception: url = blob.generate_signed_url(version="V4", expiration=datetime.timedelta(minutes=45), method="GET")
         return url
-    except Exception as e:
-        log.error("GCS upload failed: %s", e); return None
+    except Exception:
+        return None
 
-# ===================== Routes: sync forma (legacy) =====================
 @app.route("/", methods=["GET", "POST"])
 def index():
     plot_expression_added = False
     history = get_history_from_request() or session.get("history", [])
     razred = (request.form.get("razred") or session.get("razred") or "").strip()
-
     if request.method == "POST":
         if razred not in DOZVOLJENI_RAZREDI:
             return render_template("index.html", history=history, razred=razred, error="Molim odaberi razred."), 400
         session["razred"] = razred
-
         try:
             pitanje = (request.form.get("pitanje", "") or "").strip()
             slika = request.files.get("slika")
             image_url = (request.form.get("image_url") or "").strip()
             is_ajax = request.form.get("ajax") == "1" or request.headers.get("X-Requested-With") == "XMLHttpRequest"
-
             if image_url:
                 combined_text = pitanje
                 odgovor, used_path, used_model = route_image_flow_url(image_url, razred, history, user_text=combined_text, timeout_override=HARD_TIMEOUT_S)
@@ -525,7 +510,6 @@ def index():
                 sync_job_id = f"sync-{uuid4().hex[:8]}"; log_to_sheet(sync_job_id, razred, combined_text, odgovor, "vision_url", used_model)
                 if is_ajax: return render_template("index.html", history=history, razred=razred)
                 return redirect(url_for("index"))
-
             if slika and slika.filename:
                 combined_text = pitanje
                 body = slika.read()
@@ -536,8 +520,8 @@ def index():
                     with open(os.path.join(UPLOAD_DIR, fname), "wb") as fp: fp.write(body)
                     public_url = (request.url_root.rstrip("/") + "/uploads/" + fname)
                     session["last_image_url"] = public_url
-                except Exception as _e:
-                    log.warning("Couldn't persist small image copy: %s", _e)
+                except Exception:
+                    pass
                 if (not plot_expression_added) and should_plot(combined_text):
                     expr = extract_plot_expression(combined_text, razred=razred, history=history)
                     if expr: odgovor = add_plot_div_once(odgovor, expr); plot_expression_added = True
@@ -548,7 +532,6 @@ def index():
                 sync_job_id = f"sync-{uuid4().hex[:8]}"; log_to_sheet(sync_job_id, razred, combined_text, odgovor, "vision_direct", used_model)
                 if is_ajax: return render_template("index.html", history=history, razred=razred)
                 return redirect(url_for("index"))
-
             requested = extract_requested_tasks(pitanje)
             last_url = session.get("last_image_url")
             if last_url and (requested or (pitanje and FOLLOWUP_TASK_RE.match(pitanje))):
@@ -563,61 +546,42 @@ def index():
                 sync_job_id = f"sync-{uuid4().hex[:8]}"; log_to_sheet(sync_job_id, razred, pitanje, odgovor, "vision_url", used_model)
                 if is_ajax: return render_template("index.html", history=history, razred=razred)
                 return redirect(url_for("index"))
-
             odgovor, actual_model = answer_with_text_pipeline(pitanje, razred, history, requested, timeout_override=HARD_TIMEOUT_S)
             if (not plot_expression_added) and should_plot(pitanje):
                 expr = extract_plot_expression(pitanje, razred=razred, history=history)
                 if expr: odgovor = add_plot_div_once(odgovor, expr); plot_expression_added = True
             history.append({"user": pitanje, "bot": odgovor.strip()}); history = history[-8:]; session["history"] = history
             sync_job_id = f"sync-{uuid4().hex[:8]}"; log_to_sheet(sync_job_id, razred, pitanje, odgovor, "text", actual_model)
-
         except Exception as e:
-            log.error("FATAL index.POST: %r", e)
             err_html = f"<p><b>Greška servera:</b> {html.escape(str(e))}</p>"
             history.append({"user": request.form.get('pitanje') or "[SLIKA]", "bot": err_html})
             history = history[-8:]; session["history"] = history
             if request.form.get("ajax") == "1":
                 return render_template("index.html", history=history, razred=razred)
             return redirect(url_for("index"))
-
     return render_template("index.html", history=history, razred=razred)
 
-# ===================== Health & utils =====================
 @app.errorhandler(413)
 def too_large(e):
-    msg = (f"<p><b>Greška:</b> Fajl je prevelik (limit {MAX_MB} MB). "
-           f"Pokušaj ponovo ili smanji kvalitet.</p>")
+    msg = (f"<p><b>Greška:</b> Fajl je prevelik (limit {MAX_MB} MB). Pokušaj ponovo ili smanji kvalitet.</p>")
     return render_template("index.html", history=[{"user":"[SLIKA]", "bot": msg}], razred=session.get("razred")), 413
 
 @app.route("/clear", methods=["POST"])
 def clear():
     if request.form.get("confirm_clear") == "1":
         session.pop("history", None); session.pop("razred", None); session.pop("last_image_url", None)
-        session.pop("active_job_id", None); session["in_flight"] = False
     if request.form.get("ajax") == "1": return render_template("index.html", history=[], razred=None)
     return redirect("/")
 
-# 🔸 NOVO: promjena razreda s čišćenjem chata (koristi front nakon potvrde)
-@app.post("/set-razred")
-def set_razred():
-    r = (request.form.get("razred") or "").strip()
-    if r not in DOZVOLJENI_RAZREDI:
-        return jsonify({"ok": False, "error": "neispravan_razred"}), 400
-    session["razred"] = r
-    session.pop("history", None)
-    session.pop("last_image_url", None)
-    session.pop("active_job_id", None)
-    session["in_flight"] = False
-    return jsonify({"ok": True, "razred": r})
-
 @app.get("/healthz")
 def healthz(): return {"ok": True, "local_mode": LOCAL_MODE}, 200
+
 @app.get("/_healthz")
 def _healthz(): return {"ok": True}, 200
+
 @app.get("/_ah/health")
 def ah_health(): return "OK", 200
 
-# ---- Sheets dijagnostika ----
 @app.get("/sheets/diag")
 def sheets_diag(): return jsonify(_sheets_diag), 200
 
@@ -638,24 +602,19 @@ def add_no_cache_headers(resp):
     except KeyError: pass
     return resp
 
-# ---- Serve local uploads for preview/follow-ups ----
 @app.get("/uploads/<path:filename>")
 def serve_upload(filename):
     return send_from_directory(UPLOAD_DIR, filename, as_attachment=False)
 
-# ---- (Optional) GCS signed upload so frontend can PUT directly ----
 @app.post("/gcs/signed-upload")
 def gcs_signed_upload():
     if not storage_client or not GCS_BUCKET or LOCAL_MODE:
         return jsonify({"ok": False, "reason": "no-gcs"}), 200
-
     data = request.get_json(force=True, silent=True) or {}
     content_type = (data.get("contentType") or "image/jpeg").strip()
-
     obj = f"uploads/{uuid4().hex}.bin"
     bucket = storage_client.bucket(GCS_BUCKET)
     blob = bucket.blob(obj)
-
     put_url = blob.generate_signed_url(
         version="V4",
         expiration=datetime.timedelta(minutes=15),
@@ -674,14 +633,12 @@ def gcs_signed_upload():
             read_url = blob.generate_signed_url(
                 version="V4", expiration=datetime.timedelta(minutes=45), method="GET"
             )
-
     return jsonify({"uploadUrl": put_url, "readUrl": read_url}), 200
 
-# ===================== ASINHRONO (Cloud Tasks / local thread) =====================
 PROJECT_ID        = (os.getenv("GOOGLE_CLOUD_PROJECT") or os.getenv("GCP_PROJECT") or "").strip()
 REGION            = os.getenv("REGION", "europe-west1")
 TASKS_QUEUE       = os.getenv("TASKS_QUEUE", "matbot-queue")
-TASKS_TARGET_URL  = os.getenv("TASKS_TARGET_URL")  # npr. https://<run-url>/tasks/process
+TASKS_TARGET_URL  = os.getenv("TASKS_TARGET_URL")
 TASKS_SECRET      = os.getenv("TASKS_SECRET", "super-secret")
 
 def _create_task_cloud(payload: dict):
@@ -719,34 +676,23 @@ def _process_job_core(payload: dict) -> dict:
     user_text  = (payload.get("user_text") or "").strip()
     requested  = payload.get("requested") or []
     if razred not in DOZVOLJENI_RAZREDI: razred = "5"
-
-    log.info("worker start job_id=%s image_path=%s image_url=%s local_inline=%s",
-             job_id, image_path, (image_url[:60] + "...") if image_url else None,
-             "yes" if bool(image_inline_b64) else "no")
-
     history = []
     task_ai_timeout = _budgeted_timeout(default=HARD_TIMEOUT_S, margin=5.0)
-
     if image_path:
         if not storage_client:
             raise RuntimeError("GCS storage client not initialized (image_path zadat).")
         blob = storage_client.bucket(bucket).blob(image_path)
         img_bytes = blob.download_as_bytes()
         mime_hint = blob.content_type or mimetypes.guess_type(image_path)[0] or None
-        odgovor_html, used_path, used_model = route_image_flow(img_bytes, razred, history=history, user_text=user_text,
-                                                               timeout_override=task_ai_timeout, mime_hint=mime_hint)
+        odgovor_html, used_path, used_model = route_image_flow(img_bytes, razred, history=history, user_text=user_text, timeout_override=task_ai_timeout, mime_hint=mime_hint)
     elif image_inline_b64:
         img_bytes = base64.b64decode(image_inline_b64)
-        odgovor_html, used_path, used_model = route_image_flow(img_bytes, razred, history=history, user_text=user_text,
-                                                               timeout_override=task_ai_timeout, mime_hint=None)
+        odgovor_html, used_path, used_model = route_image_flow(img_bytes, razred, history=history, user_text=user_text, timeout_override=task_ai_timeout, mime_hint=None)
     elif image_url:
-        odgovor_html, used_path, used_model = route_image_flow_url(image_url, razred, history=history, user_text=user_text,
-                                                                   timeout_override=task_ai_timeout)
+        odgovor_html, used_path, used_model = route_image_flow_url(image_url, razred, history=history, user_text=user_text, timeout_override=task_ai_timeout)
     else:
-        odgovor_html, used_model = answer_with_text_pipeline(user_text, razred, history, requested,
-                                                             timeout_override=task_ai_timeout)
+        odgovor_html, used_model = answer_with_text_pipeline(user_text, razred, history, requested, timeout_override=task_ai_timeout)
         used_path = "text"
-
     result = {"html": odgovor_html, "path": used_path, "model": used_model}
     return {
         "status": "done",
@@ -763,13 +709,10 @@ def _local_worker(payload: dict):
         out = _process_job_core(payload)
         store_job(job_id, out, merge=True)
         try: log_to_sheet(job_id, out.get("razred"), out.get("user_text"), out["result"]["html"], out["result"]["path"], out["result"]["model"])
-        except Exception as _e: log.warning("Sheets log fail: %s", _e)
+        except Exception: pass
     except Exception as e:
-        log.error("Local worker failed: %s\n%s", e, traceback.format_exc())
-        err_html = ("<p><b>Nije uspjela obrada.</b> Pokušaj ponovo ili pošalji jasniji unos.</p>"
-                    f"<p><code>{html.escape(str(e))}</code></p>")
-        store_job(job_id, {"status": "done", "result": {"html": err_html, "path": "error", "model": "n/a"},
-                           "finished_at": datetime.datetime.utcnow().isoformat() + "Z"}, merge=True)
+        err_html = ("<p><b>Nije uspjela obrada.</b> Pokušaj ponovo ili pošalji jasniji unos.</p>" f"<p><code>{html.escape(str(e))}</code></p>")
+        store_job(job_id, {"status": "done", "result": {"html": err_html, "path": "error", "model": "n/a"}, "finished_at": datetime.datetime.utcnow().isoformat() + "Z"}, merge=True)
 
 def estimate_tokens(text: str) -> int:
     if not text: return 0
@@ -779,8 +722,7 @@ def looks_heavy(user_text: str, has_image: bool) -> bool:
     toks = estimate_tokens(user_text or "")
     return has_image or toks > HEAVY_TOKEN_THRESHOLD
 
-def _sync_process_once(razred: str, user_text: str, requested: list, image_url: str | None,
-                       file_bytes: bytes | None, file_mime: str | None, timeout_s: float) -> dict:
+def _sync_process_once(razred: str, user_text: str, requested: list, image_url: str | None, file_bytes: bytes | None, file_mime: str | None, timeout_s: float) -> dict:
     try:
         history = []
         if image_url:
@@ -794,9 +736,7 @@ def _sync_process_once(razred: str, user_text: str, requested: list, image_url: 
     except Exception as e:
         return {"ok": False, "error": str(e)}
 
-def _prepare_async_payload(job_id: str, razred: str, user_text: str, requested: list,
-                           image_url: str | None, file_bytes: bytes | None, file_name: str | None, file_mime: str | None,
-                           image_b64_str: str | None) -> dict:
+def _prepare_async_payload(job_id: str, razred: str, user_text: str, requested: list, image_url: str | None, file_bytes: bytes | None, file_name: str | None, file_mime: str | None, image_b64_str: str | None) -> dict:
     payload = {
         "job_id": job_id, "razred": razred, "user_text": user_text, "requested": requested,
         "bucket": GCS_BUCKET, "image_path": None, "image_url": image_url or None,
@@ -809,7 +749,6 @@ def _prepare_async_payload(job_id: str, razred: str, user_text: str, requested: 
         else:
             payload["image_inline_b64"] = base64.b64encode(file_bytes).decode()
         return payload
-
     if image_b64_str:
         b64_clean = image_b64_str.split(",", 1)[1] if "," in image_b64_str else image_b64_str
         if not LOCAL_MODE and (storage_client and GCS_BUCKET):
@@ -822,125 +761,91 @@ def _prepare_async_payload(job_id: str, razred: str, user_text: str, requested: 
         else:
             payload["image_inline_b64"] = b64_clean
         return payload
-
     return payload
 
-# --------- HYBRID /submit (sa session guardom i garantovanim unlock-om) ----------
 @app.route("/submit", methods=["POST", "OPTIONS"])
 def submit():
     if request.method == "OPTIONS":
         return ("", 204)
-
-    _lock_inflight_or_409()  # ↔ postavi in_flight=True
-    try:
-        razred = (request.form.get("razred") or request.args.get("razred") or "").strip()
-        user_text = (request.form.get("user_text") or request.form.get("pitanje") or "").strip()
-        image_url = (request.form.get("image_url") or request.args.get("image_url") or "").strip()
-        mode = (request.form.get("mode") or request.args.get("mode") or "auto").strip().lower()
-
-        data = request.get_json(silent=True) or {}
-        if data:
-            razred    = (data.get("razred")    or razred).strip()
-            user_text = (data.get("pitanje")   or data.get("user_text") or user_text).strip()
-            image_url = (data.get("image_url") or image_url).strip()
-            mode      = (data.get("mode")      or mode).strip().lower()
-
-        if razred not in DOZVOLJENI_RAZREDI:
-            razred = "5"
-
-        requested = extract_requested_tasks(user_text)
-
-        file_storage = request.files.get("file")
-        file_bytes = None
-        file_mime = None
-        file_name = None
-        if file_storage and file_storage.filename:
-            file_bytes = file_storage.read()
-            file_mime = file_storage.mimetype or "application/octet-stream"
-            file_name = file_storage.filename
-
-        image_b64_str = (data.get("image_b64") if data else None)
-        has_image = bool(image_url or file_bytes or image_b64_str)
-
-        if mode not in ("auto", "sync", "async"):
-            mode = "auto"
-
-        # --- async direktno ---
-        if mode == "async":
-            job_id = str(uuid4())
-            store_job(job_id, {"status": "pending", "created_at": datetime.datetime.utcnow().isoformat() + "Z",
-                               "razred": razred, "user_text": user_text, "requested": requested}, merge=True)
-            payload = _prepare_async_payload(job_id, razred, user_text, requested, image_url or None,
-                                             file_bytes, file_name, file_mime, image_b64_str)
-            _enqueue(payload)
-            _set_active_job(job_id)
-            return jsonify({"mode": "async", "job_id": job_id, "status": "queued", "local_mode": LOCAL_MODE}), 202
-
-        # --- auto: heuristika ---
-        heavy = looks_heavy(user_text, has_image=has_image)
-        if mode == "auto" and heavy:
-            job_id = str(uuid4())
-            store_job(job_id, {"status": "pending", "created_at": datetime.datetime.utcnow().isoformat() + "Z",
-                               "razred": razred, "user_text": user_text, "requested": requested}, merge=True)
-            payload = _prepare_async_payload(job_id, razred, user_text, requested, image_url or None,
-                                             file_bytes, file_name, file_mime, image_b64_str)
-            _enqueue(payload)
-            _set_active_job(job_id)
-            return jsonify({"mode": "auto→async", "job_id": job_id, "status": "queued", "local_mode": LOCAL_MODE}), 202
-
-        # --- sync pokušaj (meki timeout) ---
-        sync_try = _sync_process_once(
-            razred=razred,
-            user_text=user_text,
-            requested=requested,
-            image_url=(image_url or None),
-            file_bytes=file_bytes,
-            file_mime=file_mime,
-            timeout_s=SYNC_SOFT_TIMEOUT_S
-        )
-
-        if sync_try.get("ok"):
-            html_out = sync_try["result"]["html"]
-            if should_plot(user_text):
-                expr = extract_plot_expression(user_text, razred=razred, history=[])
-                if expr: html_out = add_plot_div_once(html_out, expr)
-            try: log_to_sheet(f"sync-{uuid4().hex[:8]}", razred, user_text, html_out, sync_try["result"]["path"], sync_try["result"]["model"])
-            except Exception as _e: log.warning("Sheets log fail (sync): %s", _e)
-            mode_tag = "auto(sync)" if mode == "auto" else "sync"
-            return jsonify({
-                "mode": mode_tag,
-                "result": {"html": html_out, "path": sync_try["result"]["path"], "model": sync_try["result"]["model"]}
-            }), 200
-
-        # --- sync nije uspio → async fallback ---
+    razred = (request.form.get("razred") or request.args.get("razred") or "").strip()
+    user_text = (request.form.get("user_text") or request.form.get("pitanje") or "").strip()
+    image_url = (request.form.get("image_url") or request.args.get("image_url") or "").strip()
+    mode = (request.form.get("mode") or request.args.get("mode") or "auto").strip().lower()
+    data = request.get_json(silent=True) or {}
+    if data:
+        razred    = (data.get("razred")    or razred).strip()
+        user_text = (data.get("pitanje")   or data.get("user_text") or user_text).strip()
+        image_url = (data.get("image_url") or image_url).strip()
+        mode      = (data.get("mode")      or mode).strip().lower()
+    if razred not in DOZVOLJENI_RAZREDI:
+        razred = "5"
+    requested = extract_requested_tasks(user_text)
+    file_storage = request.files.get("file")
+    file_bytes = None
+    file_mime = None
+    file_name = None
+    if file_storage and file_storage.filename:
+        file_bytes = file_storage.read()
+        file_mime = file_storage.mimetype or "application/octet-stream"
+        file_name = file_storage.filename
+    image_b64_str = (data.get("image_b64") if data else None)
+    has_image = bool(image_url or file_bytes or image_b64_str)
+    if mode not in ("auto", "sync", "async"):
+        mode = "auto"
+    if mode == "async":
         job_id = str(uuid4())
-        store_job(job_id, {"status": "pending", "created_at": datetime.datetime.utcnow().isoformat() + "Z",
-                           "razred": razred, "user_text": user_text, "requested": requested}, merge=True)
-        payload = _prepare_async_payload(job_id, razred, user_text, requested, image_url or None,
-                                         file_bytes, file_name, file_mime, image_b64_str)
+        store_job(job_id, {"status": "pending", "created_at": datetime.datetime.utcnow().isoformat() + "Z", "razred": razred, "user_text": user_text, "requested": requested}, merge=True)
+        payload = _prepare_async_payload(job_id, razred, user_text, requested, image_url or None, file_bytes, file_name, file_mime, image_b64_str)
+        try:
+            _enqueue(payload)
+            return jsonify({"mode": "async", "job_id": job_id, "status": "queued", "local_mode": LOCAL_MODE}), 202
+        except Exception as e:
+            store_job(job_id, {"status": "error", "error": str(e)}, merge=True)
+            return jsonify({"error": "submit_failed", "detail": str(e), "job_id": job_id}), 500
+    heavy = looks_heavy(user_text, has_image=has_image)
+    if mode == "auto" and heavy:
+        job_id = str(uuid4())
+        store_job(job_id, {"status": "pending", "created_at": datetime.datetime.utcnow().isoformat() + "Z", "razred": razred, "user_text": user_text, "requested": requested}, merge=True)
+        payload = _prepare_async_payload(job_id, razred, user_text, requested, image_url or None, file_bytes, file_name, file_mime, image_b64_str)
+        try:
+            _enqueue(payload)
+            return jsonify({"mode": "auto→async", "job_id": job_id, "status": "queued", "local_mode": LOCAL_MODE}), 202
+        except Exception as e:
+            store_job(job_id, {"status": "error", "error": str(e)}, merge=True)
+            return jsonify({"error": "submit_failed", "detail": str(e)}), 500
+    sync_try = _sync_process_once(
+        razred=razred,
+        user_text=user_text,
+        requested=requested,
+        image_url=(image_url or None),
+        file_bytes=file_bytes,
+        file_mime=file_mime,
+        timeout_s=SYNC_SOFT_TIMEOUT_S
+    )
+    if sync_try.get("ok"):
+        html_out = sync_try["result"]["html"]
+        if should_plot(user_text):
+            expr = extract_plot_expression(user_text, razred=razred, history=[])
+            if expr: html_out = add_plot_div_once(html_out, expr)
+        try: log_to_sheet(f"sync-{uuid4().hex[:8]}", razred, user_text, html_out, sync_try["result"]["path"], sync_try["result"]["model"])
+        except Exception: pass
+        mode_tag = "auto(sync)" if mode == "auto" else "sync"
+        return jsonify({"mode": mode_tag, "result": {"html": html_out, "path": sync_try["result"]["path"], "model": sync_try["result"]["model"]}}), 200
+    job_id = str(uuid4())
+    store_job(job_id, {"status": "pending", "created_at": datetime.datetime.utcnow().isoformat() + "Z", "razred": razred, "user_text": user_text, "requested": requested}, merge=True)
+    payload = _prepare_async_payload(job_id, razred, user_text, requested, image_url or None, file_bytes, file_name, file_mime, image_b64_str)
+    try:
         _enqueue(payload)
-        _set_active_job(job_id)
         mode_tag = "auto(sync→async)" if mode == "auto" else "sync→async"
-        return jsonify({
-            "mode": mode_tag, "job_id": job_id, "status": "queued", "local_mode": LOCAL_MODE,
-            "reason": sync_try.get("error", "soft-timeout-or-error")
-        }), 202
-
+        return jsonify({"mode": mode_tag, "job_id": job_id, "status": "queued", "local_mode": LOCAL_MODE, "reason": sync_try.get("error", "soft-timeout-or-error")}), 202
     except Exception as e:
-        log.error("submit failed: %s\n%s", e, traceback.format_exc())
-        return jsonify({"error": "submit_failed", "detail": str(e)}), 500
-    finally:
-        # 🔑 ključna ispravka: uvijek otključaj
-        _unlock_inflight()
+        store_job(job_id, {"status": "error", "error": str(e)}, merge=True)
+        return jsonify({"error": "submit_failed", "detail": str(e), "job_id": job_id}), 500
 
-# --------- STATUS ----------
 @app.get("/status/<job_id>")
 def async_status(job_id):
     data = read_job(job_id)
-    if not data:
-        return jsonify({"status": "pending"}), 200
-    if data.get("status") in ("done", "error") and session.get("active_job_id") == job_id:
-        _set_active_job(None)
+    if not data: return jsonify({"status": "pending"}), 200
     return jsonify(data), 200
 
 @app.get("/result/<job_id>")
@@ -954,7 +859,6 @@ def async_result(job_id):
         return jsonify({"job_id": job_id, "status": "error", "error": data.get("error")}), 500
     return jsonify({"job_id": job_id, "status": data.get("status", "pending")}), 202
 
-# --------- Cloud Tasks endpoint ----------
 @app.post("/tasks/process")
 def tasks_process():
     if not LOCAL_MODE and request.headers.get("X-Tasks-Secret") != TASKS_SECRET:
@@ -966,19 +870,24 @@ def tasks_process():
         store_job(job_id, out, merge=True)
         try:
             log_to_sheet(job_id, out.get("razred"), out.get("user_text"), out["result"]["html"], out["result"]["path"], out["result"]["model"])
-        except Exception as _e:
-            log.warning("Sheets log fail: %s", _e)
+        except Exception:
+            pass
         return "OK", 200
     except Exception as e:
-        log.exception("Task processing failed")
-        err_html = ("<p><b>Nije uspjela obrada.</b> Pokušaj ponovo ili pošalji jasniji unos.</p>"
-                    f"<p><code>{html.escape(str(e))}</code></p>")
+        err_html = ("<p><b>Nije uspjela obrada.</b> Pokušaj ponovo ili pošalji jasniji unos.</p>" f"<p><code>{html.escape(str(e))}</code></p>")
         job_id = (request.get_json(silent=True) or {}).get("job_id", f"unknown-{uuid4().hex[:6]}")
-        store_job(job_id, {"status": "done", "result": {"html": err_html, "path": "error", "model": "n/a"},
-                           "finished_at": datetime.datetime.utcnow().isoformat() + "Z"}, merge=True)
+        store_job(job_id, {"status": "done", "result": {"html": err_html, "path": "error", "model": "n/a"}, "finished_at": datetime.datetime.utcnow().isoformat() + "Z"}, merge=True)
         return "OK", 200
 
-# ===================== Run =====================
+@app.post("/set-razred")
+def set_razred():
+    g = (request.form.get("razred") or "").strip()
+    if g:
+        session["razred"] = g
+        session["history"] = []
+        session.pop("last_image_url", None)
+    return ("", 204)
+
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", "8080"))
     debug = os.getenv("FLASK_DEBUG", "0") == "1"
