@@ -939,6 +939,12 @@ def set_razred():
         session.pop("last_image_url", None)
     return ("", 204)
 
+@app.after_request
+def add_csp(resp):
+    resp.headers["Content-Security-Policy"] = "frame-ancestors https://*.thinkific.com"
+    return resp
+
+
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", "8080"))
     debug = os.getenv("FLASK_DEBUG", "0") == "1"
