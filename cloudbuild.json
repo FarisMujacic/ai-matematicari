@@ -1,0 +1,59 @@
+cat > cloudbuild.json <<'JSON'
+{
+  "timeout": "1200s",
+  "substitutions": {
+    "_SERVICE": "matbot",
+    "_REGION": "europe-west1",
+    "_REPO": "matbot"
+  },
+  "steps": [
+    {
+      "name": "python:3.11",
+      "entrypoint": "bash",
+      "args": ["-lc", "python -m py_compile app.py"]
+    },
+    {
+      "name": "gcr.io/cloud-builders/docker",
+      "args": [
+        "build","--pull",
+        "-t","europe-west1-docker.pkg.dev/$PROJECT_ID/${_REPO}/${_SERVICE}:$COMMIT_SHA",
+        "."
+      ]
+    },
+    {
+      "name": "gcr.io/cloud-builders/docker",
+      "args": [
+        "push",
+        "europe-west1-docker.pkg.dev/$PROJECT_ID/${_REPO}/${_SERVICE}:$COMMIT_SHA"
+      ]
+    },
+    {
+      "name": "gcr.io/google.com/cloudsdktool/cloud-sdk",
+      "entrypoint": "gcloud",
+      "args": [
+        "run","deploy","${_SERVICE}",
+        "--image=europe-west1-docker.pkg.dev/$PROJECT_ID/${_REPO}/${_SERVICE}:$COMMIT_SHA",
+        "--region","${_REGION}",
+        "--platform","managed",
+        "--allow-unauthenticated",
+        "--port","8080",
+        "--set-secrets",
+        "OPENAI_API_KEY=OPENAI_API_KEY:latest,MATHPIX_APP_ID=MATHPIX_API_ID:latest,MATHPIX_APP_KEY=MATHPIX_API_KEY:latest,FLASK_SECRET_KEY=FLASK_SECRET_KEY:latest,AUTH_JWT_SECRET=AUTH_JWT_SECRET:latest,AUTH_PEPPER=AUTH_PEPPER:latest,ACCESS_CODE_HASH=ACCESS_CODE_HASH:latest,DATABASE_URL=DATABASE_URL:latest,EXTERNAL_DATABASE_URL=EXTERNAL_DATABASE_URL:latest,PLAIN_ACCESS_CODE=PLAIN_ACCESS_CODE:latest,adminEmail=adminEmail:latest,adminPass=adminPass:latest,GOOGLE_SHEETS_CREDENTIALS=GOOGLE_SHEETS_CREDENTIALS:latest,GOOGLE_SHEETS_CREDENTIALS_B64=GOOGLE_SHEETS_CREDENTIALS_B64:latest,GSHEET_ID=GSHEET_ID:latest,MATHPIX_MODE=MATHPIX_MODE:latest,OPENAI_MODEL_TEXT=OPENAI_MODEL_TEXT:latest,OPENAI_MODEL_VISION=OPENAI_MODEL_VISION:latest,OPENAI_MODEL_IMAGE=OPENAI_MODEL_IMAGE:latest,OPENAI_MAX_RETRIES=OPENAI_MAX_RETRIES:latest,RUN_TIMEOUT_SECONDS=RUN_TIMEOUT_SECONDS:latest,OPENAI_TIMEOUT=OPENAI_TIMEOUT:latest,TASKS_TARGET_URL=TASKS_TARGET_URL:latest,REGION=REGION:latest,TASKS_QUEUE=TASKS_QUEUE:latest,GCS_BUCKET=GCS_BUCKET:latest,GCS_SIGNED_GET=GCS_SIGNED_GET:latest,FRAME_ANCESTORS=FRAME_ANCESTORS:latest,GCP_PROJECT=GCP_PROJECT:latest,TASKS_SECRET=TASKS_SECRET:latest",
+        "--set-env-vars",
+        "WEB_CONCURRENCY=1,THREADS=8,GUNICORN_TIMEOUT=120,APP_VERSION=$COMMIT_SHA"
+      ]
+    },
+    {
+      "name": "gcr.io/google.com/cloudsdktool/cloud-sdk",
+      "entrypoint": "bash",
+      "args": [
+        "-lc",
+        "set -euo pipefail; URL=\"$(gcloud run services describe ${_SERVICE} --region ${_REGION} --format='value(status.url)')\"; echo \"Health: $URL/_ah/health\"; code=\"$(curl -s -o /dev/null -w '%{http_code}' \"$URL/_ah/health\" || true)\"; echo \"HTTP $code\"; test \"$code\" = \"200\""
+      ]
+    }
+  ],
+  "images": [
+    "europe-west1-docker.pkg.dev/$PROJECT_ID/${_REPO}/${_SERVICE}:$COMMIT_SHA"
+  ]
+}
+JSON
