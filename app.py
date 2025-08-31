@@ -1,5 +1,3 @@
-@@ -1,967 +1,1103 @@
-# app.py — MAT-BOT (auto Mathpix enable + robust OCR + text/vision hybrid)
 # app.py — MAT-BOT (auto Mathpix enable + robust OCR + text/vision hybrid + smarter follow-ups)
 
 from flask import Flask, render_template, request, session, redirect, url_for, send_from_directory, jsonify
@@ -25,15 +23,16 @@ import google.auth
 
 # --- Optional GCP clients ---
 try:
-    from google.cloud import storage as gcs_lib
+    from google.cloud import storage as gcs_lib  # type: ignore
 except Exception:
     gcs_lib = None
 try:
-    from google.cloud import firestore as fs_lib
+    from google.cloud import firestore as fs_lib  # type: ignore
 except Exception:
+    fs_db = None
     fs_lib = None
 try:
-    from google.cloud import tasks_v2
+    from google.cloud import tasks_v2  # type: ignore
 except Exception:
     tasks_v2 = None
 
@@ -91,7 +90,6 @@ MATHPIX_APP_ID  = (os.getenv("MATHPIX_APP_ID")  or os.getenv("MATHPIX_API_ID")  
 MATHPIX_APP_KEY = (os.getenv("MATHPIX_APP_KEY") or os.getenv("MATHPIX_API_KEY") or "").strip()
 
 _use_flag = (os.getenv("USE_MATHPIX", "").strip())
-# default MATHPIX_MODE = "prefer" (ako korisnik nije ništa postavio)
 MATHPIX_MODE = (os.getenv("MATHPIX_MODE", "prefer").strip().lower())
 
 if _use_flag == "0" or MATHPIX_MODE in ("off", "disable", "disabled"):
@@ -231,24 +229,22 @@ _task_num_re = re.compile(
     r"(?:zadatak\s*(?:broj\s*)?(\d{1,4}))|(?:\b(\d{1,4})\s*\.)|(?:\b(" + "|".join(ORDINAL_WORDS.keys()) + r")\b)",
     flags=re.IGNORECASE
 )
-FOLLOWUP_TASK_RE = re.compile(r"^\s*\d{2,5}\s*[a-z]\)?\s*$", re.IGNORECASE)
 
-# --- FOLLOW-UP detekcija (slovo/riječi/kratko podpitanje) ---
+# --- FOLLOW-UP detekcija ---
 FOLLOWUP_LETTER_RE = re.compile(r"^\s*([a-hčćđšž])\)?\s*$", re.IGNORECASE)
 FOLLOWUP_PHRASES_RE = re.compile(r"\b(pod|tačka|tacka|stavka)\s*([a-hčćđšž])\)?\b", re.IGNORECASE)
 FOLLOWUP_GENERIC_RE = re.compile(
     r"\b(zašto|zasto|kako|može|moze|pojasni|objasni|dalje|nastavi|korak|sljedeći|sledeci|još|jos)\b",
     re.IGNORECASE
 )
+FOLLOWUP_TASK_RE = re.compile(r"^\s*(\d{1,4}\s*[a-hčćđšž]\)?|[a-hčćđšž]\)?)\s*$", re.IGNORECASE)
+
 def is_followup_like(text: str) -> bool:
     if not text: return False
-    if FOLLOWUP_LETTER_RE.match(text): return True           # "b)" / "b"
-    if FOLLOWUP_PHRASES_RE.search(text): return True         # "pod b", "tačka c"
+    if FOLLOWUP_LETTER_RE.match(text): return True
+    if FOLLOWUP_PHRASES_RE.search(text): return True
     if FOLLOWUP_GENERIC_RE.search(text) and len(text) <= 120: return True
     return False
-
-# prihvati i formu samo slovo (b, c, ...) ili broj+slovo (12b)
-FOLLOWUP_TASK_RE = re.compile(r"^\s*(\d{1,4}\s*[a-hčćđšž]\)?|[a-hčćđšž]\)?)\s*$", re.IGNORECASE)
 
 def extract_requested_tasks(text: str):
     if not text: return []
@@ -264,14 +260,20 @@ def extract_requested_tasks(text: str):
 
 def latexify_fractions(text):
     def zamijeni(m):
-        return f"\\(\\frac{{{m.group(1)}}}{{{m.group(2)}}}\\)"
+        return "\\(\\frac{" + m.group(1) + "}{" + m.group(2) + "}\\)"
     return re.sub(r'\b(\d{1,4})/(\d{1,4})\b', zamijeni, text)
 
+def to_html_paragraphs(raw: str) -> str:
+    # Izbjegavamo backslash u f-string izrazima: pripremi prije interpolacije
+    safe = html.escape(raw).replace('\n', '<br>')
+    return "<p>" + safe + "</p>"
+
 def add_plot_div_once(odgovor_html: str, expression: str) -> str:
-    marker = f'class="plot-request"'
-    expr_attr = f'data-expression="{html.escape(expression)}"'
-    if (marker in odgovor_html) and (expr_attr in odgovor_html): return odgovor_html
-    return odgovor_html + f'<div class="plot-request" data-expression="{html.escape(expression)}"></div>'
+    marker = 'class="plot-request"'
+    expr_attr = 'data-expression="' + html.escape(expression) + '"'
+    if (marker in odgovor_html) and (expr_attr in odgovor_html):
+        return odgovor_html
+    return odgovor_html + '<div class="plot-request" data-expression="' + html.escape(expression) + '"></div>'
 
 TRIGGER_PHRASES = [r"\bnacrtaj\b", r"\bnacrtati\b", r"\bcrtaj\b", r"\biscrtaj\b", r"\bskiciraj\b", r"\bgraf\b", r"\bgrafik\b", r"\bprika[žz]i\s+graf\b", r"\bplot\b", r"\bvizualizuj\b", r"\bnasrtaj\b"]
 NEGATION_PHRASES = [r"\bbez\s+grafa\b", r"\bne\s+crt(a|aj)\b", r"\bnemoj\s+crtati\b", r"\bne\s+treba\s+graf\b"]
@@ -312,38 +314,36 @@ def _openai_chat(model: str, messages: list, timeout: float = None, max_tokens: 
         return cli.chat.completions.create(**params)
     params = {"model": model, "messages": messages}
     if max_tokens is not None:
-        params["max_completion_tokens"] = max_tokens
+        # kompatibilnost sa različitim SDK verzijama:
+        try:
+            params["max_completion_tokens"] = max_tokens
+        except Exception:
+            pass
     try:
         return _do(params)
     except Exception as e:
         msg = str(e)
-        if "max_completion_tokens" in msg or "Unsupported parameter: 'max_completion_tokens'" in msg:
+        if "max_completion_tokens" in msg or "Unsupported parameter" in msg:
             params.pop("max_completion_tokens", None)
-            if max_tokens is not None: params["max_tokens"] = max_tokens
+            if max_tokens is not None:
+                params["max_tokens"] = max_tokens
             return _do(params)
         raise
 
-def answer_with_text_pipeline(pure_text: str, razred: str, history, requested, timeout_override: float | None = None):
 def answer_with_text_pipeline(pure_text: str, razred: str, history, requested,
                               timeout_override: float | None = None,
                               is_followup: bool = False,
                               last_problem_text: str = ""):
     prompt_za_razred = PROMPTI_PO_RAZREDU.get(razred, PROMPTI_PO_RAZREDU["5"])
     only_clause = ""
-    strict_geom_policy = (" Ako problem uključuje geometriju: 1) koristi samo eksplicitno date podatke; 2) ne pretpostavljaj ništa bez oznake; 3) navedi nazive teorema (npr. unutrašnji naspramni, Thales...).")
+    strict_geom_policy = " Ako problem uključuje geometriju: 1) koristi samo eksplicitno date podatke; 2) ne pretpostavljaj ništa bez oznake; 3) navedi nazive teorema (npr. unutrašnji naspramni, Thales...)."
     if requested:
-        only_clause = (" Riješi ISKLJUČIVO sljedeće zadatke: " + ", ".join(map(str, requested)) + ". Sve ostale primjere ignoriraj.")
-    # --- COMMON RULES ubačene ovdje ---
-    system_message = {
-        "role": "system",
-        "content": (prompt_za_razred + COMMON_RULES + only_clause + strict_geom_policy)
-    }
+        only_clause = " Riješi ISKLJUČIVO sljedeće zadatke: " + ", ".join(map(str, requested)) + ". Sve ostale primjere ignoriraj."
+    system_message = {"role": "system", "content": (prompt_za_razred + COMMON_RULES + only_clause + strict_geom_policy)}
     messages = [system_message]
-    # koristi zadnjih 5 izmjena iz historije
     for msg in history[-5:]:
         messages.append({"role":"user","content": msg["user"]})
         messages.append({"role":"assistant","content": msg["bot"]})
-    messages.append({"role":"user","content": pure_text})
 
     # Prefiks za follow-up na TEKSTUALNI zadatak
     followup_prefix = ""
@@ -352,7 +352,7 @@ def answer_with_text_pipeline(pure_text: str, razred: str, history, requested,
             followup_prefix = (
                 "[PODPITANJE NA PRETHODNI ZADATAK]\n"
                 "Nastavi objašnjenje istog zadatka. Ne pitaj 'koji zadatak'.\n"
-                f"Originalni tekst zadatka (posljednji korisnički unos): {last_problem_text}\n\n"
+                "Originalni tekst zadatka (posljednji korisnički unos): " + last_problem_text + "\n\n"
             )
         else:
             followup_prefix = (
@@ -365,16 +365,12 @@ def answer_with_text_pipeline(pure_text: str, razred: str, history, requested,
     actual_model = getattr(response, "model", MODEL_TEXT)
     raw = response.choices[0].message.content
     raw = strip_ascii_graph_blocks(raw)
-    html_out = f"<p>{latexify_fractions(raw)}</p>"
+    html_out = to_html_paragraphs(latexify_fractions(raw))
     return html_out, actual_model
 
 def _vision_messages_base(razred: str, history, only_clause: str, strict_geom_policy: str):
     prompt_za_razred = PROMPTI_PO_RAZREDU.get(razred, PROMPTI_PO_RAZREDU["5"])
-    # --- COMMON RULES ubačene i u viziju ---
-    system_message = {
-        "role": "system",
-        "content": (prompt_za_razred + COMMON_RULES + " " + only_clause + " " + strict_geom_policy)
-    }
+    system_message = {"role": "system", "content": (prompt_za_razred + COMMON_RULES + " " + only_clause + " " + strict_geom_policy)}
     messages = [system_message]
     for msg in history[-5:]:
         messages.append({"role": "user", "content": msg["user"]})
@@ -397,7 +393,7 @@ def _sniff_image_mime(raw: bytes) -> str:
 def _bytes_to_data_url(raw: bytes, mime_hint: str | None = None) -> str:
     mime = mime_hint if (mime_hint and mime_hint.startswith("image/")) else _sniff_image_mime(raw)
     b64 = base64.b64encode(raw).decode()
-    return f"data:{mime};base64,{b64}"
+    return "data:" + mime + ";base64," + b64
 
 def _heuristic_plain_text_image(img_bytes: bytes) -> bool:
     try:
@@ -423,14 +419,10 @@ def mathpix_ocr_to_text(img_bytes: bytes) -> tuple[str | None, float]:
     if not _mathpix_enabled():
         return (None, 0.0)
     try:
-        headers = {
-            "app_id": MATHPIX_APP_ID,
-            "app_key": MATHPIX_APP_KEY,
-            "Content-type": "application/json"
-        }
+        headers = {"app_id": MATHPIX_APP_ID, "app_key": MATHPIX_APP_KEY, "Content-type": "application/json"}
         img_b64 = base64.b64encode(img_bytes).decode()
         payload = {
-            "src": f"data:image/png;base64,{img_b64}",
+            "src": "data:image/png;base64," + img_b64,
             "formats": ["text"],
             "data_options": {"include_asciimath": False, "include_latex": False},
             "rm_spaces": True
@@ -443,12 +435,7 @@ def mathpix_ocr_to_text(img_bytes: bytes) -> tuple[str | None, float]:
         conf  = float(j.get("confidence") or 0.0)
         if not plain:
             return (None, 0.0)
-        plain = (
-            plain.replace("÷", "/")
-                 .replace("×", "*")
-                 .replace("–", "-")
-                 .replace("—", "-")
-        )
+        plain = (plain.replace("÷", "/").replace("×", "*").replace("–", "-").replace("—", "-"))
         return (plain, conf)
     except Exception:
         return (None, 0.0)
@@ -470,7 +457,7 @@ def route_image_flow_url(image_url: str, razred: str, history, user_text=None, t
     messages = _vision_messages_base(razred, history, only_clause, strict_geom_policy)
     user_content = []
     if user_text:
-        user_content.append({"type": "text", "text": f"Korisnički tekst: {user_text}"})
+        user_content.append({"type": "text", "text": "Korisnički tekst: " + user_text})
     user_content.append({"type": "text", "text": "Na slici je matematički zadatak."})
     user_content.append({"type": "image_url", "image_url": {"url": image_url}})
     messages.append({"role": "user", "content": user_content})
@@ -478,10 +465,9 @@ def route_image_flow_url(image_url: str, razred: str, history, user_text=None, t
     actual_model = getattr(resp, "model", MODEL_VISION)
     raw = resp.choices[0].message.content
     raw = strip_ascii_graph_blocks(raw)
-    return f"<p>{latexify_fractions(raw)}</p>", "vision_url", actual_model
+    return to_html_paragraphs(latexify_fractions(raw)), "vision_url", actual_model
 
 def route_image_flow(slika_bytes: bytes, razred: str, history, user_text=None, timeout_override: float | None = None, mime_hint: str | None = None):
-    # Try Mathpix first if mode prefers/forces it, OR if heuristika prepoznaje plain-tekst
     try_mathpix = _mathpix_enabled() and (MATHPIX_MODE in ("prefer","force","on") or _heuristic_plain_text_image(slika_bytes))
     if try_mathpix:
         plain, conf = mathpix_ocr_to_text(slika_bytes)
@@ -495,13 +481,11 @@ def route_image_flow(slika_bytes: bytes, razred: str, history, user_text=None, t
                 return html_out, "mathpix", actual_model
             except Exception:
                 pass
-        # ako je mode == "force" a Mathpix nije dao tekst, ipak fallback na Vision radi robusnosti
-    # fallback → Vision
     only_clause, strict_geom_policy = _vision_clauses()
     messages = _vision_messages_base(razred, history, only_clause, strict_geom_policy)
     data_url = _bytes_to_data_url(slika_bytes, mime_hint=mime_hint)
     user_content = []
-    if user_text: user_content.append({"type": "text", "text": f"Korisnički tekst: {user_text}"})
+    if user_text: user_content.append({"type": "text", "text": "Korisnički tekst: " + user_text})
     user_content.append({"type": "text", "text": "Na slici je matematički zadatak."})
     user_content.append({"type": "image_url", "image_url": {"url": data_url}})
     messages.append({"role": "user", "content": user_content})
@@ -509,8 +493,7 @@ def route_image_flow(slika_bytes: bytes, razred: str, history, user_text=None, t
     actual_model = getattr(resp, "model", MODEL_VISION)
     raw = resp.choices[0].message.content
     raw = strip_ascii_graph_blocks(raw)
-    return f"<p>{latexify_fractions(raw)}</p>", "vision_direct", actual_model
-
+    return to_html_paragraphs(latexify_fractions(raw)), "vision_direct", actual_model
 
 def get_history_from_request():
     try:
@@ -542,7 +525,7 @@ def gcs_upload_bytes(job_id: str, raw: bytes, filename_hint: str = "image.bin", 
     if not (storage_client and GCS_BUCKET):
         return None
     ext = os.path.splitext(filename_hint or "")[1].lower() or ".bin"
-    blob_name = f"uploads/{job_id}/{uuid4().hex}{ext}"
+    blob_name = "uploads/" + job_id + "/" + uuid4().hex + ext
     bucket = storage_client.bucket(GCS_BUCKET)
     blob = bucket.blob(blob_name)
     try:
@@ -555,7 +538,7 @@ def gcs_upload_filestorage(f):
     if not (storage_client and GCS_BUCKET):
         return None
     ext = os.path.splitext(f.filename or "")[1].lower() or ".jpg"
-    blob_name = f"uploads/{uuid4().hex}{ext}"
+    blob_name = "uploads/" + uuid4().hex + ext
     bucket = storage_client.bucket(GCS_BUCKET)
     blob = bucket.blob(blob_name)
     try:
@@ -564,8 +547,11 @@ def gcs_upload_filestorage(f):
         if GCS_SIGNED_GET:
             url = blob.generate_signed_url(version="V4", expiration=datetime.timedelta(minutes=45), method="GET")
         else:
-            try: blob.make_public(); url = blob.public_url
-            except Exception: url = blob.generate_signed_url(version="V4", expiration=datetime.timedelta(minutes=45), method="GET")
+            try:
+                blob.make_public()
+                url = blob.public_url
+            except Exception:
+                url = blob.generate_signed_url(version="V4", expiration=datetime.timedelta(minutes=45), method="GET")
         return url
     except Exception:
         return None
@@ -602,10 +588,10 @@ def index():
                     if expr: odgovor = add_plot_div_once(odgovor, expr); plot_expression_added = True
 
                 file_label = _name_from_url(image_url)
-                display_user = (combined_text + f" [slika: {file_label}]") if combined_text else f"[slika: {file_label}]"
+                display_user = (combined_text + " [slika: " + file_label + "]") if combined_text else "[slika: " + file_label + "]"
                 history.append({"user": display_user, "bot": odgovor.strip()})
                 history = history[-8:]; session["history"] = history
-                sync_job_id = f"sync-{uuid4().hex[:8]}"; log_to_sheet(sync_job_id, razred, combined_text, odgovor, "vision_url", used_model)
+                sync_job_id = "sync-" + uuid4().hex[:8]; log_to_sheet(sync_job_id, razred, combined_text, odgovor, "vision_url", used_model)
                 if is_ajax: return render_template("index.html", history=history, razred=razred)
                 return redirect(url_for("index"))
 
@@ -616,7 +602,7 @@ def index():
                 odgovor, used_path, used_model = route_image_flow(body, razred, history, user_text=combined_text, timeout_override=HARD_TIMEOUT_S, mime_hint=slika.mimetype or None)
                 try:
                     ext = os.path.splitext(slika.filename or "")[1].lower() or ".img"
-                    fname = f"{uuid4().hex}{ext}"
+                    fname = uuid4().hex + ext
                     with open(os.path.join(UPLOAD_DIR, fname), "wb") as fp: fp.write(body)
                     public_url = (request.url_root.rstrip("/") + "/uploads/" + fname)
                     session["last_image_url"] = public_url
@@ -632,23 +618,21 @@ def index():
                     if expr: odgovor = add_plot_div_once(odgovor, expr); plot_expression_added = True
 
                 orig_name = _short_name_for_display(slika.filename or "upload")
-                display_user = (combined_text + f" [slika: {orig_name}]") if combined_text else f"[slika: {orig_name}]"
+                display_user = (combined_text + " [slika: " + orig_name + "]") if combined_text else "[slika: " + orig_name + "]"
                 history.append({"user": display_user, "bot": odgovor.strip()})
                 history = history[-8:]; session["history"] = history
-                sync_job_id = f"sync-{uuid4().hex[:8]}"; log_to_sheet(sync_job_id, razred, combined_text, odgovor, "vision_direct", used_model)
+                sync_job_id = "sync-" + uuid4().hex[:8]; log_to_sheet(sync_job_id, razred, combined_text, odgovor, "vision_direct", used_model)
                 if is_ajax: return render_template("index.html", history=history, razred=razred)
                 return redirect(url_for("index"))
 
             # --- FOLLOW-UP NA PRETHODNU SLIKU (ili eksplicitno numerisan podzadatak) ---
             requested = extract_requested_tasks(pitanje)
             last_url = session.get("last_image_url")
-            if last_url and (requested or (pitanje and FOLLOWUP_TASK_RE.match(pitanje))):
             last_kind = session.get("last_problem_kind")
 
             if last_url and (followup_flag or requested or (pitanje and FOLLOWUP_TASK_RE.match(pitanje))):
                 odgovor, used_path, used_model = route_image_flow_url(last_url, razred, history, user_text=pitanje, timeout_override=HARD_TIMEOUT_S)
 
-                # ostavi anchor na istu sliku
                 session["last_image_url"] = last_url
                 session["last_problem_kind"] = "image"
 
@@ -657,16 +641,15 @@ def index():
                     if expr: odgovor = add_plot_div_once(odgovor, expr); plot_expression_added = True
 
                 file_label = _name_from_url(last_url)
-                display_user = (pitanje + f" [slika: {file_label}]") if pitanje else f"[slika: {file_label}]"
+                display_user = (pitanje + " [slika: " + file_label + "]") if pitanje else "[slika: " + file_label + "]"
                 history.append({"user": display_user, "bot": odgovor.strip()})
                 history = history[-8:]; session["history"] = history
-                sync_job_id = f"sync-{uuid4().hex[:8]}"; log_to_sheet(sync_job_id, razred, pitanje, odgovor, "vision_url", used_model)
+                sync_job_id = "sync-" + uuid4().hex[:8]; log_to_sheet(sync_job_id, razred, pitanje, odgovor, "vision_url", used_model)
                 if is_ajax: return render_template("index.html", history=history, razred=razred)
                 return redirect(url_for("index"))
-            odgovor, actual_model = answer_with_text_pipeline(pitanje, razred, history, requested, timeout_override=HARD_TIMEOUT_S)
 
             # --- TEKSTUALNI ZADATAK (sa follow-up prefiksom po potrebi) ---
-            is_followup_text_now = bool(followup_flag and last_kind == "text")
+            is_followup_text_now = bool(is_followup_like(pitanje) and last_kind == "text")
             odgovor, actual_model = answer_with_text_pipeline(
                 pitanje, razred, history, requested,
                 timeout_override=HARD_TIMEOUT_S,
@@ -677,18 +660,16 @@ def index():
             if (not plot_expression_added) and should_plot(pitanje):
                 expr = extract_plot_expression(pitanje, razred=razred, history=history)
                 if expr: odgovor = add_plot_div_once(odgovor, expr); plot_expression_added = True
-            history.append({"user": pitanje, "bot": odgovor.strip()}); history = history[-8:]; session["history"] = history
 
             history.append({"user": pitanje, "bot": odgovor.strip()})
             history = history[-8:]; session["history"] = history
 
-            # zapamti da je posljednji problem bio TEKST + originalni tekst
             session["last_problem_kind"] = "text"
             session["last_problem_user_text"] = pitanje
 
-            sync_job_id = f"sync-{uuid4().hex[:8]}"; log_to_sheet(sync_job_id, razred, pitanje, odgovor, "text", actual_model)
+            sync_job_id = "sync-" + uuid4().hex[:8]; log_to_sheet(sync_job_id, razred, pitanje, odgovor, "text", actual_model)
         except Exception as e:
-            err_html = f"<p><b>Greška servera:</b> {html.escape(str(e))}</p>"
+            err_html = "<p><b>Greška servera:</b> " + html.escape(str(e)) + "</p>"
             history.append({"user": request.form.get('pitanje') or "[SLIKA]", "bot": err_html})
             history = history[-8:]; session["history"] = history
             if request.form.get("ajax") == "1":
@@ -698,7 +679,7 @@ def index():
 
 @app.errorhandler(413)
 def too_large(e):
-    msg = (f"<p><b>Greška:</b> Fajl je prevelik (limit {MAX_MB} MB). Pokušaj ponovo ili smanji kvalitet.</p>")
+    msg = "<p><b>Greška:</b> Fajl je prevelik (limit " + str(MAX_MB) + " MB). Pokušaj ponovo ili smanji kvalitet.</p>"
     return render_template("index.html", history=[{"user":"[SLIKA]", "bot": msg}], razred=session.get("razred")), 413
 
 @app.route("/clear", methods=["POST"])
@@ -723,7 +704,7 @@ def sheets_diag(): return jsonify(_sheets_diag), 200
 def sheets_selftest():
     if not sheet:
         return jsonify({"ok": False, "error": _sheets_diag.get("error") or "Sheets not initialized"}), 500
-    row = [datetime.datetime.utcnow().isoformat(), "selftest", "Hello from /sheets/selftest", "<p>OK</p>", "selftest|none", f"self-{uuid4().hex[:8]}"]
+    row = [datetime.datetime.utcnow().isoformat(), "selftest", "Hello from /sheets/selftest", "<p>OK</p>", "selftest|none", "self-" + uuid4().hex[:8]]
     ok = sheets_append_row_safe(row); return jsonify({"ok": ok}), (200 if ok else 500)
 
 # --- Mathpix selftest (opcionalno) ---
@@ -749,8 +730,8 @@ def mathpix_selftest():
 def add_no_cache_headers(resp):
     resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0, private"
     resp.headers["Pragma"] = "no-cache"; resp.headers["Expires"] = "0"; resp.headers["Vary"] = "Cookie"
-    ancestors = os.getenv("FRAME_ANCESTORS", "").strip()
-    if ancestors: resp.headers["Content-Security-Policy"] = f"frame-ancestors {ancestors}"
+    # CSP za Thinkific (dozvoli embed unutar Thinkifica)
+    resp.headers["Content-Security-Policy"] = "frame-ancestors https://*.thinkific.com"
     try: del resp.headers["X-Frame-Options"]
     except KeyError: pass
     return resp
@@ -765,27 +746,18 @@ def gcs_signed_upload():
         return jsonify({"ok": False, "reason": "no-gcs"}), 200
     data = request.get_json(force=True, silent=True) or {}
     content_type = (data.get("contentType") or "image/jpeg").strip()
-    obj = f"uploads/{uuid4().hex}.bin"
+    obj = "uploads/" + uuid4().hex + ".bin"
     bucket = storage_client.bucket(GCS_BUCKET)
     blob = bucket.blob(obj)
-    put_url = blob.generate_signed_url(
-        version="V4",
-        expiration=datetime.timedelta(minutes=15),
-        method="PUT",
-        content_type=content_type,
-    )
+    put_url = blob.generate_signed_url(version="V4", expiration=datetime.timedelta(minutes=15), method="PUT", content_type=content_type)
     if GCS_SIGNED_GET:
-        read_url = blob.generate_signed_url(
-            version="V4", expiration=datetime.timedelta(minutes=45), method="GET"
-        )
+        read_url = blob.generate_signed_url(version="V4", expiration=datetime.timedelta(minutes=45), method="GET")
     else:
         try:
             blob.make_public()
             read_url = blob.public_url
         except Exception:
-            read_url = blob.generate_signed_url(
-                version="V4", expiration=datetime.timedelta(minutes=45), method="GET"
-            )
+            read_url = blob.generate_signed_url(version="V4", expiration=datetime.timedelta(minutes=45), method="GET")
     return jsonify({"uploadUrl": put_url, "readUrl": read_url}), 200
 
 # --- Cloud Tasks (async) ---
@@ -865,7 +837,7 @@ def _local_worker(payload: dict):
         try: log_to_sheet(job_id, out.get("razred"), out.get("user_text"), out["result"]["html"], out["result"]["path"], out["result"]["model"])
         except Exception: pass
     except Exception as e:
-        err_html = ("<p><b>Nije uspjela obrada.</b> Pokušaj ponovo ili pošalji jasniji unos.</p>" f"<p><code>{html.escape(str(e))}</code></p>")
+        err_html = "<p><b>Nije uspjela obrada.</b> Pokušaj ponovo ili pošalji jasniji unos.</p><p><code>" + html.escape(str(e)) + "</code></p>"
         store_job(job_id, {"status": "done", "result": {"html": err_html, "path": "error", "model": "n/a"}, "finished_at": datetime.datetime.utcnow().isoformat() + "Z"}, merge=True)
 
 def estimate_tokens(text: str) -> int:
@@ -876,7 +848,6 @@ def looks_heavy(user_text: str, has_image: bool) -> bool:
     toks = estimate_tokens(user_text or "")
     return has_image or toks > HEAVY_TOKEN_THRESHOLD
 
-def _sync_process_once(razred: str, user_text: str, requested: list, image_url: str | None, file_bytes: bytes | None, file_mime: str | None, timeout_s: float) -> dict:
 def _sync_process_once(razred: str, user_text: str, requested: list, image_url: str | None, file_bytes: bytes | None, file_mime: str | None, timeout_s: float,
                        is_followup: bool = False, last_problem_text: str = "") -> dict:
     try:
@@ -887,8 +858,7 @@ def _sync_process_once(razred: str, user_text: str, requested: list, image_url: 
         if file_bytes:
             html_out, used_path, used_model = route_image_flow(file_bytes, razred, history, user_text=user_text, timeout_override=timeout_s, mime_hint=file_mime or None)
             return {"ok": True, "result": {"html": html_out, "path": used_path, "model": used_model}}
-        html_out, used_model = answer_with_text_pipeline(user_text, razred, history, requested, timeout_s)
-        html_out, used_model = answer_with_text_pipeline(user_text, razred, history, requested, timeout_s, is_followup=is_followup, last_problem_text=last_problem_text)
+        html_out, used_model = answer_with_text_pipeline(user_text, razred, history, requested, timeout_override=timeout_s, is_followup=is_followup, last_problem_text=last_problem_text)
         return {"ok": True, "result": {"html": html_out, "path": "text", "model": used_model}}
     except Exception as e:
         return {"ok": False, "error": str(e)}
@@ -949,13 +919,13 @@ def submit():
     image_b64_str = (data.get("image_b64") if data else None)
     has_image = bool(image_url or file_bytes or image_b64_str)
 
-    # FOLLOW-UP u /submit: ako je podpitanje i nema nove slike, a zadnje je bila slika → koristi je
+    # FOLLOW-UP u /submit: implicitno koristi prošlu sliku
     followup_flag = is_followup_like(user_text)
     last_kind = session.get("last_problem_kind")
     last_url = session.get("last_image_url")
     if (not has_image) and followup_flag and last_kind == "image" and last_url:
         image_url = last_url
-        has_image = True  # sada imamo "implicitnu" sliku iz sesije
+        has_image = True
 
     if mode not in ("auto", "sync", "async"):
         mode = "auto"
@@ -964,7 +934,6 @@ def submit():
         job_id = str(uuid4())
         store_job(job_id, {"status": "pending", "created_at": datetime.datetime.utcnow().isoformat() + "Z", "razred": razred, "user_text": user_text, "requested": requested}, merge=True)
         payload = _prepare_async_payload(job_id, razred, user_text, requested, image_url or None, file_bytes, file_name, file_mime, image_b64_str)
-        # setuj anchor u sesiji odmah
         if image_url or file_bytes or image_b64_str:
             session["last_problem_kind"] = "image"
             if image_url:
@@ -984,7 +953,6 @@ def submit():
         job_id = str(uuid4())
         store_job(job_id, {"status": "pending", "created_at": datetime.datetime.utcnow().isoformat() + "Z", "razred": razred, "user_text": user_text, "requested": requested}, merge=True)
         payload = _prepare_async_payload(job_id, razred, user_text, requested, image_url or None, file_bytes, file_name, file_mime, image_b64_str)
-        # setuj anchor i u ovom slučaju
         if image_url or file_bytes or image_b64_str:
             session["last_problem_kind"] = "image"
             if image_url:
@@ -1008,7 +976,6 @@ def submit():
         image_url=(image_url or None),
         file_bytes=file_bytes,
         file_mime=file_mime,
-        timeout_s=SYNC_SOFT_TIMEOUT_S
         timeout_s=SYNC_SOFT_TIMEOUT_S,
         is_followup=is_followup_text_now,
         last_problem_text=session.get("last_problem_user_text", "")
@@ -1018,11 +985,9 @@ def submit():
         if should_plot(user_text):
             expr = extract_plot_expression(user_text, razred=razred, history=[])
             if expr: html_out = add_plot_div_once(html_out, expr)
-        try: log_to_sheet(f"sync-{uuid4().hex[:8]}", razred, user_text, html_out, sync_try["result"]["path"], sync_try["result"]["model"])
+        try: log_to_sheet("sync-" + uuid4().hex[:8], razred, user_text, html_out, sync_try["result"]["path"], sync_try["result"]["model"])
         except Exception: pass
         mode_tag = "auto(sync)" if mode == "auto" else "sync"
-
-        # nakon uspješne obrade, osvježi anchor u sesiji
         if image_url or file_bytes or image_b64_str:
             session["last_problem_kind"] = "image"
             if image_url:
@@ -1030,14 +995,12 @@ def submit():
         else:
             session["last_problem_kind"] = "text"
             session["last_problem_user_text"] = user_text
-
         return jsonify({"mode": mode_tag, "result": {"html": html_out, "path": sync_try["result"]["path"], "model": sync_try["result"]["model"]}}), 200
 
     # fallback → async
     job_id = str(uuid4())
     store_job(job_id, {"status": "pending", "created_at": datetime.datetime.utcnow().isoformat() + "Z", "razred": razred, "user_text": user_text, "requested": requested}, merge=True)
     payload = _prepare_async_payload(job_id, razred, user_text, requested, image_url or None, file_bytes, file_name, file_mime, image_b64_str)
-    # postavi anchor i ovdje
     if image_url or file_bytes or image_b64_str:
         session["last_problem_kind"] = "image"
         if image_url:
@@ -1085,8 +1048,8 @@ def tasks_process():
             pass
         return "OK", 200
     except Exception as e:
-        err_html = ("<p><b>Nije uspjela obrada.</b> Pokušaj ponovo ili pošalji jasniji unos.</p>" f"<p><code>{html.escape(str(e))}</code></p>")
-        job_id = (request.get_json(silent=True) or {}).get("job_id", f"unknown-{uuid4().hex[:6]}")
+        err_html = "<p><b>Nije uspjela obrada.</b> Pokušaj ponovo ili pošalji jasniji unos.</p><p><code>" + html.escape(str(e)) + "</code></p>"
+        job_id = (request.get_json(silent=True) or {}).get("job_id", "unknown-" + uuid4().hex[:6])
         store_job(job_id, {"status": "done", "result": {"html": err_html, "path": "error", "model": "n/a"}, "finished_at": datetime.datetime.utcnow().isoformat() + "Z"}, merge=True)
         return "OK", 200
 
@@ -1100,12 +1063,6 @@ def set_razred():
         session.pop("last_problem_kind", None)
         session.pop("last_problem_user_text", None)
     return ("", 204)
-
-@app.after_request
-def add_csp(resp):
-    resp.headers["Content-Security-Policy"] = "frame-ancestors https://*.thinkific.com"
-    return resp
-
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", "8080"))
