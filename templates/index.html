@@ -330,7 +330,8 @@ function showToast(msg, type='warn', timeout=2600){
   wrap.appendChild(div);
   setTimeout(()=>{ div.remove(); }, timeout);
 }
-/* ====== HISTORY HELPERS (localStorage + hidden field) ====== */
+
+/* ====== HISTORY HELPERS ====== */
 function getCID(){
   const key='matbot_cid';
   if(!localStorage.getItem(key)){
@@ -345,36 +346,32 @@ function resetHistory(HIST_KEY, hidden){
 }
 function pushHistory(HIST_KEY, user, bot){
   let arr=[]; try{ arr = JSON.parse(localStorage.getItem(HIST_KEY) || '[]'); }catch(_){}
-  arr.push({user, bot});                     // čuvamo zadnjih 8
+  arr.push({user, bot});
   arr = arr.slice(-8);
   localStorage.setItem(HIST_KEY, JSON.stringify(arr));
   const hidden = document.getElementById('history_json_main');
-  if (hidden) hidden.value = JSON.stringify(arr.slice(-5));  // backendu šaljemo zadnjih 5
+  if (hidden) hidden.value = JSON.stringify(arr.slice(-5));
 }
 
 document.addEventListener('DOMContentLoaded', () => {
   initDarkToggle();
 
-/* ====== 1) SAMO UNUTAR THINKIFICA (iframe check) ====== */
-const isIframe = (window.top !== window.self);
+  /* ====== 1) SAMO UNUTAR THINKIFICA (iframe check) ====== */
+  const isIframe = (window.top !== window.self);
+  const urlParams = new URLSearchParams(location.search);
+  const hasBypassToken = urlParams.get('from') === 'thinkific' && !!urlParams.get('t');
 
-// (opcija) dozvoli i direktan pristup ako je prisutan tajni token u URL-u
-const urlParams = new URLSearchParams(location.search);
-const hasBypassToken = urlParams.get('from') === 'thinkific' && !!urlParams.get('t');
-
-if(!(isIframe || hasBypassToken)){
-  // zaključaj UI ako nije u iframe-u i nema bypass token
-  document.body.innerHTML = `
-    <div style="min-height:100vh;display:flex;align-items:center;justify-content:center;padding:2rem;text-align:center">
-      <div style="background:var(--card-bg);border:1px solid var(--card-border);padding:1.2rem 1.4rem;border-radius:14px;max-width:640px;box-shadow:0 10px 40px rgba(0,0,0,.18)">
-        <h2 style="margin:.2rem 0 0.6rem">Pristup ograničen</h2>
-        <p>Ova aplikacija je dostupna <strong>samo unutar Thinkific platforme</strong>.</p>
-        <p class="muted">Otvorite lekciju u Thinkificu da biste koristili MAT-BOT.</p>
-      </div>
-    </div>`;
-  return;
-}
-
+  if(!(isIframe || hasBypassToken)){
+    document.body.innerHTML = `
+      <div style="min-height:100vh;display:flex;align-items:center;justify-content:center;padding:2rem;text-align:center">
+        <div style="background:var(--card-bg);border:1px solid var(--card-border);padding:1.2rem 1.4rem;border-radius:14px;max-width:640px;box-shadow:0 10px 40px rgba(0,0,0,.18)">
+          <h2 style="margin:.2rem 0 0.6rem">Pristup ograničen</h2>
+          <p>Ova aplikacija je dostupna <strong>samo unutar Thinkific platforme</strong>.</p>
+          <p class="muted">Otvorite lekciju u Thinkificu da biste koristili MAT-BOT.</p>
+        </div>
+      </div>`;
+    return;
+  }
 
   /* ====== 2) OBRIŠI RAZRED NA SVAKI REFRESH ====== */
   try{
@@ -395,15 +392,16 @@ if(!(isIframe || hasBypassToken)){
   const fileName = document.getElementById('file-name');
   const removeFileBtn = document.getElementById('remove-file');
   const chat = document.getElementById('chat-container');
-// ====== HISTORY INIT ======
-const hiddenHistory = document.getElementById('history_json_main');
-const HIST_KEY = 'matbot_history_' + getCID();
-try{
-  const arr = JSON.parse(localStorage.getItem(HIST_KEY) || '[]');
-  hiddenHistory.value = JSON.stringify((Array.isArray(arr)?arr:[]).slice(-5));
-}catch(_){
-  hiddenHistory.value = '[]';
-}
+
+  /* ====== HISTORY INIT ====== */
+  const hiddenHistory = document.getElementById('history_json_main');
+  const HIST_KEY = 'matbot_history_' + getCID();
+  try{
+    const arr = JSON.parse(localStorage.getItem(HIST_KEY) || '[]');
+    hiddenHistory.value = JSON.stringify((Array.isArray(arr)?arr:[]).slice(-5));
+  }catch(_){
+    hiddenHistory.value = '[]';
+  }
 
   /* helper: enable/disable unosa */
   function setInputsEnabled(on){
@@ -450,42 +448,32 @@ try{
     }
   }
   function clearFile(){
-    const dt = new DataTransfer(); fileInput.files = dt.files; fileInput.value = ""; fileChip.classList.remove('show'); fileName.textContent='Nije odabran fajl';
+    const dt = new DataTransfer();
+    fileInput.files = dt.files;
+    fileInput.value = "";
+    fileChip.classList.remove('show');
+    fileName.textContent='Nije odabran fajl';
   }
   fileInput.addEventListener('change', updateFileUI);
   removeFileBtn.addEventListener('click', clearFile);
 
-  /* meni: clear */
-  document.getElementById('menuClear').addEventListener('click', (e)=>{ e.preventDefault(); openModal('#confirm-clear'); closeDropdown(); });
-  document.getElementById('doClear').addEventListener('click', async ()=>{
-    const chatEmpty = !document.querySelector('#chat-container .chat-message');
-    if (chatEmpty){
-      showToast('Chat je već prazan.', 'warn');
-      closeModal('#confirm-clear');
-      return;
-    }
-    try{
-      const fd = new URLSearchParams({confirm_clear:"1", ajax:"1"});
-      await fetch("/clear",{method:"POST", body:fd, credentials:"include"});
-    }catch(_){}
-  const chatEmpty = !document.querySelector('#chat-container .chat-message');
-  if (chatEmpty){
-    showToast('Chat je već prazan.', 'warn');
+  /* meni: clear (otvori modal) */
+  document.getElementById('menuClear').addEventListener('click', (e)=>{
+    e.preventDefault();
+    openModal('#confirm-clear');
+    closeDropdown();
+  });
+
+  /* potvrda clear */
+  document.getElementById('doClear').addEventListener('click', async () => {
+    try {
+      const fd = new URLSearchParams({ confirm_clear: "1", ajax: "1" });
+      await fetch("/clear", { method: "POST", body: fd, credentials: "include" });
+    } catch (_) {}
+    resetHistory(HIST_KEY, hiddenHistory);
     closeModal('#confirm-clear');
     location.reload();
   });
-    return;
-  }
-  try{
-    const fd = new URLSearchParams({confirm_clear:"1", ajax:"1"});
-    await fetch("/clear",{method:"POST", body:fd, credentials:"include"});
-  }catch(_){}
-  // reset i lokalne historije
-  resetHistory(HIST_KEY, hiddenHistory);
-  closeModal('#confirm-clear');
-  location.reload();
-});
-
 
   /* promjena razreda kroz meni */
   document.querySelectorAll('.grade-btn').forEach(btn=>{
@@ -513,7 +501,9 @@ try{
     }
   });
 
-  function escapeHtml(s){ return (s||'').replace(/[&<>"']/g, m=>({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[m])); }
+  function escapeHtml(s){
+    return (s||'').replace(/[&<>"']/g, m=>({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[m]));
+  }
 
   function appendUserBubble({text, fileName}){
     const wrap = document.createElement('div');
@@ -529,6 +519,7 @@ try{
     chat.appendChild(wrap);
     scrollToBottom();
   }
+
   function appendBotHTML(html){
     const wrap = document.createElement('div');
     wrap.className = 'chat-message bot-message';
@@ -548,14 +539,10 @@ try{
     const file = fileInput.files[0];
 
     const userLabel = text || (file ? file.name : '(prazno)');
-window.__lastUserLabel = userLabel; // da poll() zna koga da upari
+    window.__lastUserLabel = userLabel; // da poll() zna koga da upari
 
-    if(!razred){
-      showToast('Prvo postavi razred.', 'err'); return;
-    }
-    if(!text && !file){
-      showToast('Unesi pitanje ili dodaj sliku prije slanja.', 'err'); return;
-    }
+    if(!razred){ showToast('Prvo postavi razred.', 'err'); return; }
+    if(!text && !file){ showToast('Unesi pitanje ili dodaj sliku prije slanja.', 'err'); return; }
     if(file && (!file.type || !file.type.startsWith('image/'))){
       showToast('Fajl nije prepoznat kao slika. Pošalji JPG/PNG ili samo tekst.', 'err'); return;
     }
@@ -575,15 +562,10 @@ window.__lastUserLabel = userLabel; // da poll() zna koga da upari
     fd.append('razred', razred);
     if (text) fd.append('user_text', text);
     if (file) fd.append('file', file, file.name);
-    const fd = new FormData();
-    fd.append('razred', razred);
-    if (text) fd.append('user_text', text);
-    if (file) fd.append('file', file, file.name);
     const hiddenMain = document.getElementById('history_json_main');
     if (hiddenMain && hiddenMain.value) {
       fd.append('history_json', hiddenMain.value);
-}
-
+    }
 
     let keepTyping = false;
     try{
@@ -602,7 +584,7 @@ window.__lastUserLabel = userLabel; // da poll() zna koga da upari
           poll(j.job_id);
         } else {
           appendBotHTML(j?.result?.html || '<i>Nema rezultata.</i>');
-          pushHistory(HIST_KEY, userLabel, j?.result?.html || '');  
+          pushHistory(HIST_KEY, userLabel, j?.result?.html || '');
         }
       }
     } catch (e){
@@ -614,7 +596,6 @@ window.__lastUserLabel = userLabel; // da poll() zna koga da upari
       document.querySelectorAll('.grade-btn').forEach(b=>b.disabled=false);
     }
   }
-
 
   async function poll(jobId){
     const sleep = (ms)=> new Promise(r=>setTimeout(r, ms));
@@ -631,7 +612,6 @@ window.__lastUserLabel = userLabel; // da poll() zna koga da upari
         if (data.status === 'error'){
           appendBotHTML('<div class="alert alert-danger">Greška u asinkronoj obradi.</div>');
           pushHistory(HIST_KEY, window.__lastUserLabel || '(follow-up)', (data.result && data.result.html) || '');
-
           hideTyping(); return;
         }
       }catch(_){
