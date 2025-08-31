@@ -227,6 +227,8 @@
       <form id="ask-form" method="POST" enctype="multipart/form-data" autocomplete="off" action="/submit">
         <input type="hidden" id="razredHidden" name="razred" value="">
         <input type="hidden" id="history_json_main" name="history_json" value="[]">
+        <!-- Novo: backend moze čitati ovaj hidden ili ga možemo samo dodati preko FormData -->
+        <input type="hidden" id="prompt_hints_json" name="prompt_hints_json" value="{}">
 
         <label for="pitanje">Postavi mi matematičko pitanje (tekst ili slika):</label>
         <textarea name="pitanje" id="pitanje" placeholder="Ovdje možeš unijeti zadatak ili pitanje..." disabled></textarea>
@@ -353,6 +355,36 @@ function pushHistory(HIST_KEY, user, bot){
   if (hidden) hidden.value = JSON.stringify(arr.slice(-5));
 }
 
+/* ====== PROMPT PREFERENCES (Bosanski + terminologija) ====== */
+function buildPromptHints(razred){
+  const isLower = (razred === '5' || razred === '6');
+  return {
+    language: "bosanski (ijekavica) — odgovaraj isključivo na bosanskom jeziku.",
+    grade: razred || null,
+    tone: isLower
+      ? "objasni što jednostavnije moguće za učenika 5./6. razreda: kratke rečenice, jasni koraci, minimalno tehničkih termina."
+      : "jasno, razumljivo i stručno, uz korake i kratka objašnjenja.",
+    terminology: {
+      lcm_prefer: "nzs — najmanji zajednički sadržalac",
+      fractions_terms: "koristi: brojnik (brojilac) i nazivnik (imenilac) kod razlomaka",
+      verbs: {
+        add: "saberi",
+        subtract: "oduzmi",
+        multiply: "pomnoži",
+        divide: "podijeli"
+      },
+      prefer_bosnian_forms: true,
+      avoid: ["zbroj", "zbroji", "zbrojiti", "najmanji zajednički nazivnik"], /* umjesto toga koristi nzs */
+      enforce_examples_language: "Ako se spominju nazivi pojmova, koristi bosanske izraze."
+    },
+    formatting: {
+      show_steps: true,
+      use_bullets_for_steps: isLower,
+      highlight_key_terms: false
+    }
+  };
+}
+
 document.addEventListener('DOMContentLoaded', () => {
   initDarkToggle();
 
@@ -392,6 +424,7 @@ document.addEventListener('DOMContentLoaded', () => {
   const fileName = document.getElementById('file-name');
   const removeFileBtn = document.getElementById('remove-file');
   const chat = document.getElementById('chat-container');
+  const hiddenHints = document.getElementById('prompt_hints_json');
 
   /* ====== HISTORY INIT ====== */
   const hiddenHistory = document.getElementById('history_json_main');
@@ -425,6 +458,11 @@ document.addEventListener('DOMContentLoaded', () => {
     }
     razredHidden.value = g;
     document.getElementById('curGradeLabel').textContent = g;
+
+    /* generiši i upiši prompt hints prema izabranom razredu */
+    const hints = buildPromptHints(g);
+    if (hiddenHints) hiddenHints.value = JSON.stringify(hints);
+
     gradeStart.classList.add('hidden');
     gradeStart.style.display = 'none';
     setInputsEnabled(true);
@@ -493,6 +531,11 @@ document.addEventListener('DOMContentLoaded', () => {
       const r = await fetch("/set-razred",{method:"POST", body:fd, credentials:"include"});
       if(r.ok){
         razredHidden.value = g;
+
+        /* ažuriraj i prompt hints nakon promjene razreda */
+        const hints = buildPromptHints(g);
+        if (hiddenHints) hiddenHints.value = JSON.stringify(hints);
+
         closeModal('#confirm-grade');
         location.reload();
       }
@@ -547,6 +590,10 @@ document.addEventListener('DOMContentLoaded', () => {
       showToast('Fajl nije prepoznat kao slika. Pošalji JPG/PNG ili samo tekst.', 'err'); return;
     }
 
+    /* osiguraj da prompt_hints uvijek prati aktuelni razred */
+    const hintsObj = buildPromptHints(razred);
+    if (hiddenHints) hiddenHints.value = JSON.stringify(hintsObj);
+
     document.getElementById('chat-card')?.classList.remove('is-empty');
     showTyping();
     sendBtn.disabled = true;
@@ -566,6 +613,8 @@ document.addEventListener('DOMContentLoaded', () => {
     if (hiddenMain && hiddenMain.value) {
       fd.append('history_json', hiddenMain.value);
     }
+    // pošalji i naše “prompt hints”
+    fd.append('prompt_hints_json', JSON.stringify(hintsObj));
 
     let keepTyping = false;
     try{
