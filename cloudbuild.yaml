@@ -1,74 +1,55 @@
-8-07","path":"text"}}
-ucenjebezstresa@cloudshell:/tmp/ai-matematicari (math-bot-465513)$ cd /tmp/ai-matematicari
-# Zalijepi tačno ovaj YAML (bez tabova). Provjeri ga:
-sed -n '1,200p' cloudbuild.yaml | nl
+cd /tmp/ai-matematicari
 
-# Submitaš:
-gcloud builds submit --config cloudbuild.yaml .
+cat > cloudbuild.yaml <<'YAML'
+timeout: "1200s"
 
-# Provjera:
-RUN_URL="$(gcloud run services describe matbot --region europe-west1 --format='value(status.url)')"
-curl -s -o /dev/null -w "%{http_code}\n" "$RUN_URL/_ah/health"
-curl -s -X POST "$RUN_URL/submit" -F 'razred=6' -F 'user_text=Koliko je 2+3?'
-     1  # cloudbuild.yaml — build → push → deploy → health-check
-     2  timeout: "1200s"
-       
-     3  substitutions:
-     4    _SERVICE: matbot
-     5    _REGION: europe-west1
-     6    _REPO: matbot
-       
-     7  steps:
-     8    # 0) Brzi sintaksni test: ako ima SyntaxError u app.py, build odmah puca
-     9    - name: 'python:3.11'
-    10      entrypoint: bash
-    11      args: ['-lc', 'python -m py_compile app.py']
-       
-    12    # 1) Build image iz Dockerfile-a (povući base, bez keširanja layera iz registrija)
-    13    - name: gcr.io/cloud-builders/docker
-    14      args: ['build','--pull','-t','europe-west1-docker.pkg.dev/$PROJECT_ID/${_REPO}/${_SERVICE}:$COMMIT_SHA','.']
-       
-    15    # 2) Push u Artifact Registry
-    16    - name: gcr.io/cloud-builders/docker
-    17      args: ['push','europe-west1-docker.pkg.dev/$PROJECT_ID/${_REPO}/${_SERVICE}:$COMMIT_SHA']
-       
-    18    # 3) Deploy na Cloud Run (+secrets + env var za gunicorn i fingerprint)
-    19    - name: gcr.io/google.com/cloudsdktool/cloud-sdk
-    20      entrypoint: gcloud
-    21      args:
-    22        [
-    23          'run','deploy','${_SERVICE}',
-    24          '--image=europe-west1-docker.pkg.dev/$PROJECT_ID/${_REPO}/${_SERVICE}:$COMMIT_SHA',
-    25          '--region','${_REGION}',
-    26          '--platform','managed',
-    27          '--allow-unauthenticated',
-    28          '--port','8080',
-    29          '--set-secrets',
-    30          'OPENAI_API_KEY=OPENAI_API_KEY:latest,MATHPIX_API_ID=MATHPIX_API_ID:latest,MATHPIX_API_KEY=MATHPIX_API_KEY:latest,FLASK_SECRET_KEY=FLASK_SECRET_KEY:latest,AUTH_JWT_SECRET=AUTH_JWT_SECRET:latest,AUTH_PEPPER=AUTH_PEPPER:latest,ACCESS_CODE_HASH=ACCESS_CODE_HASH:latest,DATABASE_URL=DATABASE_URL:latest,EXTERNAL_DATABASE_URL=EXTERNAL_DATABASE_URL:latest,PLAIN_ACCESS_CODE=PLAIN_ACCESS_CODE:latest,adminEmail=adminEmail:latest,adminPass=adminPass:latest,GOOGLE_SHEETS_CREDENTIALS=GOOGLE_SHEETS_CREDENTIALS:latest,GSHEET_ID=GSHEET_ID:latest,MATHPIX_MODE=MATHPIX_MODE:latest,OPENAI_MODEL_TEXT=OPENAI_MODEL_TEXT:latest,OPENAI_MODEL_VISION=OPENAI_MODEL_VISION:latest,OPENAI_MODEL_IMAGE=OPENAI_MODEL_IMAGE:latest,OPENAI_MAX_RETRIES=OPENAI_MAX_RETRIES:latest,RUN_TIMEOUT_SECONDS=RUN_TIMEOUT_SECONDS:latest,OPENAI_TIMEOUT=OPENAI_TIMEOUT:latest,TASKS_TARGET_URL=TASKS_TARGET_URL:latest,REGION=REGION:latest,TASKS_QUEUE=TASKS_QUEUE:latest,GCS_BUCKET=GCS_BUCKET:latest,GCS_SIGNED_GET=GCS_SIGNED_GET:latest,FRAME_ANCESTORS=FRAME_ANCESTORS:latest,GCP_PROJECT=GCP_PROJECT:latest',
-    31          '--set-env-vars',
-    32          'WEB_CONCURRENCY=1,THREADS=8,GUNICORN_TIMEOUT=120,APP_VERSION=$COMMIT_SHA'
-    33        ]
-       
-    34    # 4) Health-check: failaj build ako /_ah/health nije 200
-    35  - name: gcr.io/google.com/cloudsdktool/cloud-sdk
-    36    entrypoint: bash
-    37    args:
-    38      - -lc
-    39      - |
-    40        set -euo pipefail
-    41        URL="$(gcloud run services describe ${_SERVICE} --region ${_REGION} --format='value(status.url)')"
-    42        echo "Health check: $URL/_ah/health"
-    43        code="$(curl -s -o /dev/null -w '%{http_code}' "$URL/_ah/health" || true)"
-    44        echo "HTTP $code"
-    45        [[ "$code" == "200" ]] || { echo '❌ Health check failed'; exit 1; }
-       
-       
-    46  images:
-    47    - 'europe-west1-docker.pkg.dev/$PROJECT_ID/${_REPO}/${_SERVICE}:$COMMIT_SHA'
-ERROR: (gcloud.builds.submit) parsing cloudbuild.yaml: while parsing a block mapping
-  in "cloudbuild.yaml", line 2, column 1
-expected <block end>, but found '-'
-  in "cloudbuild.yaml", line 41, column 1
-200
-{"mode":"auto(sync)","result":{"html":"<p>1) Podaci: brojevi 2 i 3.  \n2) Plan: sabrati brojeve 2 i 3.  \n3) Rje\u0161avanje: 2 + 3 = 5. (Mo\u017ee\u0161 i prebrojati: od 2 dodati 3 koraka: 3, 4, 5.)  \n4) Provjera: 5 \u2212 2 = 3, pa je zbroj ta\u010dan.\n\nOdgovor: 5.</p>","model":"gpt-5-mini-2025-08-07","path":"text"}}
-ucenjebezstresa@cloudshell:/tmp/ai-matematicari (math-bot-465513)$ path":"text"}}
+substitutions:
+  _SERVICE: matbot
+  _REGION: europe-west1
+  _REPO: matbot
+
+steps:
+  - name: gcr.io/cloud-builders/docker
+    args:
+      - build
+      - --pull
+      - -t
+      - europe-west1-docker.pkg.dev/$PROJECT_ID/${_REPO}/${_SERVICE}:$COMMIT_SHA
+      - .
+
+  - name: gcr.io/cloud-builders/docker
+    args:
+      - push
+      - europe-west1-docker.pkg.dev/$PROJECT_ID/${_REPO}/${_SERVICE}:$COMMIT_SHA
+
+  - name: gcr.io/google.com/cloudsdktool/cloud-sdk
+    entrypoint: gcloud
+    args:
+      - run
+      - deploy
+      - ${_SERVICE}
+      - --image=europe-west1-docker.pkg.dev/$PROJECT_ID/${_REPO}/${_SERVICE}:$COMMIT_SHA
+      - --region=${_REGION}
+      - --platform=managed
+      - --allow-unauthenticated
+      - --port=8080
+      - --set-secrets
+      - OPENAI_API_KEY=OPENAI_API_KEY:latest,MATHPIX_APP_ID=MATHPIX_API_ID:latest,MATHPIX_APP_KEY=MATHPIX_API_KEY:latest,FLASK_SECRET_KEY=FLASK_SECRET_KEY:latest,AUTH_JWT_SECRET=AUTH_JWT_SECRET:latest,AUTH_PEPPER=AUTH_PEPPER:latest,ACCESS_CODE_HASH=ACCESS_CODE_HASH:latest,DATABASE_URL=DATABASE_URL:latest,EXTERNAL_DATABASE_URL=EXTERNAL_DATABASE_URL:latest,PLAIN_ACCESS_CODE=PLAIN_ACCESS_CODE:latest,adminEmail=adminEmail:latest,adminPass=adminPass:latest,GOOGLE_SHEETS_CREDENTIALS_B64=GOOGLE_SHEETS_CREDENTIALS_B64:latest,GSHEET_ID=GSHEET_ID:latest,MATHPIX_MODE=MATHPIX_MODE:latest,OPENAI_MODEL_TEXT=OPENAI_MODEL_TEXT:latest,OPENAI_MODEL_VISION=OPENAI_MODEL_VISION:latest,OPENAI_MODEL_IMAGE=OPENAI_MODEL_IMAGE:latest,OPENAI_MAX_RETRIES=OPENAI_MAX_RETRIES:latest,RUN_TIMEOUT_SECONDS=RUN_TIMEOUT_SECONDS:latest,OPENAI_TIMEOUT=OPENAI_TIMEOUT:latest,TASKS_TARGET_URL=TASKS_TARGET_URL:latest,REGION=REGION:latest,TASKS_QUEUE=TASKS_QUEUE:latest,GCS_BUCKET=GCS_BUCKET:latest,GCS_SIGNED_GET=GCS_SIGNED_GET:latest,FRAME_ANCESTORS=FRAME_ANCESTORS:latest,GOOGLE_SHEETS_CREDENTIALS=GOOGLE_SHEETS_CREDENTIALS:latest,GCP_PROJECT=GCP_PROJECT:latest,TASKS_SECRET=TASKS_SECRET:latest
+      - --set-env-vars
+      - WEB_CONCURRENCY=1,THREADS=8,GUNICORN_TIMEOUT=120,APP_VERSION=$COMMIT_SHA
+
+  - name: gcr.io/google.com/cloudsdktool/cloud-sdk
+    entrypoint: bash
+    args:
+      - -lc
+      - >
+        set -euo pipefail;
+        URL="$(gcloud run services describe ${_SERVICE} --region ${_REGION} --format='value(status.url)')";
+        echo "Health check: $URL/_ah/health";
+        code="$(curl -s -o /dev/null -w '%{http_code}' "$URL/_ah/health" || true)";
+        echo "HTTP $code";
+        [[ "$code" == "200" ]]
+
+images:
+  - europe-west1-docker.pkg.dev/$PROJECT_ID/${_REPO}/${_SERVICE}:$COMMIT_SHA
+YAML
