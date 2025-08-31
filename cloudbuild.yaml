@@ -37,18 +37,19 @@ steps:
         'WEB_CONCURRENCY=1,THREADS=8,GUNICORN_TIMEOUT=120,APP_VERSION=$COMMIT_SHA'
       ]
 
-  # 4) Health-check: fail-aj build ako /healthz nije 200
-  - name: gcr.io/google.com/cloudsdktool/cloud-sdk
-    entrypoint: bash
-    args:
-      - -lc
-      - |
-        set -euo pipefail
-        URL="$(gcloud run services describe ${_SERVICE} --region ${_REGION} --format='value(status.url)')"
-        echo "Health check: $URL/healthz"
-        code="$(curl -s -o /dev/null -w '%{http_code}' "$URL/healthz" || true)"
-        echo "HTTP $code"
-        [[ "$code" == "200" ]] || { echo '❌ Health check failed'; exit 1; }
+  # 4) Health-check: failaj build ako /_ah/health nije 200
+- name: gcr.io/google.com/cloudsdktool/cloud-sdk
+  entrypoint: bash
+  args:
+    - -lc
+    - |
+      set -euo pipefail
+      URL="$(gcloud run services describe ${_SERVICE} --region ${_REGION} --format='value(status.url)')"
+      echo "Health check: $URL/_ah/health"
+      code="$(curl -s -o /dev/null -w '%{http_code}' "$URL/_ah/health" || true)"
+      echo "HTTP $code"
+      [[ "$code" == "200" ]] || { echo '❌ Health check failed'; exit 1; }
+
 
 images:
   - 'europe-west1-docker.pkg.dev/$PROJECT_ID/${_REPO}/${_SERVICE}:$COMMIT_SHA'
