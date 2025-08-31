@@ -104,7 +104,7 @@
   }
   .typing-indicator .dots::after{content:'...';animation:dots 1s steps(3,end) infinite;margin-left:.2rem;}
   @keyframes dots{0%{content:''}33%{content:'.'}66%{content:'..'}100%{content:'...'}}
-  @keyframes fadeIn{from{opacity:0;transform:translateY(6px);}to{opacity:1;transform:translateY(0);}}
+  @keyframes fadeIn{from{opacity:0;transform:translateY(6px);}to{opacity:1;transform:translateY(0)}}
 
   label{font-weight:600;}
   select, textarea{background:var(--input-bg); color:var(--text);border:1px solid var(--input-border); border-radius:12px;}
@@ -137,7 +137,7 @@
   .modal .box p{margin:.3rem 0 .9rem}
   .modal .actions{display:flex;gap:.5rem;justify-content:flex-end;margin-top:.6rem}
 
-  /* start-grade box (kompaktno) */
+  /* start-grade box */
   .grade-start{display:flex;align-items:center;gap:.6rem;flex-wrap:wrap;background:#fff6e6;border:2px dashed #f0b25f;padding:.75rem .9rem;border-radius:12px;margin-bottom:.9rem}
   .grade-start label{font-weight:700;margin-right:.25rem}
   .grade-select{font-size:1.08rem;padding:.5rem .8rem;border-radius:10px;border:1px solid var(--input-border);background:var(--input-bg);min-width:140px;}
@@ -158,7 +158,6 @@
   .toast.ok{border-left-color:#4caf50}
   .toast.err{border-left-color:#c94f4f}
 
-  /* sakrij prazan chat-karton na startu */
   .card.is-empty{display:none}
   </style>
 </head>
@@ -202,7 +201,6 @@
     <!-- CHAT -->
     <div class="card is-empty" id="chat-card">
       <div id="chat-container"></div>
-      <!-- TIPKANJE sa fazama -->
       <div id="typing" class="typing-indicator" aria-live="polite">
         🤖 <span id="phaseText">Razmišljam</span><span class="dots"></span>
       </div>
@@ -210,7 +208,6 @@
 
     <!-- FORMA -->
     <div class="card">
-      <!-- START GRADE ASK -->
       <div id="grade-start" class="grade-start">
         <label for="gradeSelectStart">Koji si razred?</label>
         <select id="gradeSelectStart" class="grade-select" aria-label="Razred">
@@ -248,10 +245,7 @@
     </div>
   </main>
 
-  <!-- TOASTS -->
   <div class="toast-wrap" id="toastWrap"></div>
-
-  <!-- MODALS -->
   <div class="overlay" id="overlay"></div>
 
   <div class="modal" id="confirm-clear">
@@ -330,7 +324,8 @@ function showToast(msg, type='warn', timeout=2600){
   wrap.appendChild(div);
   setTimeout(()=>{ div.remove(); }, timeout);
 }
-/* ====== HISTORY HELPERS (localStorage + hidden field) ====== */
+
+/* ====== HISTORY HELPERS ====== */
 function getCID(){
   const key='matbot_cid';
   if(!localStorage.getItem(key)){
@@ -345,38 +340,33 @@ function resetHistory(HIST_KEY, hidden){
 }
 function pushHistory(HIST_KEY, user, bot){
   let arr=[]; try{ arr = JSON.parse(localStorage.getItem(HIST_KEY) || '[]'); }catch(_){}
-  arr.push({user, bot});                     // čuvamo zadnjih 8
+  arr.push({user, bot});
   arr = arr.slice(-8);
   localStorage.setItem(HIST_KEY, JSON.stringify(arr));
   const hidden = document.getElementById('history_json_main');
-  if (hidden) hidden.value = JSON.stringify(arr.slice(-5));  // backendu šaljemo zadnjih 5
+  if (hidden) hidden.value = JSON.stringify(arr.slice(-5));
 }
 
 document.addEventListener('DOMContentLoaded', () => {
   initDarkToggle();
 
-/* ====== 1) SAMO UNUTAR THINKIFICA (iframe check) ====== */
-const isIframe = (window.top !== window.self);
+  /* ====== 1) SAMO UNUTAR THINKIFICA (iframe check) ====== */
+  const isIframe = (window.top !== window.self);
+  const urlParams = new URLSearchParams(location.search);
+  const hasBypassToken = urlParams.get('from') === 'thinkific' && !!urlParams.get('t');
+  if(!(isIframe || hasBypassToken)){
+    document.body.innerHTML = `
+      <div style="min-height:100vh;display:flex;align-items:center;justify-content:center;padding:2rem;text-align:center">
+        <div style="background:var(--card-bg);border:1px solid var(--card-border);padding:1.2rem 1.4rem;border-radius:14px;max-width:640px;box-shadow:0 10px 40px rgba(0,0,0,.18)">
+          <h2 style="margin:.2rem 0 0.6rem">Pristup ograničen</h2>
+          <p>Ova aplikacija je dostupna <strong>samo unutar Thinkific platforme</strong>.</p>
+          <p class="muted">Otvorite lekciju u Thinkificu da biste koristili MAT-BOT.</p>
+        </div>
+      </div>`;
+    return;
+  }
 
-// (opcija) dozvoli i direktan pristup ako je prisutan tajni token u URL-u
-const urlParams = new URLSearchParams(location.search);
-const hasBypassToken = urlParams.get('from') === 'thinkific' && !!urlParams.get('t');
-
-if(!(isIframe || hasBypassToken)){
-  // zaključaj UI ako nije u iframe-u i nema bypass token
-  document.body.innerHTML = `
-    <div style="min-height:100vh;display:flex;align-items:center;justify-content:center;padding:2rem;text-align:center">
-      <div style="background:var(--card-bg);border:1px solid var(--card-border);padding:1.2rem 1.4rem;border-radius:14px;max-width:640px;box-shadow:0 10px 40px rgba(0,0,0,.18)">
-        <h2 style="margin:.2rem 0 0.6rem">Pristup ograničen</h2>
-        <p>Ova aplikacija je dostupna <strong>samo unutar Thinkific platforme</strong>.</p>
-        <p class="muted">Otvorite lekciju u Thinkificu da biste koristili MAT-BOT.</p>
-      </div>
-    </div>`;
-  return;
-}
-
-
-  /* ====== 2) OBRIŠI RAZRED NA SVAKI REFRESH ====== */
+  /* ====== 2) OBRIŠI RAZRED NA REFRESH ====== */
   try{
     localStorage.removeItem('mb_grade_confirmed');
     localStorage.removeItem('mb_grade_value');
@@ -395,17 +385,18 @@ if(!(isIframe || hasBypassToken)){
   const fileName = document.getElementById('file-name');
   const removeFileBtn = document.getElementById('remove-file');
   const chat = document.getElementById('chat-container');
-// ====== HISTORY INIT ======
-const hiddenHistory = document.getElementById('history_json_main');
-const HIST_KEY = 'matbot_history_' + getCID();
-try{
-  const arr = JSON.parse(localStorage.getItem(HIST_KEY) || '[]');
-  hiddenHistory.value = JSON.stringify((Array.isArray(arr)?arr:[]).slice(-5));
-}catch(_){
-  hiddenHistory.value = '[]';
-}
 
-  /* helper: enable/disable unosa */
+  /* ====== HISTORY INIT ====== */
+  const hiddenHistory = document.getElementById('history_json_main');
+  const HIST_KEY = 'matbot_history_' + getCID();
+  try{
+    const arr = JSON.parse(localStorage.getItem(HIST_KEY) || '[]');
+    hiddenHistory.value = JSON.stringify((Array.isArray(arr)?arr:[]).slice(-5));
+  }catch(_){
+    hiddenHistory.value = '[]';
+  }
+
+  /* enable/disable unosa */
   function setInputsEnabled(on){
     textarea.disabled = !on;
     fileInput.disabled = !on;
@@ -418,13 +409,11 @@ try{
   const gradeStart = document.getElementById('grade-start');
   const gradeSelStart = document.getElementById('gradeSelectStart');
   const gradeBtnStart = document.getElementById('gradeConfirmStart');
-  setInputsEnabled(false); // razred je obrisan na refresh
+  setInputsEnabled(false);
 
   gradeBtnStart.addEventListener('click', ()=>{
     const g = gradeSelStart.value;
-    if(!g){
-      showToast('Prvo odaberi razred.', 'err'); return;
-    }
+    if(!g){ showToast('Prvo odaberi razred.', 'err'); return; }
     razredHidden.value = g;
     document.getElementById('curGradeLabel').textContent = g;
     gradeStart.classList.add('hidden');
@@ -433,7 +422,7 @@ try{
     showToast(`Razred postavljen na ${g}.`, 'ok');
   });
 
-  /* file chip + validacija tipa */
+  /* file chip + validacija */
   function updateFileUI(){
     if(fileInput.files && fileInput.files[0]){
       const f = fileInput.files[0];
@@ -450,7 +439,11 @@ try{
     }
   }
   function clearFile(){
-    const dt = new DataTransfer(); fileInput.files = dt.files; fileInput.value = ""; fileChip.classList.remove('show'); fileName.textContent='Nije odabran fajl';
+    const dt = new DataTransfer();
+    fileInput.files = dt.files;
+    fileInput.value = "";
+    fileChip.classList.remove('show');
+    fileName.textContent='Nije odabran fajl';
   }
   fileInput.addEventListener('change', updateFileUI);
   removeFileBtn.addEventListener('click', clearFile);
@@ -458,22 +451,20 @@ try{
   /* meni: clear */
   document.getElementById('menuClear').addEventListener('click', (e)=>{ e.preventDefault(); openModal('#confirm-clear'); closeDropdown(); });
   document.getElementById('doClear').addEventListener('click', async ()=>{
-  const chatEmpty = !document.querySelector('#chat-container .chat-message');
-  if (chatEmpty){
-    showToast('Chat je već prazan.', 'warn');
+    const chatEmpty = !document.querySelector('#chat-container .chat-message');
+    if (chatEmpty){
+      showToast('Chat je već prazan.', 'warn');
+      closeModal('#confirm-clear');
+      return;
+    }
+    try{
+      const fd = new URLSearchParams({confirm_clear:"1", ajax:"1"});
+      await fetch("/clear",{method:"POST", body:fd, credentials:"include"});
+    }catch(_){}
+    resetHistory(HIST_KEY, hiddenHistory);
     closeModal('#confirm-clear');
-    return;
-  }
-  try{
-    const fd = new URLSearchParams({confirm_clear:"1", ajax:"1"});
-    await fetch("/clear",{method:"POST", body:fd, credentials:"include"});
-  }catch(_){}
-  // reset i lokalne historije
-  resetHistory(HIST_KEY, hiddenHistory);
-  closeModal('#confirm-clear');
-  location.reload();
-});
-
+    location.reload();
+  });
 
   /* promjena razreda kroz meni */
   document.querySelectorAll('.grade-btn').forEach(btn=>{
@@ -501,16 +492,18 @@ try{
     }
   });
 
-  function escapeHtml(s){ return (s||'').replace(/[&<>"']/g, m=>({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[m])); }
+  function escapeHtml(s){
+    return (s||'').replace(/[&<>"']/g, m=>({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[m]));
+  }
 
-  function appendUserBubble({text, fileName}){
+  function appendUserBubble(opts){
     const wrap = document.createElement('div');
     wrap.className = 'chat-message user-message';
     const bubble = document.createElement('div');
     bubble.className = 'bubble user';
     let html = '';
-    if (text && text.trim()) html += `<p>${escapeHtml(text)}</p>`;
-    if (fileName) html += `<p><strong>📷 ${escapeHtml(fileName)}</strong></p>`;
+    if (opts.text && opts.text.trim()) html += `<p>${escapeHtml(opts.text)}</p>`;
+    if (opts.fileName) html += `<p><strong>📷 ${escapeHtml(opts.fileName)}</strong></p>`;
     if (!html) html = '<p><em>(prazna poruka)</em></p>';
     bubble.innerHTML = html;
     wrap.appendChild(bubble);
@@ -536,14 +529,10 @@ try{
     const file = fileInput.files[0];
 
     const userLabel = text || (file ? file.name : '(prazno)');
-window.__lastUserLabel = userLabel; // da poll() zna koga da upari
+    window.__lastUserLabel = userLabel;
 
-    if(!razred){
-      showToast('Prvo postavi razred.', 'err'); return;
-    }
-    if(!text && !file){
-      showToast('Unesi pitanje ili dodaj sliku prije slanja.', 'err'); return;
-    }
+    if(!razred){ showToast('Prvo postavi razred.', 'err'); return; }
+    if(!text && !file){ showToast('Unesi pitanje ili dodaj sliku prije slanja.', 'err'); return; }
     if(file && (!file.type || !file.type.startsWith('image/'))){
       showToast('Fajl nije prepoznat kao slika. Pošalji JPG/PNG ili samo tekst.', 'err'); return;
     }
@@ -554,8 +543,7 @@ window.__lastUserLabel = userLabel; // da poll() zna koga da upari
     textarea.disabled = true;
     document.querySelectorAll('.grade-btn').forEach(b=>b.disabled=true);
 
-    appendUserBubble({text, fileName: file?.name});
-
+    appendUserBubble({text, fileName: file ? file.name : ''});
     textarea.value = '';
     clearFile();
 
@@ -563,15 +551,10 @@ window.__lastUserLabel = userLabel; // da poll() zna koga da upari
     fd.append('razred', razred);
     if (text) fd.append('user_text', text);
     if (file) fd.append('file', file, file.name);
-    const fd = new FormData();
-    fd.append('razred', razred);
-    if (text) fd.append('user_text', text);
-    if (file) fd.append('file', file, file.name);
     const hiddenMain = document.getElementById('history_json_main');
     if (hiddenMain && hiddenMain.value) {
       fd.append('history_json', hiddenMain.value);
-}
-
+    }
 
     let keepTyping = false;
     try{
@@ -582,15 +565,16 @@ window.__lastUserLabel = userLabel; // da poll() zna koga da upari
         appendBotHTML('<div class="alert alert-warning">Već se generiše jedan odgovor. Sačekaj trenutak.</div>');
       } else if (!r.ok){
         const t = isJSON ? JSON.stringify(await r.json()) : await r.text();
-        appendBotHTML(`<div class="alert alert-danger">Greška: ${escapeHtml(t)}</div>`);
+        appendBotHTML(`<div class="alert alert-danger">Greška: ${escapeHtml(t)}</div>');
       } else {
         const j = isJSON ? await r.json() : {};
         if (j.mode && j.job_id && !j.result){
           keepTyping = true;
           poll(j.job_id);
         } else {
-          appendBotHTML(j?.result?.html || '<i>Nema rezultata.</i>');
-          pushHistory(HIST_KEY, userLabel, j?.result?.html || '');  
+          const html = (j && j.result && j.result.html) ? j.result.html : '<i>Nema rezultata.</i>';
+          appendBotHTML(html);
+          pushHistory(HIST_KEY, userLabel, html);
         }
       }
     } catch (e){
@@ -603,7 +587,6 @@ window.__lastUserLabel = userLabel; // da poll() zna koga da upari
     }
   }
 
-
   async function poll(jobId){
     const sleep = (ms)=> new Promise(r=>setTimeout(r, ms));
     for (let i=0;i<180;i++){
@@ -613,13 +596,13 @@ window.__lastUserLabel = userLabel; // da poll() zna koga da upari
         if (!r.ok) throw new Error('status http '+r.status);
         const data = await r.json();
         if (data.status === 'done'){
-          appendBotHTML((data.result && data.result.html) || '<i>Nema rezultata.</i>');
+          const html = (data.result && data.result.html) ? data.result.html : '<i>Nema rezultata.</i>';
+          appendBotHTML(html);
+          pushHistory(HIST_KEY, window.__lastUserLabel || '(follow-up)', html);
           hideTyping(); return;
         }
         if (data.status === 'error'){
           appendBotHTML('<div class="alert alert-danger">Greška u asinkronoj obradi.</div>');
-          pushHistory(HIST_KEY, window.__lastUserLabel || '(follow-up)', (data.result && data.result.html) || '');
-
           hideTyping(); return;
         }
       }catch(_){
