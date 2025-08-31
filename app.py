@@ -1,3 +1,4 @@
+# app.py — MAT-BOT (robustno, bez SyntaxError-a, sa ispravljenim promptovima i vizijom/Mathpix tokom)
 from flask import Flask, render_template, request, session, redirect, url_for, send_from_directory, jsonify
 from dotenv import load_dotenv
 import os, re, base64, json, html, datetime, logging, mimetypes, threading, traceback
@@ -87,8 +88,7 @@ MATHPIX_APP_ID  = (os.getenv("MATHPIX_APP_ID")  or os.getenv("MATHPIX_API_ID")  
 MATHPIX_APP_KEY = (os.getenv("MATHPIX_APP_KEY") or os.getenv("MATHPIX_API_KEY") or "").strip()
 
 _use_flag = (os.getenv("USE_MATHPIX", "").strip())
-# default MATHPIX_MODE = "prefer" (ako korisnik nije ništa postavio)
-MATHPIX_MODE = (os.getenv("MATHPIX_MODE", "prefer").strip().lower())
+MATHPIX_MODE = (os.getenv("MATHPIX_MODE", "prefer").strip().lower())  # default = prefer
 
 if _use_flag == "0" or MATHPIX_MODE in ("off", "disable", "disabled"):
     USE_MATHPIX = False
@@ -195,31 +195,31 @@ def read_job(job_id: str) -> dict:
         return (doc.to_dict() or {}) if doc.exists else {}
     return JOB_STORE.get(job_id, {})
 
-# --- Pedagoški promptovi ---
-# --- Pedagoški promptovi (osnovni po razredu) ---
+# --- Pedagoški promptovi (ispravljeno) ---
+BASE_GUIDANCE = (
+    "Ti si strpljiv i pedagoški pomoćnik iz matematike. "
+    "Odgovaraj jasno i korak-po-korak. "
+    "Za razlomke koristi termine 'brojnik' i 'nazivnik' (osim ako korisnik koristi druge). "
+    "Za linearne funkcije koristi zapis y = kx + n (k koeficijent, n odsječak). "
+    "Ako je zadatak tekstualan: 1) izdvoji podatke, 2) postavi plan, 3) riješi, 4) provjera. "
+    "Ne crtati ASCII grafove osim ako je traženo. "
+    "Odgovaraj jezikom pitanja (po difoltu bosanski / ijekavica). "
+)
+
 PROMPTI_PO_RAZREDU = {
-    "5": "Ti si pomoćnik iz matematike za učenike 5. razreda osnovne škole. Objašnjavaj jednostavnim i razumljivim jezikom. Pomaži učenicima da razumiju zadatke iz prirodnih brojeva, osnovnih računskih operacija, jednostavne geometrije i tekstualnih zadataka. Svako rješenje objasni jasno, korak po korak.",
-    "6": "Ti si pomoćnik iz matematike za učenike 6. razreda osnovne škole. Odgovaraj detaljno i pedagoški, koristeći primjere primjerene njihovom uzrastu. Pomaži im da razumiju razlomke, decimalne brojeve, procente, geometriju i tekstualne zadatke. Objasni rješenje jasno i korak po korak.",
-    "7": "Ti si pomoćnik iz matematike za učenike 7. razreda osnovne škole. Pomaži im u razumijevanju složenijih zadataka iz algebre, geometrije i funkcija. Koristi jasan, primjeren jezik i objasni svaki korak logično i precizno.",
-    "8": "Ti si pomoćnik iz matematike za učenike 8. razreda osnovne škole. Fokusiraj se na linearne izraze, sisteme jednačina, geometriju i statistiku. Pomaži učenicima da razumiju postupke i objasni svako rješenje detaljno, korak po korak.",
-    "9": "Ti si pomoćnik iz matematike za učenike 9. razreda osnovne škole. Pomaži im u savladavanju zadataka iz algebre, funkcija, geometrije i statistike. Koristi jasan i stručan jezik, ali primjeren njihovom nivou. Objasni svaki korak rješenja jasno i precizno."
-    "6": "Ti si pomoćnik iz matematike za učenike 6. razreda osnovne škole. Odgovaraj detaljno i pedagoški, koristeći primjere prikladne njihovom uzrastu. Pomaži im da razumiju razlomke, decimalne brojeve, procente, geometriju i tekstualne zadatke. Objasni rješenje jasno i korak po korak.",
-    "7": "Ti si pomoćnik iz matematike za učenike 7. razreda osnovne škole. Pomaži u razumijevanju složenijih zadataka iz algebre, geometrije i funkcija. Koristi jasan, primjeren jezik i objasni svaki korak logično i precizno.",
-    "8": "Ti si pomoćnik iz matematike za učenike 8. razreda osnovne škole. Fokusiraj se na linearne izraze, sisteme jednačina, geometriju i statistiku. Objasni postupke detaljno, korak po korak.",
-    "9": "Ti si pomoćnik iz matematike za učenike 9. razreda osnovne škole. Pomaži u zadacima iz algebre, funkcija, geometrije i statistike. Koristi jasan i stručan jezik, ali primjeren nivou učenika. Objasni svaki korak rješenja jasno i precizno."
+    "5": BASE_GUIDANCE + "Prilagodi primjere nivou 5. razreda (osnovne operacije, jednostavna geometrija, tekstualni zadaci).",
+    "6": BASE_GUIDANCE + "Prilagodi primjere nivou 6. razreda (razlomci, decimale, procenti, geometrija, tekstualni zadaci).",
+    "7": BASE_GUIDANCE + "Prilagodi primjere nivou 7. razreda (algebra, geometrija, funkcije).",
+    "8": BASE_GUIDANCE + "Prilagodi primjere nivou 8. razreda (linearni izrazi, sistemi jednačina, geometrija, statistika).",
+    "9": BASE_GUIDANCE + "Prilagodi primjere nivou 9. razreda (algebra, funkcije, geometrija, statistika).",
 }
 DOZVOLJENI_RAZREDI = set(PROMPTI_PO_RAZREDU.keys())
 
-# --- COMMON TEACHING RULES (ljudski, univerzalno) ---
+# --- COMMON TEACHING RULES (dodatni sloj) ---
 COMMON_RULES = (
-    " Razgovaraj prirodno i strpljivo, kao nastavnik. "
-    " Ako učenik pošalje nejasnu poruku ili napiše da nije shvatio, PODRAZUMIJEVAJ da se to odnosi na TVOJ POSLJEDNJI odgovor ili zadatak, "
-    " osim ako učenik izričito ne kaže da mijenja temu. "
-    " U tom slučaju objasni isti sadržaj DRUGAČIJE (jednostavnije, intuitivno ili sa kratkim paralelnim primjerom), "
-    " a na kraju dodaj kratku rečenicu: 'Ako ti i dalje nije jasno, napiši šta ti tačno nije jasno.' "
-    " Kod razlomaka koristi termine 'brojnik' i 'nazivnik' (osim ako korisnik uporno koristi druge nazive). "
-    " Za linearne funkcije koristi isključivo zapis y = kx + n, gdje je k koeficijent pravca, a n odsječak na y-osi. "
-    " Po difoltu odgovaraj bosanskim (ijekavica) i ne koristi ASCII grafove osim ako su traženi."
+    " Ako učenik napiše da nije shvatio, podrazumijevaj da se to odnosi na tvoj posljednji odgovor/zadatak, "
+    "osim ako eksplicitno kaže da mijenja temu; objasni ponovo, jednostavnije ili s paralelnim primjerom. "
+    "Ako pitanje nije iz matematike, reci: 'Molim te, postavi matematičko pitanje.' "
 )
 
 ORDINAL_WORDS = {
@@ -295,6 +295,7 @@ def _openai_chat(model: str, messages: list, timeout: float = None, max_tokens: 
         return cli.chat.completions.create(**params)
     params = {"model": model, "messages": messages}
     if max_tokens is not None:
+        # novi SDK: max_completion_tokens; fallback na max_tokens ako zatreba
         params["max_completion_tokens"] = max_tokens
     try:
         return _do(params)
@@ -306,17 +307,34 @@ def _openai_chat(model: str, messages: list, timeout: float = None, max_tokens: 
             return _do(params)
         raise
 
+def strip_ascii_graph_blocks(text: str) -> str:
+    fence = re.compile(r"```([\s\S]*?)```", flags=re.MULTILINE)
+    def looks_like_ascii_graph(block: str) -> bool:
+        sample = block.strip()
+        if len(sample) == 0: return False
+        allowed = set(" \t\r\n-_|*^><().,/\\0123456789xyXY")
+        ratio_allowed = sum(c in allowed for c in sample) / len(sample)
+        lines = sample.splitlines()
+        return (ratio_allowed > 0.9) and (3 <= len(lines) <= 40)
+    def repl(m):
+        block = m.group(1)
+        return "" if looks_like_ascii_graph(block) else m.group(0)
+    graf_re = re.compile(r"(Grafički prikaz.*?:\s*)?```[\s\S]*?```", re.IGNORECASE)
+    text = graf_re.sub(lambda m: "" if "```" in m.group(0) else m.group(0), text)
+    return fence.sub(repl, text)
+
 def answer_with_text_pipeline(pure_text: str, razred: str, history, requested, timeout_override: float | None = None):
     prompt_za_razred = PROMPTI_PO_RAZREDU.get(razred, PROMPTI_PO_RAZREDU["5"])
+    strict_geom_policy = (
+        " Ako problem uključuje geometriju: 1) koristi samo eksplicitno date podatke; "
+        "2) ne pretpostavljaj ništa bez oznake; 3) navedi nazive teorema (npr. unutrašnji naspramni, Thales...)."
+    )
     only_clause = ""
-    strict_geom_policy = (" Ako problem uključuje geometriju: 1) koristi samo eksplicitno date podatke; 2) ne pretpostavljaj ništa bez oznake; 3) navedi nazive teorema (npr. unutrašnji naspramni, Thales...).")
     if requested:
-        only_clause = (" Riješi ISKLJUČIVO sljedeće zadatke: " + ", ".join(map(str, requested)) + ". Sve ostale primjere ignoriraj.")
-    # --- COMMON RULES ubačene ovdje ---
+        only_clause = " Riješi ISKLJUČIVO sljedeće zadatke: " + ", ".join(map(str, requested)) + ". Ostale ignoriraj."
     system_message = {
         "role": "system",
-        "content": (prompt_za_razred + " Odgovaraj jezikom pitanja (po difoltu bosanski ijekavica). Ako pitanje nije iz matematike, reci: 'Molim te, postavi matematičko pitanje.' Ako ne znaš tačno rješenje, reci: 'Za ovaj zadatak se obrati instruktorima na info@matematicari.com'. Ne crtati ASCII grafove osim ako je traženo." + only_clause + strict_geom_policy)
-        "content": (prompt_za_razred + COMMON_RULES + only_clause + strict_geom_policy)
+        "content": prompt_za_razred + COMMON_RULES + only_clause + " " + strict_geom_policy
     }
     messages = [system_message]
     # koristi zadnjih 5 izmjena iz historije
@@ -333,11 +351,9 @@ def answer_with_text_pipeline(pure_text: str, razred: str, history, requested, t
 
 def _vision_messages_base(razred: str, history, only_clause: str, strict_geom_policy: str):
     prompt_za_razred = PROMPTI_PO_RAZREDU.get(razred, PROMPTI_PO_RAZREDU["5"])
-    # --- COMMON RULES ubačene i u viziju ---
     system_message = {
         "role": "system",
-        "content": (prompt_za_razred + " Odgovaraj jezikom pitanja (bosanski/ijekavica). Ne prikazuj ASCII grafove osim ako su izričito traženi. " + only_clause + " " + strict_geom_policy)
-        "content": (prompt_za_razred + COMMON_RULES + " " + only_clause + " " + strict_geom_policy)
+        "content": prompt_za_razred + COMMON_RULES + " " + only_clause + " " + strict_geom_policy
     }
     messages = [system_message]
     for msg in history[-5:]:
@@ -485,22 +501,6 @@ def get_history_from_request():
     except Exception:
         pass
     return None
-
-def strip_ascii_graph_blocks(text: str) -> str:
-    fence = re.compile(r"```([\s\S]*?)```", flags=re.MULTILINE)
-    def looks_like_ascii_graph(block: str) -> bool:
-        sample = block.strip()
-        if len(sample) == 0: return False
-        allowed = set(" \t\r\n-_|*^><().,/\\0123456789xyXY")
-        ratio_allowed = sum(c in allowed for c in sample) / len(sample)
-        lines = sample.splitlines()
-        return (ratio_allowed > 0.9) and (3 <= len(lines) <= 40)
-    def repl(m):
-        block = m.group(1)
-        return "" if looks_like_ascii_graph(block) else m.group(0)
-    graf_re = re.compile(r"(Grafički prikaz.*?:\s*)?```[\s\S]*?```", re.IGNORECASE)
-    text = graf_re.sub(lambda m: "" if "```" in m.group(0) else m.group(0), text)
-    return fence.sub(repl, text)
 
 def gcs_upload_bytes(job_id: str, raw: bytes, filename_hint: str = "image.bin", content_type: str | None = None) -> str | None:
     if not (storage_client and GCS_BUCKET):
@@ -760,7 +760,6 @@ def _process_job_core(payload: dict) -> dict:
         img_bytes = base64.b64decode(image_inline_b64)
         odgovor_html, used_path, used_model = route_image_flow(img_bytes, razred, history=history, user_text=user_text, timeout_override=task_ai_timeout, mime_hint=None)
     elif image_url:
-        odgovor_html, used_path, used_model = route_image_flow_url(image_url, razred, history=history, user_text=user_text, timeout_override=task_ai_timeout)
         odgovor_html, used_path, used_model = route_image_flow_url(image_url, razred, history, user_text=user_text, timeout_override=task_ai_timeout)
     else:
         odgovor_html, used_model = answer_with_text_pipeline(user_text, razred, history, requested, timeout_override=task_ai_timeout)
@@ -803,7 +802,7 @@ def _sync_process_once(razred: str, user_text: str, requested: list, image_url: 
         if file_bytes:
             html_out, used_path, used_model = route_image_flow(file_bytes, razred, history, user_text=user_text, timeout_override=timeout_s, mime_hint=file_mime or None)
             return {"ok": True, "result": {"html": html_out, "path": used_path, "model": used_model}}
-        html_out, used_model = answer_with_text_pipeline(user_text, razred, history, requested, timeout_s)
+        html_out, used_model = answer_with_text_pipeline(user_text, razred, history, requested, timeout_override=timeout_s)
         return {"ok": True, "result": {"html": html_out, "path": "text", "model": used_model}}
     except Exception as e:
         return {"ok": False, "error": str(e)}
@@ -960,6 +959,7 @@ def set_razred():
         session.pop("last_image_url", None)
     return ("", 204)
 
+# Dodatni CSP za Thinkific okvir (ostavljam; možeš prebrisati preko FRAME_ANCESTORS headera u add_no_cache_headers)
 @app.after_request
 def add_csp(resp):
     resp.headers["Content-Security-Policy"] = "frame-ancestors https://*.thinkific.com"
