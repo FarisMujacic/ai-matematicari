@@ -964,6 +964,23 @@ def set_razred():
 def add_csp(resp):
     resp.headers["Content-Security-Policy"] = "frame-ancestors https://*.thinkific.com"
     return resp
+# ==== APP VERSION / FINGERPRINT (dodaj blizu vrha fajla, uz ostale env var) ====
+APP_VERSION = os.getenv("APP_VERSION", "dev")
+
+# ... ostatak tvog koda ...
+
+
+# ==== /version endpoint (dodaj blizu ostalih @app.get ruta) ====
+@app.get("/version")
+def version():
+    try:
+        import hashlib, inspect, importlib
+        mod = importlib.import_module("app")
+        src = inspect.getsource(mod)
+        sha = hashlib.sha256(src.encode()).hexdigest()[:12]
+    except Exception:
+        sha = "unknown"
+    return jsonify({"version": APP_VERSION, "app_py_sha": sha}), 200
 
 
 if __name__ == "__main__":
