@@ -2,39 +2,38 @@ cat > ~/matbot-refresh.sh <<'SH'
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Radi iz sigurnog direktorija da ne obrišemo PWD
+cd "${HOME}"
+
+# --- Parametri ---
 PROJECT_ID="$(gcloud config get-value project)"
 REGION="europe-west1"
 SERVICE="matbot"
 REPO="https://github.com/CORBiH/ai-matematicari.git"
-BRANCH="main"   # promijeni ako ti je druga grana (npr. master)
 
-echo "Project: $PROJECT_ID | Region: $REGION | Service: $SERVICE | Branch: $BRANCH"
+echo "Project: $PROJECT_ID | Region: $REGION | Service: $SERVICE"
 
-# Svježi klon
-rm -rf /tmp/ai-matematicari
-git clone --depth 1 --branch "$BRANCH" "$REPO" /tmp/ai-matematicari
-cd /tmp/ai-matematicari
+# --- Svježi klon u /tmp ---
+WORKDIR="/tmp/ai-matematicari"
+mkdir -p /tmp
+rm -rf "$WORKDIR"
+cd /tmp
+git clone --depth 1 "$REPO" "$WORKDIR"
+cd "$WORKDIR"
 echo "Git rev: $(git rev-parse --short HEAD)"
 
-# Odaberi build config iz repoa (preferiraj cloudbuild.json)
-if [[ -f cloudbuild.json ]]; then
-  CFG=cloudbuild.json
-elif [[ -f cloudbuild.yaml ]]; then
-  CFG=cloudbuild.yaml
-else
-  echo "❌ Nema cloudbuild.json ni cloudbuild.yaml u repo rootu." >&2
-  exit 1
+# --- Izaberi build config (preferiraj cloudbuild.json) ---
+CFG="cloudbuild.json"
+if [[ ! -f "$CFG" ]]; then
+  CFG="cloudbuild.yaml"
 fi
-echo "Koristim build config: $CFG"
+echo "Using build config: $CFG"
 
-# Brzi sintaksni test Python koda (ne obavezan, samo info)
-python -m py_compile app.py || true
-
-# Build+deploy preko Cloud Build-a
+# --- Build + Deploy preko Cloud Build-a ---
 gcloud builds submit --config "$CFG" .
 
-# Provjera nakon deploya
-RUN_URL="$(gcloud run services describe "$SERVICE" --region "$REGION" --format='value(status.url)')"
+# --- URL i smoke testovi ---
+RUN_URL="$(gcloud run services describe "$SERVICE" --region="$REGION" --format='value(status.url)')"
 echo "Run URL: $RUN_URL"
 
 echo "---- Health (_ah/health) ----"
@@ -43,6 +42,9 @@ curl -fsS -o /dev/null -w "%{http_code}\n" "$RUN_URL/_ah/health" || true
 echo "---- /submit quick test ----"
 curl -fsS -X POST "$RUN_URL/submit" -F 'razred=6' -F 'user_text=Koliko je 2+3?' || true
 
-echo "Done."
+echo "---- Zadnji logovi (10 min) ----"
+gcloud logging read \
+  'resource.type="cloud_run_revision" AND resource.labels.service_name="'"$SERVICE"'"' \
+  --freshness=10m --limit=120 --format='value(textPayload)' || true
 SH
 chmod +x ~/matbot-refresh.sh
