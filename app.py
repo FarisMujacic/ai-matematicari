@@ -195,9 +195,14 @@ def read_job(job_id: str) -> dict:
         return (doc.to_dict() or {}) if doc.exists else {}
     return JOB_STORE.get(job_id, {})
 
+# --- Pedagoški promptovi ---
 # --- Pedagoški promptovi (osnovni po razredu) ---
 PROMPTI_PO_RAZREDU = {
     "5": "Ti si pomoćnik iz matematike za učenike 5. razreda osnovne škole. Objašnjavaj jednostavnim i razumljivim jezikom. Pomaži učenicima da razumiju zadatke iz prirodnih brojeva, osnovnih računskih operacija, jednostavne geometrije i tekstualnih zadataka. Svako rješenje objasni jasno, korak po korak.",
+    "6": "Ti si pomoćnik iz matematike za učenike 6. razreda osnovne škole. Odgovaraj detaljno i pedagoški, koristeći primjere primjerene njihovom uzrastu. Pomaži im da razumiju razlomke, decimalne brojeve, procente, geometriju i tekstualne zadatke. Objasni rješenje jasno i korak po korak.",
+    "7": "Ti si pomoćnik iz matematike za učenike 7. razreda osnovne škole. Pomaži im u razumijevanju složenijih zadataka iz algebre, geometrije i funkcija. Koristi jasan, primjeren jezik i objasni svaki korak logično i precizno.",
+    "8": "Ti si pomoćnik iz matematike za učenike 8. razreda osnovne škole. Fokusiraj se na linearne izraze, sisteme jednačina, geometriju i statistiku. Pomaži učenicima da razumiju postupke i objasni svako rješenje detaljno, korak po korak.",
+    "9": "Ti si pomoćnik iz matematike za učenike 9. razreda osnovne škole. Pomaži im u savladavanju zadataka iz algebre, funkcija, geometrije i statistike. Koristi jasan i stručan jezik, ali primjeren njihovom nivou. Objasni svaki korak rješenja jasno i precizno."
     "6": "Ti si pomoćnik iz matematike za učenike 6. razreda osnovne škole. Odgovaraj detaljno i pedagoški, koristeći primjere prikladne njihovom uzrastu. Pomaži im da razumiju razlomke, decimalne brojeve, procente, geometriju i tekstualne zadatke. Objasni rješenje jasno i korak po korak.",
     "7": "Ti si pomoćnik iz matematike za učenike 7. razreda osnovne škole. Pomaži u razumijevanju složenijih zadataka iz algebre, geometrije i funkcija. Koristi jasan, primjeren jezik i objasni svaki korak logično i precizno.",
     "8": "Ti si pomoćnik iz matematike za učenike 8. razreda osnovne škole. Fokusiraj se na linearne izraze, sisteme jednačina, geometriju i statistiku. Objasni postupke detaljno, korak po korak.",
@@ -214,7 +219,6 @@ COMMON_RULES = (
     " a na kraju dodaj kratku rečenicu: 'Ako ti i dalje nije jasno, napiši šta ti tačno nije jasno.' "
     " Kod razlomaka koristi termine 'brojnik' i 'nazivnik' (osim ako korisnik uporno koristi druge nazive). "
     " Za linearne funkcije koristi isključivo zapis y = kx + n, gdje je k koeficijent pravca, a n odsječak na y-osi. "
-    " Ako korisnik postavi podpitanje bez jasne reference, PODRAZUMIJEVAJ da se odnosi na POSLJEDNJI rješavani zadatak i NEMOJ pitati 'koji zadatak', osim ako korisnik eksplicitno promijeni temu. "
     " Po difoltu odgovaraj bosanskim (ijekavica) i ne koristi ASCII grafove osim ako su traženi."
 )
 
@@ -228,23 +232,6 @@ _task_num_re = re.compile(
     flags=re.IGNORECASE
 )
 FOLLOWUP_TASK_RE = re.compile(r"^\s*\d{2,5}\s*[a-z]\)?\s*$", re.IGNORECASE)
-
-# --- FOLLOW-UP detekcija (slovo/riječi/kratko podpitanje) ---
-FOLLOWUP_LETTER_RE = re.compile(r"^\s*([a-hčćđšž])\)?\s*$", re.IGNORECASE)
-FOLLOWUP_PHRASES_RE = re.compile(r"\b(pod|tačka|tacka|stavka)\s*([a-hčćđšž])\)?\b", re.IGNORECASE)
-FOLLOWUP_GENERIC_RE = re.compile(
-    r"\b(zašto|zasto|kako|može|moze|pojasni|objasni|dalje|nastavi|korak|sljedeći|sledeci|još|jos)\b",
-    re.IGNORECASE
-)
-def is_followup_like(text: str) -> bool:
-    if not text: return False
-    if FOLLOWUP_LETTER_RE.match(text): return True           # "b)" / "b"
-    if FOLLOWUP_PHRASES_RE.search(text): return True         # "pod b", "tačka c"
-    if FOLLOWUP_GENERIC_RE.search(text) and len(text) <= 120: return True
-    return False
-
-# prihvati i formu samo slovo (b, c, ...) ili broj+slovo (12b)
-FOLLOWUP_TASK_RE = re.compile(r"^\s*(\d{1,4}\s*[a-hčćđšž]\)?|[a-hčćđšž]\)?)\s*$", re.IGNORECASE)
 
 def extract_requested_tasks(text: str):
     if not text: return []
@@ -320,10 +307,6 @@ def _openai_chat(model: str, messages: list, timeout: float = None, max_tokens: 
         raise
 
 def answer_with_text_pipeline(pure_text: str, razred: str, history, requested, timeout_override: float | None = None):
-def answer_with_text_pipeline(pure_text: str, razred: str, history, requested,
-                              timeout_override: float | None = None,
-                              is_followup: bool = False,
-                              last_problem_text: str = ""):
     prompt_za_razred = PROMPTI_PO_RAZREDU.get(razred, PROMPTI_PO_RAZREDU["5"])
     only_clause = ""
     strict_geom_policy = (" Ako problem uključuje geometriju: 1) koristi samo eksplicitno date podatke; 2) ne pretpostavljaj ništa bez oznake; 3) navedi nazive teorema (npr. unutrašnji naspramni, Thales...).")
@@ -332,6 +315,7 @@ def answer_with_text_pipeline(pure_text: str, razred: str, history, requested,
     # --- COMMON RULES ubačene ovdje ---
     system_message = {
         "role": "system",
+        "content": (prompt_za_razred + " Odgovaraj jezikom pitanja (po difoltu bosanski ijekavica). Ako pitanje nije iz matematike, reci: 'Molim te, postavi matematičko pitanje.' Ako ne znaš tačno rješenje, reci: 'Za ovaj zadatak se obrati instruktorima na info@matematicari.com'. Ne crtati ASCII grafove osim ako je traženo." + only_clause + strict_geom_policy)
         "content": (prompt_za_razred + COMMON_RULES + only_clause + strict_geom_policy)
     }
     messages = [system_message]
@@ -340,23 +324,6 @@ def answer_with_text_pipeline(pure_text: str, razred: str, history, requested,
         messages.append({"role":"user","content": msg["user"]})
         messages.append({"role":"assistant","content": msg["bot"]})
     messages.append({"role":"user","content": pure_text})
-
-    # Prefiks za follow-up na TEKSTUALNI zadatak
-    followup_prefix = ""
-    if is_followup:
-        if last_problem_text:
-            followup_prefix = (
-                "[PODPITANJE NA PRETHODNI ZADATAK]\n"
-                "Nastavi objašnjenje istog zadatka. Ne pitaj 'koji zadatak'.\n"
-                f"Originalni tekst zadatka (posljednji korisnički unos): {last_problem_text}\n\n"
-            )
-        else:
-            followup_prefix = (
-                "[PODPITANJE NA PRETHODNI ZADATAK]\n"
-                "Nastavi objašnjenje istog zadatka. Ne pitaj 'koji zadatak'.\n\n"
-            )
-
-    messages.append({"role":"user","content": followup_prefix + pure_text})
     response = _openai_chat(MODEL_TEXT, messages, timeout=timeout_override or OPENAI_TIMEOUT)
     actual_model = getattr(response, "model", MODEL_TEXT)
     raw = response.choices[0].message.content
@@ -369,6 +336,7 @@ def _vision_messages_base(razred: str, history, only_clause: str, strict_geom_po
     # --- COMMON RULES ubačene i u viziju ---
     system_message = {
         "role": "system",
+        "content": (prompt_za_razred + " Odgovaraj jezikom pitanja (bosanski/ijekavica). Ne prikazuj ASCII grafove osim ako su izričito traženi. " + only_clause + " " + strict_geom_policy)
         "content": (prompt_za_razred + COMMON_RULES + " " + only_clause + " " + strict_geom_policy)
     }
     messages = [system_message]
@@ -581,22 +549,13 @@ def index():
             slika = request.files.get("slika")
             image_url = (request.form.get("image_url") or "").strip()
             is_ajax = request.form.get("ajax") == "1" or request.headers.get("X-Requested-With") == "XMLHttpRequest"
-
-            followup_flag = is_followup_like(pitanje)
-
-            # --- IMAGE VIA URL ---
             if image_url:
                 combined_text = pitanje
                 odgovor, used_path, used_model = route_image_flow_url(image_url, razred, history, user_text=combined_text, timeout_override=HARD_TIMEOUT_S)
                 session["last_image_url"] = image_url
-                session["last_problem_kind"] = "image"
-                if combined_text:
-                    session["last_problem_user_text"] = combined_text
-
                 if (not plot_expression_added) and should_plot(combined_text):
                     expr = extract_plot_expression(combined_text, razred=razred, history=history)
                     if expr: odgovor = add_plot_div_once(odgovor, expr); plot_expression_added = True
-
                 file_label = _name_from_url(image_url)
                 display_user = (combined_text + f" [slika: {file_label}]") if combined_text else f"[slika: {file_label}]"
                 history.append({"user": display_user, "bot": odgovor.strip()})
@@ -604,8 +563,6 @@ def index():
                 sync_job_id = f"sync-{uuid4().hex[:8]}"; log_to_sheet(sync_job_id, razred, combined_text, odgovor, "vision_url", used_model)
                 if is_ajax: return render_template("index.html", history=history, razred=razred)
                 return redirect(url_for("index"))
-
-            # --- IMAGE VIA FILE UPLOAD ---
             if slika and slika.filename:
                 combined_text = pitanje
                 body = slika.read()
@@ -618,15 +575,9 @@ def index():
                     session["last_image_url"] = public_url
                 except Exception:
                     pass
-
-                session["last_problem_kind"] = "image"
-                if combined_text:
-                    session["last_problem_user_text"] = combined_text
-
                 if (not plot_expression_added) and should_plot(combined_text):
                     expr = extract_plot_expression(combined_text, razred=razred, history=history)
                     if expr: odgovor = add_plot_div_once(odgovor, expr); plot_expression_added = True
-
                 orig_name = _short_name_for_display(slika.filename or "upload")
                 display_user = (combined_text + f" [slika: {orig_name}]") if combined_text else f"[slika: {orig_name}]"
                 history.append({"user": display_user, "bot": odgovor.strip()})
@@ -634,24 +585,13 @@ def index():
                 sync_job_id = f"sync-{uuid4().hex[:8]}"; log_to_sheet(sync_job_id, razred, combined_text, odgovor, "vision_direct", used_model)
                 if is_ajax: return render_template("index.html", history=history, razred=razred)
                 return redirect(url_for("index"))
-
-            # --- FOLLOW-UP NA PRETHODNU SLIKU (ili eksplicitno numerisan podzadatak) ---
             requested = extract_requested_tasks(pitanje)
             last_url = session.get("last_image_url")
             if last_url and (requested or (pitanje and FOLLOWUP_TASK_RE.match(pitanje))):
-            last_kind = session.get("last_problem_kind")
-
-            if last_url and (followup_flag or requested or (pitanje and FOLLOWUP_TASK_RE.match(pitanje))):
                 odgovor, used_path, used_model = route_image_flow_url(last_url, razred, history, user_text=pitanje, timeout_override=HARD_TIMEOUT_S)
-
-                # ostavi anchor na istu sliku
-                session["last_image_url"] = last_url
-                session["last_problem_kind"] = "image"
-
                 if (not plot_expression_added) and should_plot(pitanje):
                     expr = extract_plot_expression(pitanje, razred=razred, history=history)
                     if expr: odgovor = add_plot_div_once(odgovor, expr); plot_expression_added = True
-
                 file_label = _name_from_url(last_url)
                 display_user = (pitanje + f" [slika: {file_label}]") if pitanje else f"[slika: {file_label}]"
                 history.append({"user": display_user, "bot": odgovor.strip()})
@@ -660,28 +600,10 @@ def index():
                 if is_ajax: return render_template("index.html", history=history, razred=razred)
                 return redirect(url_for("index"))
             odgovor, actual_model = answer_with_text_pipeline(pitanje, razred, history, requested, timeout_override=HARD_TIMEOUT_S)
-
-            # --- TEKSTUALNI ZADATAK (sa follow-up prefiksom po potrebi) ---
-            is_followup_text_now = bool(followup_flag and last_kind == "text")
-            odgovor, actual_model = answer_with_text_pipeline(
-                pitanje, razred, history, requested,
-                timeout_override=HARD_TIMEOUT_S,
-                is_followup=is_followup_text_now,
-                last_problem_text=session.get("last_problem_user_text", "")
-            )
-
             if (not plot_expression_added) and should_plot(pitanje):
                 expr = extract_plot_expression(pitanje, razred=razred, history=history)
                 if expr: odgovor = add_plot_div_once(odgovor, expr); plot_expression_added = True
             history.append({"user": pitanje, "bot": odgovor.strip()}); history = history[-8:]; session["history"] = history
-
-            history.append({"user": pitanje, "bot": odgovor.strip()})
-            history = history[-8:]; session["history"] = history
-
-            # zapamti da je posljednji problem bio TEKST + originalni tekst
-            session["last_problem_kind"] = "text"
-            session["last_problem_user_text"] = pitanje
-
             sync_job_id = f"sync-{uuid4().hex[:8]}"; log_to_sheet(sync_job_id, razred, pitanje, odgovor, "text", actual_model)
         except Exception as e:
             err_html = f"<p><b>Greška servera:</b> {html.escape(str(e))}</p>"
@@ -701,7 +623,6 @@ def too_large(e):
 def clear():
     if request.form.get("confirm_clear") == "1":
         session.pop("history", None); session.pop("razred", None); session.pop("last_image_url", None)
-        session.pop("last_problem_kind", None); session.pop("last_problem_user_text", None)
     if request.form.get("ajax") == "1": return render_template("index.html", history=[], razred=None)
     return redirect("/")
 
@@ -839,6 +760,7 @@ def _process_job_core(payload: dict) -> dict:
         img_bytes = base64.b64decode(image_inline_b64)
         odgovor_html, used_path, used_model = route_image_flow(img_bytes, razred, history=history, user_text=user_text, timeout_override=task_ai_timeout, mime_hint=None)
     elif image_url:
+        odgovor_html, used_path, used_model = route_image_flow_url(image_url, razred, history=history, user_text=user_text, timeout_override=task_ai_timeout)
         odgovor_html, used_path, used_model = route_image_flow_url(image_url, razred, history, user_text=user_text, timeout_override=task_ai_timeout)
     else:
         odgovor_html, used_model = answer_with_text_pipeline(user_text, razred, history, requested, timeout_override=task_ai_timeout)
@@ -873,8 +795,6 @@ def looks_heavy(user_text: str, has_image: bool) -> bool:
     return has_image or toks > HEAVY_TOKEN_THRESHOLD
 
 def _sync_process_once(razred: str, user_text: str, requested: list, image_url: str | None, file_bytes: bytes | None, file_mime: str | None, timeout_s: float) -> dict:
-def _sync_process_once(razred: str, user_text: str, requested: list, image_url: str | None, file_bytes: bytes | None, file_mime: str | None, timeout_s: float,
-                       is_followup: bool = False, last_problem_text: str = "") -> dict:
     try:
         history = []
         if image_url:
@@ -884,7 +804,6 @@ def _sync_process_once(razred: str, user_text: str, requested: list, image_url: 
             html_out, used_path, used_model = route_image_flow(file_bytes, razred, history, user_text=user_text, timeout_override=timeout_s, mime_hint=file_mime or None)
             return {"ok": True, "result": {"html": html_out, "path": used_path, "model": used_model}}
         html_out, used_model = answer_with_text_pipeline(user_text, razred, history, requested, timeout_s)
-        html_out, used_model = answer_with_text_pipeline(user_text, razred, history, requested, timeout_s, is_followup=is_followup, last_problem_text=last_problem_text)
         return {"ok": True, "result": {"html": html_out, "path": "text", "model": used_model}}
     except Exception as e:
         return {"ok": False, "error": str(e)}
@@ -932,7 +851,6 @@ def submit():
         mode      = (data.get("mode")      or mode).strip().lower()
     if razred not in DOZVOLJENI_RAZREDI:
         razred = "5"
-
     requested = extract_requested_tasks(user_text)
     file_storage = request.files.get("file")
     file_bytes = None
@@ -944,59 +862,29 @@ def submit():
         file_name = file_storage.filename
     image_b64_str = (data.get("image_b64") if data else None)
     has_image = bool(image_url or file_bytes or image_b64_str)
-
-    # FOLLOW-UP u /submit: ako je podpitanje i nema nove slike, a zadnje je bila slika → koristi je
-    followup_flag = is_followup_like(user_text)
-    last_kind = session.get("last_problem_kind")
-    last_url = session.get("last_image_url")
-    if (not has_image) and followup_flag and last_kind == "image" and last_url:
-        image_url = last_url
-        has_image = True  # sada imamo "implicitnu" sliku iz sesije
-
     if mode not in ("auto", "sync", "async"):
         mode = "auto"
-
     if mode == "async":
         job_id = str(uuid4())
         store_job(job_id, {"status": "pending", "created_at": datetime.datetime.utcnow().isoformat() + "Z", "razred": razred, "user_text": user_text, "requested": requested}, merge=True)
         payload = _prepare_async_payload(job_id, razred, user_text, requested, image_url or None, file_bytes, file_name, file_mime, image_b64_str)
-        # setuj anchor u sesiji odmah
-        if image_url or file_bytes or image_b64_str:
-            session["last_problem_kind"] = "image"
-            if image_url:
-                session["last_image_url"] = image_url
-        else:
-            session["last_problem_kind"] = "text"
-            session["last_problem_user_text"] = user_text
         try:
             _enqueue(payload)
             return jsonify({"mode": "async", "job_id": job_id, "status": "queued", "local_mode": LOCAL_MODE}), 202
         except Exception as e:
             store_job(job_id, {"status": "error", "error": str(e)}, merge=True)
             return jsonify({"error": "submit_failed", "detail": str(e), "job_id": job_id}), 500
-
     heavy = looks_heavy(user_text, has_image=has_image)
     if mode == "auto" and heavy:
         job_id = str(uuid4())
         store_job(job_id, {"status": "pending", "created_at": datetime.datetime.utcnow().isoformat() + "Z", "razred": razred, "user_text": user_text, "requested": requested}, merge=True)
         payload = _prepare_async_payload(job_id, razred, user_text, requested, image_url or None, file_bytes, file_name, file_mime, image_b64_str)
-        # setuj anchor i u ovom slučaju
-        if image_url or file_bytes or image_b64_str:
-            session["last_problem_kind"] = "image"
-            if image_url:
-                session["last_image_url"] = image_url
-        else:
-            session["last_problem_kind"] = "text"
-            session["last_problem_user_text"] = user_text
         try:
             _enqueue(payload)
             return jsonify({"mode": "auto→async", "job_id": job_id, "status": "queued", "local_mode": LOCAL_MODE}), 202
         except Exception as e:
             store_job(job_id, {"status": "error", "error": str(e)}, merge=True)
             return jsonify({"error": "submit_failed", "detail": str(e)}), 500
-
-    # sync pokušaj (+ follow-up prefiks ako je zadnji bio tekst)
-    is_followup_text_now = bool(followup_flag and last_kind == "text")
     sync_try = _sync_process_once(
         razred=razred,
         user_text=user_text,
@@ -1005,9 +893,6 @@ def submit():
         file_bytes=file_bytes,
         file_mime=file_mime,
         timeout_s=SYNC_SOFT_TIMEOUT_S
-        timeout_s=SYNC_SOFT_TIMEOUT_S,
-        is_followup=is_followup_text_now,
-        last_problem_text=session.get("last_problem_user_text", "")
     )
     if sync_try.get("ok"):
         html_out = sync_try["result"]["html"]
@@ -1017,30 +902,10 @@ def submit():
         try: log_to_sheet(f"sync-{uuid4().hex[:8]}", razred, user_text, html_out, sync_try["result"]["path"], sync_try["result"]["model"])
         except Exception: pass
         mode_tag = "auto(sync)" if mode == "auto" else "sync"
-
-        # nakon uspješne obrade, osvježi anchor u sesiji
-        if image_url or file_bytes or image_b64_str:
-            session["last_problem_kind"] = "image"
-            if image_url:
-                session["last_image_url"] = image_url
-        else:
-            session["last_problem_kind"] = "text"
-            session["last_problem_user_text"] = user_text
-
         return jsonify({"mode": mode_tag, "result": {"html": html_out, "path": sync_try["result"]["path"], "model": sync_try["result"]["model"]}}), 200
-
-    # fallback → async
     job_id = str(uuid4())
     store_job(job_id, {"status": "pending", "created_at": datetime.datetime.utcnow().isoformat() + "Z", "razred": razred, "user_text": user_text, "requested": requested}, merge=True)
     payload = _prepare_async_payload(job_id, razred, user_text, requested, image_url or None, file_bytes, file_name, file_mime, image_b64_str)
-    # postavi anchor i ovdje
-    if image_url or file_bytes or image_b64_str:
-        session["last_problem_kind"] = "image"
-        if image_url:
-            session["last_image_url"] = image_url
-    else:
-        session["last_problem_kind"] = "text"
-        session["last_problem_user_text"] = user_text
     try:
         _enqueue(payload)
         mode_tag = "auto(sync→async)" if mode == "auto" else "sync→async"
@@ -1093,8 +958,6 @@ def set_razred():
         session["razred"] = g
         session["history"] = []
         session.pop("last_image_url", None)
-        session.pop("last_problem_kind", None)
-        session.pop("last_problem_user_text", None)
     return ("", 204)
 
 @app.after_request
